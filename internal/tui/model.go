@@ -33,6 +33,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/cost"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	"github.com/yottadynamics/yottacode/internal/lsp"
@@ -5785,6 +5786,15 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// m.sess.Model because the user may have switched mid-session
 		// via /provider use; the per-model breakdown wants the model
 		// that actually produced the turn.
+		// Store the catalog-backed estimate on the turn before the session
+		// accumulator sees it, so historical sessions retain the rate snapshot.
+		if e.Message.Usage != nil && !e.Message.Usage.CostAvailable {
+			est := cost.ForUsage(m.baseURL, string(m.providerProfile.Provider), m.modelName, *e.Message.Usage)
+			if est.Available {
+				e.Message.Usage.CostUSD = est.USD
+				e.Message.Usage.CostAvailable = true
+			}
+		}
 		m.sess.AddUsage(m.modelName, e.Message.Usage)
 		// Same delta onto the per-turn accumulator so the end-of-turn
 		// footer can show this turn's real token total.

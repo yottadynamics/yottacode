@@ -15,9 +15,11 @@ import (
 // Lives in this package because both internal/tui and internal/oneshot
 // consume it.
 type ChatOptions struct {
-	Model        string
-	BaseURL      string
-	APIKey       string
+	Model   string
+	BaseURL string
+	APIKey  string
+	// Headers are non-secret provider metadata resolved from config profiles.
+	Headers      map[string]string
 	SystemPrompt string
 	Resume       string
 	// Continue requests that, when set, the CLI resume the most recent
@@ -120,12 +122,20 @@ type ChatOptions struct {
 	// set (e.g. the connection probe never sets it).
 	CacheKey string
 
-	// RunJSONStatus asks `yottacode run` to append a machine-readable status
-	// envelope to stderr after the turn finishes. Stdout remains final-answer
-	// only so existing shell pipelines can keep redirecting the assistant body
-	// without parsing around metadata.
+	// RunJSONStatus asks `yottacode run --json` to append the legacy
+	// machine-readable status receipt to stderr while stdout remains answer-only.
 	RunJSONStatus bool
+	// RunFormat selects the primary stdout contract for `yottacode run`.
+	// Text preserves streamed answer-only output; JSON emits one RunResult object.
+	RunFormat string
 }
+
+const (
+	// RunFormatText preserves the original answer-only stdout contract.
+	RunFormatText = "text"
+	// RunFormatJSON emits one structured result object to stdout.
+	RunFormatJSON = "json"
+)
 
 // ValidPermissionModes is the closed set the --permission-mode flag
 // accepts. Exported so the flag-registration site and tests can keep
@@ -204,6 +214,7 @@ const (
 // $YOTTACODE_MODEL" message.
 func Resolve(opts *ChatOptions) error {
 	loadDotEnvFiles()
+	profileMaySupplyBaseURL := opts.BaseURL == "" && os.Getenv(EnvBaseURL) == ""
 
 	if opts.Model == "" {
 		opts.Model = os.Getenv(EnvModel)
@@ -218,7 +229,7 @@ func Resolve(opts *ChatOptions) error {
 		opts.Provider = os.Getenv(EnvProvider)
 	}
 
-	applyProviderProfile(opts)
+	applyProviderProfile(opts, profileMaySupplyBaseURL)
 	if opts.ReasoningEffort == "" {
 		opts.ReasoningEffort = os.Getenv(EnvReasoningEffort)
 	}
@@ -301,7 +312,30 @@ func Resolve(opts *ChatOptions) error {
 	if !IsValidPermissionMode(opts.PermissionMode) {
 		return fmt.Errorf("invalid --permission-mode %q: use default, plan, or auto", opts.PermissionMode)
 	}
+	opts.RunFormat = strings.ToLower(strings.TrimSpace(opts.RunFormat))
+	if opts.RunFormat == "" {
+		opts.RunFormat = RunFormatText
+	}
+	switch opts.RunFormat {
+	case RunFormatText, RunFormatJSON:
+	default:
+		return fmt.Errorf("invalid --format %q: use text or json", opts.RunFormat)
+	}
+	if opts.RunJSONStatus && opts.RunFormat == RunFormatJSON {
+		return errors.New("--json and --format json cannot be combined: --json is the legacy stderr status receipt")
+	}
 	return nil
+}
+
+func cloneHeaders(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 // envTruthy reports whether the given env-var value should be treated as
@@ -343,7 +377,7 @@ func loadDotEnvFiles() {
 // API keys are looked up via the profile's api_key_env name — the
 // actual secret is expected to live in the live OS environment
 // (potentially populated by .env above).
-func applyProviderProfile(opts *ChatOptions) {
+func applyProviderProfile(opts *ChatOptions, profileMaySupplyBaseURL bool) {
 	cfg, err := config.LoadDefault()
 	if err != nil {
 		// Surface the config load error to stderr so the user can
@@ -402,5 +436,10 @@ func applyProviderProfile(opts *ChatOptions) {
 	}
 	if opts.APIKey == "" && p.APIKeyEnv != "" {
 		opts.APIKey = os.Getenv(p.APIKeyEnv)
+	}
+	if profileMaySupplyBaseURL {
+		opts.Headers = cloneHeaders(p.Headers)
+	} else {
+		opts.Headers = nil
 	}
 }

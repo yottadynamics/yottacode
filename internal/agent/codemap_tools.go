@@ -4,12 +4,47 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
+	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
 const defaultCodeMapMax = 120
+
+// codeMapExportMax is the effective "unbounded" cap used when a code-map
+// tool writes its output to a file instead of returning it inline — large
+// enough that no real repo's diagram or projection hits it, so a to_file
+// export is genuinely complete rather than truncated.
+const codeMapExportMax = 1_000_000
+
+// writeCodeMapExport validates and writes a to_file export the same way
+// WriteFileTool does (see fs_tools.go): resolve against cwd, run it through
+// the normal write-path validator, create parent dirs, then write. label
+// names the tool in error messages and the success confirmation.
+func writeCodeMapExport(cwd *CwdRef, writeOpts WritePathOptions, toFile, content, label string) (string, error) {
+	p := resolvePath(cwd.Get(), toFile)
+	if err := ValidateWritePath(p, writeOpts); err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return "", fmt.Errorf("%s: mkdir: %w", label, err)
+	}
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		return "", fmt.Errorf("%s: %w", label, err)
+	}
+	return fmt.Sprintf("%s written to %s (%d bytes)\n", label, p, len(content)), nil
+}
+
+func codeMapToFileArg(argsJSON string) string {
+	var a struct {
+		ToFile string `json:"to_file"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return strings.TrimSpace(a.ToFile)
+}
 
 // CodeMapTool renders a bounded repository outline from the shared code index.
 type CodeMapTool struct{ Provider codemap.Provider }
@@ -96,27 +131,50 @@ func (t *CodeSymbolsTool) Execute(ctx context.Context, argsJSON string) (string,
 	return codemap.FormatNodes(syms, max), nil
 }
 
-// CodeStructureProjectionTool returns a compact context projection for agents.
-type CodeStructureProjectionTool struct{ Provider codemap.Provider }
+// CodeStructureProjectionTool returns a compact context projection for
+// agents. Set to_file to write the full, unbounded projection to disk
+// instead — a bounded-for-context-window / unbounded-on-disk export surface.
+type CodeStructureProjectionTool struct {
+	Provider  codemap.Provider
+	Cwd       *CwdRef
+	WriteOpts WritePathOptions
+}
 
 func (t *CodeStructureProjectionTool) Name() string { return "code_structure_projection" }
 func (t *CodeStructureProjectionTool) Description() string {
-	return "Generate a compact, token-efficient structure projection from the code index: package/file tree, key symbols, and counts."
+	return "Generate a compact, token-efficient structure projection from the code index: package/file tree, key symbols, and counts. Set to_file to write the full projection to disk instead of returning it inline."
 }
 func (t *CodeStructureProjectionTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
 		"max_results": map[string]any{"type": "integer", "description": "Cap on files included (default 120, max 500)"},
+		"to_file":     map[string]any{"type": "string", "description": "Optional path to write the full, untruncated projection instead of returning it inline"},
 	}}
 }
-func (t *CodeStructureProjectionTool) RequiresApproval(string) bool { return false }
-func (t *CodeStructureProjectionTool) ParallelSafe(string) bool     { return true }
-func (t *CodeStructureProjectionTool) PreviewCall(string) string {
+func (t *CodeStructureProjectionTool) RequiresApproval(argsJSON string) bool {
+	return codeMapToFileArg(argsJSON) != ""
+}
+func (t *CodeStructureProjectionTool) ParallelSafe(argsJSON string) bool {
+	return codeMapToFileArg(argsJSON) == ""
+}
+func (t *CodeStructureProjectionTool) PreviewCall(argsJSON string) string {
+	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
+		return fmt.Sprintf("code_structure_projection(to_file=%s)", toFile)
+	}
 	return "code_structure_projection()"
+}
+func (t *CodeStructureProjectionTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
+		return []string{resolvePath(cwd, toFile)}
+	}
+	return nil
 }
 func (t *CodeStructureProjectionTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	idx, _, max, err := codeMapArgs(ctx, t.Provider, argsJSON)
 	if err != nil {
 		return "", err
+	}
+	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
+		return writeCodeMapExport(t.Cwd, t.WriteOpts, toFile, codemap.Projection(idx, codeMapExportMax), "code_structure_projection")
 	}
 	return codemap.Projection(idx, max), nil
 }
@@ -163,11 +221,19 @@ func (t *CodeDependentsTool) Execute(ctx context.Context, argsJSON string) (stri
 	return codemap.FormatDependencies("dependents\t"+path, idx.Dependents(path, max), max), nil
 }
 
-type CodeImpactTool struct{ Provider codemap.Provider }
+// CodeImpactTool answers file-level blast-radius queries over the static
+// import graph. LSP is optional: when include_calls is set and a language
+// server is available for the target file, it best-effort supplements the
+// report with live call-hierarchy callers/callees — a symbol-position-scoped,
+// slower signal that stays out of the cached static graph on purpose.
+type CodeImpactTool struct {
+	Provider codemap.Provider
+	LSP      lspToolBase
+}
 
 func (t *CodeImpactTool) Name() string { return "code_impact" }
 func (t *CodeImpactTool) Description() string {
-	return "Return a conservative blast-radius summary for an indexed file/path query: direct dependencies, direct dependents, transitive dependents, and import cycles."
+	return "Return a conservative blast-radius summary for an indexed file/path query: direct dependencies, direct dependents, transitive dependents, likely tests, likely docs/config, and import cycles. Optionally supplements with live LSP callers/callees via include_calls."
 }
 func (t *CodeImpactTool) Schema() map[string]any       { return codeImpactSchema() }
 func (t *CodeImpactTool) RequiresApproval(string) bool { return false }
@@ -181,7 +247,105 @@ func (t *CodeImpactTool) Execute(ctx context.Context, argsJSON string) (string, 
 	if err != nil {
 		return "", err
 	}
-	return codemap.FormatImpact(idx.Impact(path, depth, max), max), nil
+	result := idx.Impact(path, depth, max)
+	var out string
+	if codeImpactFormat(argsJSON) == "summary" {
+		out = codemap.FormatImpactSummary(result, 3)
+	} else {
+		out = codemap.FormatImpact(result, max)
+	}
+	if codeImpactIncludeCalls(argsJSON) && result.Target.ID != "" {
+		out += t.callGraphSupplement(ctx, idx, result.Target, max)
+	}
+	return out, nil
+}
+
+func codeImpactFormat(argsJSON string) string {
+	var a struct {
+		Format string `json:"format"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return strings.ToLower(strings.TrimSpace(a.Format))
+}
+
+func codeImpactIncludeCalls(argsJSON string) bool {
+	var a struct {
+		IncludeCalls bool `json:"include_calls"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return a.IncludeCalls
+}
+
+// callGraphSupplement best-effort appends live LSP call-hierarchy callers and
+// callees for the target file's exported symbols. It never fails the tool
+// call — an unavailable or unsupported language server just gets reported in
+// the section body, mirroring lsp_impact's writeImpactUnavailable style.
+func (t *CodeImpactTool) callGraphSupplement(ctx context.Context, idx *codemap.CodeIndex, target codemap.Node, limit int) string {
+	var b strings.Builder
+	b.WriteString("callers (LSP)\n")
+	calleesHeader := "callees (LSP)\n"
+	if target.ID == "" || idx == nil {
+		b.WriteString("  (none)\n")
+		return b.String() + calleesHeader + "  (none)\n"
+	}
+	absPath := filepath.Join(idx.RootPath(), filepath.FromSlash(target.RelPath))
+	lang, ok := lspci.ResolveFile(absPath)
+	if !ok {
+		msg := "  " + unsupportedFileResult(absPath)
+		return b.String() + msg + calleesHeader + msg
+	}
+	if t.LSP.Disabled[lang.ID] {
+		msg := fmt.Sprintf("  unavailable: LSP language %s is disabled by config\n", lang.ID)
+		return b.String() + msg + calleesHeader + msg
+	}
+	lang = lspci.ApplyOverrides(lang, t.LSP.Servers)
+	if !lspci.ServerAvailable(lang) && t.LSP.NewClient == nil {
+		msg := "  " + unavailableServerResult(lang)
+		return b.String() + msg + calleesHeader + msg
+	}
+	client, err := t.LSP.openClient(ctx, lang, lspci.WorkspaceRoot(absPath, lang, idx.RootPath()))
+	if err != nil {
+		msg := "  " + missingServerResult(lang, err)
+		return b.String() + msg + calleesHeader + msg
+	}
+	defer client.Close()
+
+	var callers, callees []lspci.CallHierarchyItem
+	for _, sym := range idx.SymbolsForFile(target.RelPath) {
+		if !sym.Symbol.Exported {
+			continue
+		}
+		pos := lspci.Position{Line: sym.Symbol.Range.Start.Line, Character: sym.Symbol.Range.Start.Character}
+		items, err := client.CallHierarchy(ctx, absPath, pos)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			if item.Direction == "outgoing" {
+				callees = append(callees, item)
+			} else {
+				callers = append(callers, item)
+			}
+		}
+	}
+	writeCallItems(&b, callers, limit)
+	b.WriteString(calleesHeader)
+	writeCallItems(&b, callees, limit)
+	return b.String()
+}
+
+func writeCallItems(b *strings.Builder, items []lspci.CallHierarchyItem, limit int) {
+	if len(items) == 0 {
+		b.WriteString("  (none)\n")
+		return
+	}
+	for i, item := range items {
+		if i >= limit {
+			fmt.Fprintf(b, "  …[truncated at %d results]\n", limit)
+			break
+		}
+		fmt.Fprintf(b, "  %s\t%s\t%s\n", displayLocation(item.Location), item.Kind, item.Name)
+	}
 }
 
 type CodeCyclesTool struct{ Provider codemap.Provider }
@@ -218,28 +382,50 @@ func (t *CodeCyclesTool) Execute(ctx context.Context, argsJSON string) (string, 
 	return codemap.FormatCycles(idx.Cycles(a.Path, max), max), nil
 }
 
-type CodeMapDiagramTool struct{ Provider codemap.Provider }
+// CodeMapDiagramTool returns a Mermaid dependency diagram. Set to_file to
+// write the full, unbounded diagram to disk instead — a bounded-for-context-
+// window / unbounded-on-disk export surface.
+type CodeMapDiagramTool struct {
+	Provider  codemap.Provider
+	Cwd       *CwdRef
+	WriteOpts WritePathOptions
+}
 
 func (t *CodeMapDiagramTool) Name() string { return "code_map_diagram" }
 func (t *CodeMapDiagramTool) Description() string {
-	return "Return a Mermaid dependency diagram from the experimental code map import graph, optionally focused around one file/path."
+	return "Return a Mermaid dependency diagram from the experimental code map import graph, optionally focused around one file/path. Set to_file to write the full diagram to disk instead of returning it inline."
 }
 func (t *CodeMapDiagramTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
 		"path":        map[string]any{"type": "string", "description": "Optional file path or path fragment to focus the diagram"},
 		"max_results": map[string]any{"type": "integer", "description": "Cap on rendered edges (default 120, max 500)"},
+		"to_file":     map[string]any{"type": "string", "description": "Optional path to write the full, untruncated diagram instead of returning it inline. Requires path — an unfocused export would be a full-repo hairball graph, which this tool deliberately never produces"},
 	}}
 }
-func (t *CodeMapDiagramTool) RequiresApproval(string) bool { return false }
-func (t *CodeMapDiagramTool) ParallelSafe(string) bool     { return true }
+func (t *CodeMapDiagramTool) RequiresApproval(argsJSON string) bool {
+	return codeMapToFileArg(argsJSON) != ""
+}
+func (t *CodeMapDiagramTool) ParallelSafe(argsJSON string) bool {
+	return codeMapToFileArg(argsJSON) == ""
+}
 func (t *CodeMapDiagramTool) PreviewCall(argsJSON string) string {
 	path, _ := previewCodeDependencyArgs(argsJSON)
+	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
+		return fmt.Sprintf("code_map_diagram(%s, to_file=%s)", path, toFile)
+	}
 	return fmt.Sprintf("code_map_diagram(%s)", path)
+}
+func (t *CodeMapDiagramTool) PathsToSnapshot(cwd, argsJSON string) []string {
+	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
+		return []string{resolvePath(cwd, toFile)}
+	}
+	return nil
 }
 func (t *CodeMapDiagramTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a struct {
 		Path       string `json:"path"`
 		MaxResults int    `json:"max_results"`
+		ToFile     string `json:"to_file"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("code_map_diagram: invalid args: %w", err)
@@ -247,6 +433,12 @@ func (t *CodeMapDiagramTool) Execute(ctx context.Context, argsJSON string) (stri
 	idx, err := codeMapIndex(ctx, t.Provider)
 	if err != nil {
 		return "", fmt.Errorf("code_map_diagram: %w", err)
+	}
+	if toFile := strings.TrimSpace(a.ToFile); toFile != "" {
+		if strings.TrimSpace(a.Path) == "" {
+			return "", fmt.Errorf("code_map_diagram: to_file requires path — an unfocused export would be the full import graph (a full-repo hairball diagram, which this tool never produces); pass path to focus the export around one file")
+		}
+		return writeCodeMapExport(t.Cwd, t.WriteOpts, toFile, codemap.MermaidDiagram(idx, a.Path, codeMapExportMax), "code_map_diagram")
 	}
 	return codemap.MermaidDiagram(idx, a.Path, normalizedCodeMapMax(a.MaxResults)), nil
 }
@@ -260,9 +452,11 @@ func codeDependencySchema() map[string]any {
 
 func codeImpactSchema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":        map[string]any{"type": "string", "description": "File path or path fragment to query"},
-		"depth":       map[string]any{"type": "integer", "description": "Transitive dependent depth; -1 means all (default -1)"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on returned files/cycles (default 120, max 500)"},
+		"path":          map[string]any{"type": "string", "description": "File path or path fragment to query"},
+		"depth":         map[string]any{"type": "integer", "description": "Transitive dependent depth; -1 means all (default -1)"},
+		"max_results":   map[string]any{"type": "integer", "description": "Cap on returned files/cycles (default 120, max 500)"},
+		"format":        map[string]any{"type": "string", "description": "'full' (default) for the sectioned report, or 'summary' for a compact counts-plus-top-names projection sized for planning-turn context"},
+		"include_calls": map[string]any{"type": "boolean", "description": "Best-effort supplement with live LSP call-hierarchy callers/callees for the target file's exported symbols when a language server is available (default false; slower than the static graph query)"},
 	}, "required": []string{"path"}}
 }
 

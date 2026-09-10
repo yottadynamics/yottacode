@@ -10,6 +10,7 @@ import (
 func cmdMap(m Model, args []string) (Model, tea.Cmd) {
 	mode := codeMapModeStructure
 	depth := codemapDefaultImpactDepth
+	exportPath := ""
 	query := strings.TrimSpace(strings.Join(args, " "))
 	if len(args) > 0 {
 		switch args[0] {
@@ -27,13 +28,31 @@ func cmdMap(m Model, args []string) (Model, tea.Cmd) {
 			query = strings.TrimSpace(strings.Join(args[1:], " "))
 		case "diagram":
 			mode = codeMapModeDiagram
-			query = strings.TrimSpace(strings.Join(args[1:], " "))
+			query, exportPath = parseMapDiagramArgs(args[1:])
 		case "here":
 			mode = codeMapModeHere
 			query = strings.TrimSpace(strings.Join(args[1:], " "))
 		}
 	}
-	return m.openCodeMapPicker(mode, query, depth)
+	return m.openCodeMapPicker(mode, query, depth, exportPath)
+}
+
+func parseMapDiagramArgs(args []string) (query, exportPath string) {
+	kept := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--export" && i+1 < len(args) {
+			exportPath = args[i+1]
+			i++
+			continue
+		}
+		if v, ok := strings.CutPrefix(a, "--export="); ok {
+			exportPath = v
+			continue
+		}
+		kept = append(kept, a)
+	}
+	return strings.TrimSpace(strings.Join(kept, " ")), exportPath
 }
 
 func parseMapImpactArgs(args []string) (string, int) {
@@ -46,8 +65,8 @@ func parseMapImpactArgs(args []string) (string, int) {
 			i++
 			continue
 		}
-		if strings.HasPrefix(a, "--depth=") {
-			depth = parseImpactDepth(strings.TrimPrefix(a, "--depth="), depth)
+		if v, ok := strings.CutPrefix(a, "--depth="); ok {
+			depth = parseImpactDepth(v, depth)
 			continue
 		}
 		kept = append(kept, a)

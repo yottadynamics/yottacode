@@ -148,6 +148,23 @@ func TestMaxIterationsDefault(t *testing.T) {
 	}
 }
 
+// The run format is local to the non-interactive command and defaults to the
+// existing text contract so adding structured output cannot change old calls.
+func TestRunCmd_FormatFlagDefaultsToText(t *testing.T) {
+	cmd := newCLI()
+	runCmd, _, err := cmd.Find([]string{"run"})
+	if err != nil {
+		t.Fatalf("find run command: %v", err)
+	}
+	flag := runCmd.Flags().Lookup("format")
+	if flag == nil {
+		t.Fatal("run --format flag is not registered")
+	}
+	if flag.DefValue != "text" {
+		t.Fatalf("run --format default = %q, want text", flag.DefValue)
+	}
+}
+
 // shouldRunUpdateCheck has three skip paths. The tty check naturally
 // returns false under `go test` (stdin is a pipe), which gives us the
 // "non-tty" branch coverage for free; t.Setenv covers the env-var

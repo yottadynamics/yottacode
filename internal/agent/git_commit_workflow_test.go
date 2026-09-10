@@ -45,6 +45,8 @@ func TestValidateCommitSubject(t *testing.T) {
 		{"empty", "", "message is empty"},
 		{"only whitespace", "   ", "message is empty"},
 		{"multi-line rejected", "add cache\n\nbody here", "message must be a single line (no body / footer)"},
+		{"two trailing newlines rejected", "add cache\n\n", "message must be a single line (no body / footer)"},
+		{"three trailing newlines rejected", "add cache\n\n\n", "message must be a single line (no body / footer)"},
 		{"trailing period rejected", "add cache.", "subject must not end with a period"},
 		{"over the cap rejected", strings.Repeat("x", CommitSubjectMaxLen+1), ""},
 	}
@@ -193,7 +195,7 @@ func TestApplyCommit_EmptyStaging(t *testing.T) {
 	writeFile(t, tmp, "f.txt", "v1\n")
 	gitCommit(t, tmp, "base")
 
-	res, err := ApplyCommit(context.Background(), tmp, "add nothing")
+	res, err := ApplyCommit(context.Background(), tmp, "add nothing", "")
 	if err != nil {
 		t.Fatalf("ApplyCommit: %v", err)
 	}
@@ -215,7 +217,7 @@ func TestApplyCommit_HappyPath(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	res, err := ApplyCommit(context.Background(), tmp, "bump f to v2")
+	res, err := ApplyCommit(context.Background(), tmp, "bump f to v2", "")
 	if err != nil {
 		t.Fatalf("ApplyCommit: %v", err)
 	}
@@ -237,7 +239,7 @@ func TestApplyCommit_ValidationFailsBeforeGit(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	res, err := ApplyCommit(context.Background(), tmp, "bump f.")
+	res, err := ApplyCommit(context.Background(), tmp, "bump f.", "")
 	if err != nil {
 		t.Fatalf("ApplyCommit: %v", err)
 	}
@@ -281,7 +283,7 @@ func TestApplyCommit_HookFailureSurfacedNotRetried(t *testing.T) {
 		t.Fatalf("stage: %v", err)
 	}
 
-	res, err := ApplyCommit(context.Background(), tmp, "bump f")
+	res, err := ApplyCommit(context.Background(), tmp, "bump f", "")
 	if err != nil {
 		t.Fatalf("ApplyCommit: %v", err)
 	}
@@ -312,7 +314,7 @@ func TestApplyCommit_MessageWithSpecialChars(t *testing.T) {
 	}
 
 	tricky := "fix `foo` regression: handle $VAR and \"quotes\""
-	res, err := ApplyCommit(context.Background(), tmp, tricky)
+	res, err := ApplyCommit(context.Background(), tmp, tricky, "")
 	if err != nil {
 		t.Fatalf("ApplyCommit: %v", err)
 	}
@@ -322,6 +324,74 @@ func TestApplyCommit_MessageWithSpecialChars(t *testing.T) {
 	subj, _ := gitOutput(context.Background(), tmp, "log", "-1", "--format=%s")
 	if strings.TrimSpace(subj) != tricky {
 		t.Errorf("subject mangled: got %q, want %q", strings.TrimSpace(subj), tricky)
+	}
+}
+
+func TestApplyCommit_AppendsTrailerAfterValidatedSubject(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, "f.txt", "v2\n")
+	stage := &GitStageFilesTool{Cwd: NewCwdRef(tmp)}
+	if _, err := stage.Execute(context.Background(), `{"paths":["f.txt"]}`); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+
+	const trailer = "Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>"
+	tool := &GitCommitApplyTool{Trailer: trailer}
+	if preview := tool.PreviewCall(`{"message":"bump f"}`); !strings.Contains(preview, trailer) {
+		t.Fatalf("approval preview hides trailer: %q", preview)
+	}
+	res, err := ApplyCommit(context.Background(), tmp, "bump f\n", trailer)
+	if err != nil {
+		t.Fatalf("ApplyCommit: %v", err)
+	}
+	if !res.Committed {
+		t.Fatalf("expected commit: %+v", res)
+	}
+	body, err := gitOutput(context.Background(), tmp, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got, want := strings.TrimRight(body, "\n"), "bump f\n\n"+trailer; got != want {
+		t.Fatalf("commit body = %q, want %q", got, want)
+	}
+}
+
+func TestApplyCommit_PreservesCustomTrailerVerbatim(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, "f.txt", "v2\n")
+	gitRun(t, tmp, "add", "f.txt")
+
+	const trailer = "X-Agent: custom value  \n\nSigned-off-by: Example <example@example.com>"
+	res, err := ApplyCommit(context.Background(), tmp, "bump f", trailer)
+	if err != nil || !res.Committed {
+		t.Fatalf("ApplyCommit: res=%+v err=%v", res, err)
+	}
+	body, err := gitOutput(context.Background(), tmp, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if got, want := strings.TrimSuffix(body, "\n"), "bump f\n\n"+trailer; got != want {
+		t.Fatalf("custom trailer changed: got %q, want %q", got, want)
+	}
+}
+
+func TestApplyCommit_RejectsModelSuppliedBodyWithTrailerEnabled(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	writeFile(t, tmp, "f.txt", "v2\n")
+	gitRun(t, tmp, "add", "f.txt")
+
+	res, err := ApplyCommit(context.Background(), tmp, "bump f\n\nmodel footer", "generated trailer")
+	if err != nil {
+		t.Fatalf("ApplyCommit: %v", err)
+	}
+	if res.ValidationErr == "" || res.Committed {
+		t.Fatalf("model-supplied multiline message must be rejected: %+v", res)
 	}
 }
 

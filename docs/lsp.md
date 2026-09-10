@@ -2,9 +2,9 @@
 
 LSP Code Intelligence connects yottacode tools to local Language Server Protocol (LSP) servers plus yottacode's offline syntax fallback layer. It is GA and default-on in interactive and oneshot sessions, but remains lazy: yottacode starts a server only when a semantic LSP tool needs one. Interactive and oneshot sessions reuse a bounded pool of initialized servers so repeated tool calls do not pay startup cost every time; the pool is closed when the session exits.
 
-The separate `code_map` feature (still experimental) reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go, TypeScript/JavaScript, Python, and Rust all use parser-backed sources. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
+The separate `code_map` feature (still experimental) reuses this LSP surface when available to build the `/map` structure overlay and code-map agent tools. If a language server is missing, the map falls back to offline syntax symbols: Go uses its AST parser, while TypeScript/JavaScript, Python, and Rust use structural scanners. Dependency and impact queries currently use resolvable in-workspace Go imports, including transitive dependents, import-cycle detection, and Mermaid diagram output; `lsp_impact` can combine those import edges with live LSP references, calls, hover, and diagnostics.
 
-`syntax_ranges` (now GA) exposes one piece of that offline layer directly as `syntax_range`: a read-only, parser-backed range selector for local edit targeting, covering Go, TypeScript/JavaScript, Python, and Rust. `lsp_selection_ranges` remains the server-backed option; `syntax_range` is the no-server fallback for choosing a block/function/type before an anchored read and `edit_anchored` write.
+`syntax_ranges` (now GA) exposes one piece of that offline layer directly as `syntax_range`: a read-only selector using Go's AST parser and conservative structural scanners for TypeScript/JavaScript, Python, and Rust. It returns exact byte spans and directly consumable hashline receipts containing the exact old source text. `lsp_selection_ranges` remains the server-backed option.
 
 The old `lsp_code_intelligence` and `syntax_ranges` experimental flags are still recognized as GA/no-op compatibility flags for one release so existing configs keep working.
 
@@ -13,9 +13,9 @@ The old `lsp_code_intelligence` and `syntax_ranges` experimental flags are still
 | Language | Server command | Offline syntax | Impact enrichment | Install hint |
 |---|---|---|---|---|
 | Go | `gopls` | parser | LSP refs/calls + Code Map imports | `go install golang.org/x/tools/gopls@latest` and ensure `$(go env GOPATH)/bin` is on `PATH` |
-| TypeScript/JavaScript | `typescript-language-server --stdio` | parser | LSP refs/calls when server is installed | `npm install -g typescript typescript-language-server` |
-| Python | `pyright-langserver --stdio` | parser | LSP refs/calls when server is installed | `npm install -g pyright` |
-| Rust | `rust-analyzer` | parser | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
+| TypeScript/JavaScript | `typescript-language-server --stdio` | scanner | LSP refs/calls when server is installed | `npm install -g typescript typescript-language-server` |
+| Python | `pyright-langserver --stdio` | scanner | LSP refs/calls when server is installed | `npm install -g pyright` |
+| Rust | `rust-analyzer` | scanner | LSP refs/calls when server is installed | Install with `rustup`, your package manager, or the rust-analyzer project instructions |
 
 Missing servers are not fatal. yottacode reports the missing command and an install hint through the startup session advisory card, `lsp_status`, `yottacode doctor`, and LSP tool unavailable results. `lsp_status` also includes an exact `install_command` field for missing servers so the agent can offer to run it through the normal bash approval process when the active task would benefit from LSP. yottacode never auto-installs or silently enables servers; the user must approve any install command like any other shell command. `lsp_status` also initializes installed, enabled servers through the normal manager path and prints the capabilities the server advertised during `initialize` (for example `definition`, `references`, `rename`, or `formatting`). `yottacode doctor` runs the same bounded protocol probe, so “binary exists” and “server can initialize with useful capabilities” are reported separately.
 

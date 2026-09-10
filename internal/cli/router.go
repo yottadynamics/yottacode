@@ -276,6 +276,7 @@ func candidateAdapterConfig(rc config.ResolvedCandidate, opts ChatOptions, cache
 	return adapter.Config{
 		BaseURL:                rc.Provider.BaseURL,
 		APIKey:                 apiKey,
+		Headers:                cloneHeaders(rc.Provider.Headers),
 		Model:                  rc.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(rc.Provider.Kind)),
 		ReasoningEffort:        opts.ReasoningEffort,

@@ -80,6 +80,9 @@ type CoreToolDeps struct {
 	// MediaRenderTimeout bounds how long a single ffmpeg invocation in
 	// those tools may run. <=0 falls through to mediaDefaultRenderTimeout.
 	MediaRenderTimeout time.Duration
+	// CommitTrailer is appended to commit messages created through the core
+	// git_commit tool. Empty disables attribution.
+	CommitTrailer string
 }
 
 // RegisterCoreCwdTools registers the core working-directory-bound tools —
@@ -124,7 +127,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GitStageFilesTool{Cwd: cwd})
 	reg.Register(&GitUnstageFilesTool{Cwd: cwd})
 	reg.Register(&GitCreateBranchTool{Cwd: cwd, LSPManager: deps.LSPManager})
-	reg.Register(&GitCommitTool{Cwd: cwd})
+	reg.Register(&GitCommitTool{Cwd: cwd, Trailer: deps.CommitTrailer})
 	reg.Register(&GitLogFileTool{Cwd: cwd})
 	reg.Register(&GitBlameLinesTool{Cwd: cwd})
 	reg.Register(&GitMergeBaseTool{Cwd: cwd})
@@ -158,12 +161,12 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	if deps.EnableCodeMap {
 		reg.Register(&CodeMapTool{Provider: deps.CodeMapProvider})
 		reg.Register(&CodeSymbolsTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeStructureProjectionTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeStructureProjectionTool{Provider: deps.CodeMapProvider, Cwd: cwd, WriteOpts: wo})
 		reg.Register(&CodeDependenciesTool{Provider: deps.CodeMapProvider})
 		reg.Register(&CodeDependentsTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider, LSP: lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}})
 		reg.Register(&CodeCyclesTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeMapDiagramTool{Provider: deps.CodeMapProvider})
+		reg.Register(&CodeMapDiagramTool{Provider: deps.CodeMapProvider, Cwd: cwd, WriteOpts: wo})
 	}
 	if deps.EnableSyntaxRanges {
 		reg.Register(&SyntaxRangeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})

@@ -39,9 +39,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	// flag was a no-op for `yottacode run`.
 	switch opts.PermissionMode {
 	case "plan":
-		fmt.Fprintln(os.Stderr, "warning: --permission-mode plan is interactive-only; ignored for `yottacode run`")
+		fmt.Fprintln(os.Stderr, "[warning] --permission-mode plan is interactive-only; ignored for `yottacode run`")
 	case "auto":
-		fmt.Fprintln(os.Stderr, "warning: --permission-mode auto is interactive-only; ignored for `yottacode run`")
+		fmt.Fprintln(os.Stderr, "[warning] --permission-mode auto is interactive-only; ignored for `yottacode run`")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -92,9 +92,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		prompt = filerefs.Rewrite(prompt, refs)
 		for _, r := range refs {
 			if r.Loaded {
-				fmt.Fprintf(os.Stderr, "· attached %s (%d bytes)\n", r.Token, r.Size)
+				fmt.Fprintf(os.Stderr, "[attachment] %s (%d bytes)\n", r.Token, r.Size)
 			} else {
-				fmt.Fprintf(os.Stderr, "· could not attach %s: %s\n", r.Token, r.Error)
+				fmt.Fprintf(os.Stderr, "[attachment:error] %s: %s\n", r.Token, r.Error)
 			}
 		}
 	}
@@ -105,10 +105,14 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		Timestamp: &submitted,
 	})
 
-	turnErr := streamWithOptions(ctx, rt.Cfg, &rt.Session.Messages, os.Stdout, os.Stderr, StreamOptions{JSONStatus: opts.RunJSONStatus})
+	turnErr := streamWithOptions(ctx, rt.Cfg, &rt.Session.Messages, os.Stdout, os.Stderr, StreamOptions{
+		JSONStatus: opts.RunJSONStatus,
+		Format:     opts.RunFormat,
+		SessionID:  rt.Session.ID,
+	})
 	rt.Session.Todos = rt.PlanStore.Snapshot()
 	if saveErr := rt.Session.Save(); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "⚠ session save failed: %v\n", saveErr)
+		fmt.Fprintf(os.Stderr, "[warning] session save failed: %v\n", saveErr)
 	}
 	return turnErr
 }
@@ -133,6 +137,35 @@ func injectRefsIntoSystem(sess *session.Session, refs []filerefs.Ref) {
 // grow metadata needed by integrations.
 type StreamOptions struct {
 	JSONStatus bool
+	Format     string
+	SessionID  string
+}
+
+const (
+	// ExitReasonOK means the turn reached a final tool-free assistant answer.
+	ExitReasonOK = "ok"
+	// ExitReasonError means the turn returned a process-failing error.
+	ExitReasonError = "error"
+	// ExitReasonIterCap means the turn exhausted its iteration budget.
+	ExitReasonIterCap = "iter_cap"
+)
+
+// ToolCallSummary is the stable, intentionally small record exposed to scripts.
+// Summary reuses the same bounded, human-safe preview shown in text-mode status.
+type ToolCallSummary struct {
+	Name    string `json:"name"`
+	Summary string `json:"summary"`
+}
+
+// RunResult is the primary stdout contract for `yottacode run --format json`.
+// Error is a pointer so successful runs encode an explicit JSON null value.
+type RunResult struct {
+	Content    string            `json:"content"`
+	ToolCalls  []ToolCallSummary `json:"tool_calls"`
+	Usage      adapter.Usage     `json:"usage"`
+	ExitReason string            `json:"exit_reason"`
+	Error      *string           `json:"error"`
+	SessionID  string            `json:"session_id"`
 }
 
 // ToolRunStatus summarizes one tool's execution count for the JSON status
@@ -192,12 +225,19 @@ func streamWithOptions(
 	}()
 
 	var firstErr error
+	jsonOutput := opts.Format == cli.RunFormatJSON
+	result := RunResult{
+		ToolCalls:  make([]ToolCallSummary, 0),
+		ExitReason: ExitReasonOK,
+		SessionID:  opts.SessionID,
+	}
 	status := RunStatus{
 		Status: "running",
 		Tools:  map[string]ToolRunStatus{},
 	}
 	changedSeen := map[string]bool{}
 	iterCapHit := false
+	interrupted := false
 	policyDenied := false
 	runTestsFailedLast := false
 	finalContent := ""
@@ -206,7 +246,9 @@ func streamWithOptions(
 		case agent.IterationStart:
 			status.Iterations = e.Number
 		case agent.ContentToken:
-			fmt.Fprint(stdout, e.Text)
+			if !jsonOutput {
+				fmt.Fprint(stdout, e.Text)
+			}
 		case agent.ReasoningToken:
 			fmt.Fprint(stderr, e.Text)
 		case agent.ProviderToolCall:
@@ -228,7 +270,7 @@ func streamWithOptions(
 			}
 		case agent.ApprovalNeeded:
 			err := fmt.Errorf("tool %q requires approval; add an allow rule to .yottacode/permissions.json, run interactively, or pass --yolo (DANGEROUS)", e.ToolName)
-			fmt.Fprintf(stderr, "✗ %v\n", err)
+			fmt.Fprintf(stderr, "[error] %v\n", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -236,6 +278,10 @@ func streamWithOptions(
 
 		case agent.ToolStart:
 			fmt.Fprintf(stderr, "[tool] %s\n", e.Preview)
+			result.ToolCalls = append(result.ToolCalls, ToolCallSummary{
+				Name:    e.ToolName,
+				Summary: truncateOneLine(e.Preview, 240),
+			})
 		case agent.ToolResult:
 			recordToolStatus(&status, e)
 			if e.ToolName == "run_tests" {
@@ -275,11 +321,10 @@ func streamWithOptions(
 			fmt.Fprintf(stderr, "[agent] hit %d/%d iterations — re-run with --max-iterations %d if the work was unfinished\n",
 				e.Max, e.Max, e.Max*2)
 		case agent.ErrorEvent:
-			// Multi-line errors (e.g. 429 with retry-after hint) print
-			// each line with its own ✗ prefix so the second line
-			// doesn't look orphaned on stderr.
+			// Prefix every line so multi-line provider errors remain visibly one
+			// status class instead of leaving continuation lines orphaned.
 			for _, line := range strings.Split(strings.TrimRight(e.Err.Error(), "\n"), "\n") {
-				fmt.Fprintf(stderr, "✗ %s\n", line)
+				fmt.Fprintf(stderr, "[error] %s\n", line)
 			}
 			if firstErr == nil {
 				firstErr = e.Err
@@ -287,33 +332,44 @@ func streamWithOptions(
 		case agent.AssistantMessage:
 			printCitations(stderr, e.Message.Citations)
 			finalContent = e.Message.Content
+			result.Usage.Add(e.Message.Usage)
+			if jsonOutput && len(e.Message.ToolCalls) == 0 && e.Message.Content != "" {
+				result.Content += e.Message.Content
+			}
 		case agent.TurnDone:
-			fmt.Fprintln(stdout)
+			if !jsonOutput {
+				fmt.Fprintln(stdout)
+			}
 			// Footnote on stderr (so `> out.md` redirects don't get
 			// it) recording how long the turn took end-to-end —
 			// matches the TUI's "› Thought for Ns" line.
-			fmt.Fprintf(stderr, "› Thought for %s\n", formatTurnDuration(time.Since(turnStart)))
+			fmt.Fprintf(stderr, "[done] thought for %s\n", formatTurnDuration(time.Since(turnStart)))
 		case agent.TurnInterrupted:
-			// Cancel reached oneshot via SIGINT or a parent-ctx
-			// timeout. History was preserved by the agent loop —
-			// note it on stderr so the exit code's "non-zero =
-			// something happened" reads cleanly against a clean
-			// stdout. The orphaned-call count helps debug whether
-			// the cancel landed mid-tool or mid-stream.
-			fmt.Fprintln(stdout)
-			if e.OrphanedCalls > 0 {
-				fmt.Fprintf(stderr, "↩ interrupted (%d tool call(s) cancelled)\n", e.OrphanedCalls)
+			// Cancel reached oneshot via SIGINT or a parent-ctx timeout. History
+			// was preserved by the loop; JSON mode keeps stdout reserved for its
+			// single result object while text mode terminates partial prose.
+			interrupted = true
+			if jsonOutput {
+				result.Content = e.PartialContent
 			} else {
-				fmt.Fprintln(stderr, "↩ interrupted")
+				fmt.Fprintln(stdout)
+			}
+			if e.OrphanedCalls > 0 {
+				fmt.Fprintf(stderr, "[interrupted] %d tool call(s) cancelled\n", e.OrphanedCalls)
+			} else {
+				fmt.Fprintln(stderr, "[interrupted]")
 			}
 		}
 	}
 
-	if turnErr := <-errCh; firstErr == nil && turnErr != nil {
+	turnErr := <-errCh
+	if firstErr == nil && turnErr != nil {
 		firstErr = turnErr
 	}
-	if firstErr != nil && errors.Is(firstErr, context.Canceled) {
-		return nil
+	// Text mode historically treats cancellation as a clean interruption. JSON
+	// mode must retain the error so its `error` exit reason agrees with the shell.
+	if firstErr != nil && errors.Is(firstErr, context.Canceled) && !jsonOutput {
+		firstErr = nil
 	}
 	status.Status = classifyRunStatus(runOutcome{
 		Err:          firstErr,
@@ -330,7 +386,32 @@ func streamWithOptions(
 			firstErr = err
 		}
 	}
+	if jsonOutput {
+		switch {
+		case firstErr != nil:
+			result.ExitReason = ExitReasonError
+			errText := firstErr.Error()
+			result.Error = &errText
+		case interrupted:
+			result.ExitReason = ExitReasonError
+			errText := "turn interrupted"
+			result.Error = &errText
+		case iterCapHit:
+			result.ExitReason = ExitReasonIterCap
+		default:
+			result.ExitReason = ExitReasonOK
+		}
+		if err := emitRunResult(stdout, result); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	return firstErr
+}
+
+// emitRunResult writes exactly one compact, newline-terminated JSON object.
+// Compact output is friendlier to JSONL-style CI capture while remaining jq-readable.
+func emitRunResult(w io.Writer, result RunResult) error {
+	return json.NewEncoder(w).Encode(result)
 }
 
 func recordToolStatus(status *RunStatus, e agent.ToolResult) {
@@ -446,7 +527,7 @@ func formatTurnDuration(d time.Duration) string {
 func printCitations(w io.Writer, citations []adapter.Citation) {
 	for _, c := range citations {
 		if label := citationLabel(c); label != "" {
-			fmt.Fprintf(w, "[source] %s\n", label)
+			fmt.Fprintf(w, "[citation] %s\n", label)
 		}
 	}
 }
