@@ -229,6 +229,77 @@ The TUI runs full-screen (alt-screen) and re-renders the whole frame — includi
 
 If an `edit_file` old string or `apply_diff` hunk no longer matches the file, the tool result is recoverable retry guidance, not a session failure. The TUI shows it as a compact stale-target hint; the agent should re-read the current file text and retry with fresh context.
 
+## ChatGPT OAuth from WSL without a Linux browser
+
+A browser does not need to be installed inside WSL. Run yottacode in WSL and complete OpenAI's browser-based OAuth flow in a Windows browser. An existing ChatGPT account and a browser somewhere are still required; `openai-auth` does not provide terminal-only account signup.
+
+1. Verify yottacode is installed in WSL:
+
+   ```bash
+   yottacode --version
+   ```
+
+2. Check that the fixed callback port is free. No output is expected:
+
+   ```bash
+   ss -ltnp | grep ':1455' || true
+   ```
+
+3. Start the login and leave it running:
+
+   ```bash
+   yottacode openai-auth login
+   ```
+
+   yottacode prints an `https://auth.openai.com/...` authorization URL. If automatic browser launch fails, copy the complete URL into Edge, Chrome, Firefox, or another Windows browser, then sign in and approve access.
+
+4. After approval, the Windows browser redirects to `http://localhost:1455/auth/callback?...`. Windows-to-WSL localhost forwarding normally delivers this request automatically. Return to WSL and wait for model discovery to finish.
+
+5. If the browser reports that it cannot connect, leave the original login running, copy the **entire callback URL** from the Windows browser address bar, and run this in a second WSL terminal:
+
+   ```bash
+   read -rsp "Paste the complete callback URL: " CALLBACK_URL
+   echo
+   curl --fail --silent --show-error "$CALLBACK_URL"
+   unset CALLBACK_URL
+   ```
+
+   The original login should continue immediately. Using `read -s` keeps the short-lived authorization code off the screen and out of shell history. Do not share the callback URL.
+
+6. Verify the saved login:
+
+   ```bash
+   yottacode openai-auth status
+   # Machine-readable alternative:
+   yottacode openai-auth status --json
+   ```
+
+7. Configure the provider with one of the model IDs accepted by the login scan:
+
+   ```bash
+   export YOTTACODE_PROVIDER=openai-auth
+   export YOTTACODE_BASE_URL=https://chatgpt.com/backend-api/codex
+   export YOTTACODE_MODEL=<accepted-model-id>
+   yottacode
+   ```
+
+   Use `/model list` inside yottacode to inspect the models available to the account.
+
+To persist the settings for Bash, replace the model placeholder and add them to `~/.bashrc`:
+
+```bash
+cat >> ~/.bashrc <<'EOF'
+
+# yottacode using a ChatGPT subscription
+export YOTTACODE_PROVIDER=openai-auth
+export YOTTACODE_BASE_URL=https://chatgpt.com/backend-api/codex
+export YOTTACODE_MODEL=<accepted-model-id>
+EOF
+source ~/.bashrc
+```
+
+If login waits indefinitely, make sure the original command is still running. Callback URLs cannot be reused after that process exits because the OAuth state and PKCE verifier belong to that login attempt. Credentials and discovered models are stored under `~/.yottacode/auth/`; do not print, copy, or share `openai-auth.json`.
+
 ## ChatGPT OAuth: callback port already in use
 
 `openai-auth` uses a fixed loopback callback port required by the OAuth redirect allow-list. If sign-in says the callback port is already in use, another sign-in is still holding it — often an abandoned browser flow in this or another yottacode instance.
