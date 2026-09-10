@@ -233,6 +233,9 @@ func renderSessionUsage(s *session.Session) string {
 	total.Add(&s.TotalUsage)
 	total.Add(&sub.Total)
 	fmt.Fprintf(&b, "%-13s  %s tokens\n", "session total", formatInt(totalTokensFor(total)))
+	if total.CostAvailable {
+		fmt.Fprintf(&b, "%-13s  %s (estimated list-price equivalent)\n", "estimated cost", formatUSD(total.CostUSD))
+	}
 
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -372,6 +375,9 @@ func formatModelUsageBlock(model string, u adapter.Usage, modelWidth int, showTo
 	}
 	if rate >= 0 {
 		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, "", metricWidth, "cache hit", valueWidth, rateStr)
+	}
+	if u.CostAvailable {
+		fmt.Fprintf(&b, "%-*s  %-*s %*s\n", labelWidth, "", metricWidth, "estimated", valueWidth, formatUSD(u.CostUSD))
 	}
 	if showTotal {
 		fmt.Fprintf(&b, "%-*s  %s\n", labelWidth, "", strings.Repeat("─", metricWidth+1+valueWidth))
@@ -955,17 +961,30 @@ func renderTodayRollup(currentID string) string {
 	}
 	rows := make([]dayRow, 0, len(summaries))
 	var totalTokens int64
+	var totalCost float64
+	costAvailable := true
 	for _, s := range summaries {
 		// Main thread + this session's subagent spend, so the daily tally
 		// matches the per-session block's combined total.
 		tok := totalTokensFor(s.TotalUsage) + totalTokensFor(s.SubagentUsage().Total)
 		rows = append(rows, dayRow{s, tok})
-		totalTokens += tok
+		subCost := s.SubagentUsage().Total
+		cost := s.TotalUsage
+		cost.Add(&subCost)
+		if cost.CostAvailable {
+			totalCost += cost.CostUSD
+		} else {
+			costAvailable = false
+		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].tokens > rows[j].tokens })
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens\n", "today", len(rows), formatTokens(int(totalTokens)))
+	fmt.Fprintf(&b, "%-13s%d sessions · %s tokens", "today", len(rows), formatTokens(int(totalTokens)))
+	if costAvailable {
+		fmt.Fprintf(&b, " · %s estimated", formatUSD(totalCost))
+	}
+	b.WriteByte('\n')
 	for _, r := range rows {
 		label := formatSessionUsageTime(r.Created)
 		if r.ID == currentID {
@@ -1184,7 +1203,13 @@ func renderTurnFooter(elapsed time.Duration, turnUsage adapter.Usage) string {
 	return SysMsgAligned(SysThought, "thought", formatDuration(elapsed), details...)
 }
 
-// formatInt renders an int64 with thousands separators. /usage uses
+func formatUSD(v float64) string {
+	if v < 0.01 {
+		return fmt.Sprintf("$%.4f", v)
+	}
+	return fmt.Sprintf("$%.2f", v)
+}
+
 // raw counts (no k/M suffixes) so tallies stay precise — Claude
 // Code's /usage uses suffixes (e.g. "22.5m cache read") which is
 // nice visually but obscures the exact number. We prefer accuracy.

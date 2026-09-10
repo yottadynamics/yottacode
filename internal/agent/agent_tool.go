@@ -13,6 +13,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/cost"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/subagents"
 )
@@ -150,8 +151,12 @@ type AgentTool struct {
 	// routing is disabled.
 	ModelResolver func(model string) Streamer
 
+	// PricingBaseURL and PricingProvider identify the catalog entry used for
+	// subagent cost estimates. They are captured when the runtime is created.
+	PricingBaseURL  string
+	PricingProvider string
+
 	// ResolveWindow returns the context window (tokens) for a child
-	// model, honoring the per-model override + default_window exactly
 	// as the status bar does (contextwindow.EffectiveWindow). It is the
 	// source of the child loop's compaction window: subagents run Turn
 	// directly, so without this they have no context management and a
@@ -933,12 +938,22 @@ func (t *AgentTool) runChild(
 		transcript.writeEvent(ev)
 		switch e := ev.(type) {
 		case AssistantMessage:
+			usage := e.Message.Usage
+			if usage != nil && !usage.CostAvailable {
+				est := cost.ForUsage(t.PricingBaseURL, t.PricingProvider, childModel, *usage)
+				if est.Available {
+					copy := *usage
+					copy.CostUSD = est.USD
+					copy.CostAvailable = true
+					usage = &copy
+				}
+			}
 			// Capture this turn's exact provider usage onto the task, the
 			// same way the main TUI loop accumulates it on the session. This
 			// is the per-subagent token tally the dock and /usage read; it's
 			// live (updated each turn), unlike the ~4-char/token estimate
 			// computed once at the end. AddUsage is nil-safe.
-			t.Tasks.AddUsage(taskID, e.Message.Usage)
+			t.Tasks.AddUsage(taskID, usage)
 			if len(e.Message.ToolCalls) == 0 && strings.TrimSpace(e.Message.Content) != "" {
 				final = e.Message.Content
 			}
