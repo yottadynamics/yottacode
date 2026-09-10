@@ -365,6 +365,74 @@ func TestMergeAdjacentAssistant(t *testing.T) {
 	}
 }
 
+// TestRepairOrphanedToolCalls guards streamIteration's last line of
+// defense against the "No tool output found for function call X" class
+// of 400 (the Codex/openai-auth backend's strict pairing check): a
+// dangling tool_use surviving into history from ANY cause — not just an
+// in-process abort executeToolCall(s) already handles, but a hard kill,
+// a crash, or a session resumed from a file that went stale/corrupted
+// out of band — must still never reach the wire unpaired.
+func TestRepairOrphanedToolCalls(t *testing.T) {
+	// Fully dangling: the tool_use has no tool_result anywhere.
+	in := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "task"},
+		{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "orphan-1", Name: "read_file", ArgsJSON: "{}"}}},
+	}
+	out := repairOrphanedToolCalls(in)
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3 (user, assistant, synthesized tool result)", len(out))
+	}
+	if out[2].Role != adapter.RoleTool || out[2].ToolCallID != "orphan-1" {
+		t.Fatalf("out[2] should be the synthesized result for orphan-1; got %+v", out[2])
+	}
+	if out[2].Content != orphanedToolCallRepairedResult {
+		t.Errorf("synthesized content = %q, want the repair marker", out[2].Content)
+	}
+
+	// Partially paired: one of two tool_calls in the same assistant
+	// message already has a real result — only the missing one gets
+	// synthesized, the real one is untouched.
+	partial := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "task"},
+		{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+			{ID: "has-result", Name: "read_file", ArgsJSON: "{}"},
+			{ID: "dangling", Name: "run_bash", ArgsJSON: "{}"},
+		}},
+		{Role: adapter.RoleTool, ToolCallID: "has-result", Content: "real content"},
+	}
+	out = repairOrphanedToolCalls(partial)
+	if len(out) != 4 {
+		t.Fatalf("len = %d, want 4 (user, assistant, real result, synthesized result)", len(out))
+	}
+	// Order between the real and synthesized results is not asserted —
+	// providers only require both to appear somewhere between the
+	// assistant message and the next turn, not in a specific sequence.
+	byID := map[string]string{}
+	for _, m := range out[2:] {
+		if m.Role != adapter.RoleTool {
+			t.Fatalf("expected only tool results after the assistant message; got %+v", m)
+		}
+		byID[m.ToolCallID] = m.Content
+	}
+	if byID["has-result"] != "real content" {
+		t.Errorf("the real tool_result must survive untouched; got %q", byID["has-result"])
+	}
+	if byID["dangling"] != orphanedToolCallRepairedResult {
+		t.Errorf("the dangling tool_call must get a synthesized result; got %q", byID["dangling"])
+	}
+
+	// Already fully paired history passes straight through unchanged
+	// (same backing slice, no allocation) — the common case.
+	clean := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "u"},
+		{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: "1", Name: "read_file"}}},
+		{Role: adapter.RoleTool, ToolCallID: "1", Content: "t"},
+	}
+	if got := repairOrphanedToolCalls(clean); len(got) != len(clean) {
+		t.Errorf("fully paired history should pass through unchanged, got len %d", len(got))
+	}
+}
+
 func TestChooseCompactionTailStart_SnapsToAssistant(t *testing.T) {
 	h := subagentHistory(6, 100)
 	// Generous budget so the raw cut would land mid-pair on a tool

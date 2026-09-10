@@ -5,12 +5,51 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
+
+// hardenGitCmd configures an already-built `git ...` *exec.Cmd so it
+// can never block past ctx cancellation, and so it never launches an
+// interactive prompt in the first place when one would otherwise be
+// needed. Every git-invoking tool in this package uses it — GitTool,
+// gitOutput, gitOutputWithInput — because any of them can end up
+// running a bare `commit`, or a `rebase`/`merge`/`cherry-pick
+// --continue` that resolves to a commit, any of which makes git launch
+// $EDITOR if a message isn't already supplied.
+//
+// Without this, ctx cancellation alone is not enough: git forks the
+// editor as a child that inherits git's stdout/stderr pipes, and
+// exec.CommandContext's default Cancel only kills the direct git
+// process (one PID) — the orphaned editor survives and can keep
+// holding the pipe's write end open, so Cmd.Wait() blocks until every
+// holder closes it. That wait isn't itself gated on ctx, so the tool
+// call — and the whole turn — hangs indefinitely, immune to Ctrl+C,
+// regardless of how promptly ctx was canceled. See procgroup_unix.go.
+//
+// GIT_EDITOR / GIT_SEQUENCE_EDITOR = true make git treat any commit
+// message or interactive-rebase todo list as already accepted verbatim
+// — never spawning a real editor at all, which is strictly better than
+// surviving a hang: the operation actually completes instead of being
+// killed mid-commit after a multi-second delay. GIT_TERMINAL_PROMPT=0
+// makes a missing credential fail fast with a clear error instead of
+// trying to prompt on a terminal that was never there (stdin is
+// /dev/null by default, but this is the documented, explicit way to
+// ask git to never try).
+func hardenGitCmd(cmd *exec.Cmd) {
+	cmd.Env = append(os.Environ(),
+		"GIT_EDITOR=true",
+		"GIT_SEQUENCE_EDITOR=true",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	configureProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.WaitDelay = hostExecKillTimeout
+}
 
 type GitBranchStatusTool struct{ Cwd *CwdRef }
 
@@ -490,6 +529,7 @@ func gitOutputWithInput(ctx context.Context, cwd, input string, args ...string) 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
 	cmd.Stdin = strings.NewReader(input)
+	hardenGitCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))
@@ -503,6 +543,7 @@ func gitOutput(ctx context.Context, cwd string, args ...string) (string, error) 
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
+	hardenGitCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))

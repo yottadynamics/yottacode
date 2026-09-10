@@ -3,7 +3,20 @@ package agent
 import (
 	"context"
 	"os/exec"
+	"time"
 )
+
+// hostExecKillTimeout bounds how long a canceled host-run command's
+// Cmd.Wait can take once its process group has been signaled. Mirrors
+// PodmanSandbox's execKillTimeout (internal/sandbox/podman.go) — same
+// reasoning, host-local instead of a podman-exec round-trip, so no
+// extra grace period is needed on top of it.
+//
+// A var, not a const: a test exercising the actual timeout path (a
+// surviving grandchild that outlives WaitDelay) would otherwise pay
+// this in real wall-clock time on every run. Production code never
+// reassigns it.
+var hostExecKillTimeout = 5 * time.Second
 
 // Sandbox is the command-execution seam RunBashTool routes every command
 // through. Constructed once per session (or once per dispatch write-worker)
@@ -51,6 +64,9 @@ type HostSandbox struct{}
 func (HostSandbox) Command(ctx context.Context, command, cwd string) *exec.Cmd {
 	c := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	c.Dir = cwd
+	configureProcessGroup(c)
+	c.Cancel = func() error { return killProcessGroup(c) }
+	c.WaitDelay = hostExecKillTimeout
 	return c
 }
 

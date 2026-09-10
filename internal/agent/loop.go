@@ -664,6 +664,7 @@ func streamIteration(
 	// (Gemini rejects it; Claude 4.6+ treats it as prefill). No-op for an
 	// already-alternating history — see mergeAdjacentAssistant.
 	msgs = mergeAdjacentAssistant(msgs)
+	msgs = repairOrphanedToolCalls(msgs)
 	start := time.Now()
 	stream := cfg.Adapter.ChatStream(ctx, msgs, tools)
 

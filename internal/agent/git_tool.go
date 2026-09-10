@@ -311,7 +311,11 @@ func (t *GitTool) Description() string {
 		"Read-only operations (status, diff, log, show, blame, grep, ls-files, " +
 		"rev-parse, etc.) execute without approval. Mutating or network ops " +
 		"(commit, push, pull, branch, checkout, merge, rebase, etc.) prompt " +
-		"the user. Output is stdout + stderr + exit code; stdout capped at 1 MiB."
+		"the user. Output is stdout + stderr + exit code; stdout capped at 1 MiB. " +
+		"No interactive prompts ever block: a commit needing a message uses it " +
+		"unmodified, and `rebase -i`/`--edit-todo` accept the default todo list " +
+		"as-is (no reordering/squashing) — use `commit --fixup` + `rebase --autosquash`, " +
+		"`reset --soft`, or `cherry-pick`/`revert` to restructure history instead."
 }
 
 func (t *GitTool) Schema() map[string]any {
@@ -374,6 +378,7 @@ func (t *GitTool) Execute(ctx context.Context, argsJSON string) (string, error) 
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = t.Cwd.Get()
+	hardenGitCmd(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &capped{buf: &stdout, max: maxGitStdout}
 	cmd.Stderr = &capped{buf: &stderr, max: maxGitStderr}
@@ -402,7 +407,41 @@ func (t *GitTool) Execute(ctx context.Context, argsJSON string) (string, error) 
 			out += note + "\n"
 		}
 	}
+	if gitRebaseIsInteractive(args) {
+		// hardenGitCmd sets GIT_SEQUENCE_EDITOR=true for the same reason
+		// it sets GIT_EDITOR=true: without it, `rebase -i`'s todo-list
+		// editor is exactly the kind of forked, pipe-inheriting child
+		// that can survive a canceled ctx and hang Cmd.Wait() forever
+		// (see hardenGitCmd's doc comment). The tradeoff is that the
+		// todo list is silently accepted as-is — every commit stays
+		// "pick", nothing reorders or squashes — even though the exit
+		// code above reads as an ordinary success. Surface that
+		// explicitly so the model doesn't report history restructuring
+		// that never happened; steer it toward the non-interactive
+		// equivalents that actually work through this tool.
+		out += "NOTE: interactive rebase editing is disabled here (GIT_SEQUENCE_EDITOR=true accepted the default todo list unchanged — no commits were reordered, squashed, or dropped). " +
+			"To restructure history, use non-interactive commands instead: `commit --fixup=<sha>` + `rebase --autosquash` to squash, `reset --soft` + re-commit to reorder/combine, or `cherry-pick`/`revert` to drop or replay individual commits.\n"
+	}
 	return out, nil
+}
+
+// gitRebaseIsInteractive reports whether args is a `rebase` invocation
+// that would normally open the todo-list editor: -i/--interactive
+// starts one, and --edit-todo reopens the todo list of a rebase
+// already in progress. Both go through GIT_SEQUENCE_EDITOR the same
+// way. A plain, non-interactive rebase never touches it and this
+// returns false for it.
+func gitRebaseIsInteractive(args []string) bool {
+	if len(args) == 0 || args[0] != "rebase" {
+		return false
+	}
+	for _, a := range args[1:] {
+		switch a {
+		case "-i", "--interactive", "--edit-todo":
+			return true
+		}
+	}
+	return false
 }
 
 // gitInvalidatesLSP returns true for git operations that can rewrite many files

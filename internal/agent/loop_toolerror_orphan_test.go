@@ -71,6 +71,36 @@ func assertFullyPaired(t *testing.T, history []adapter.Message) {
 	}
 }
 
+// TestTurn_RepairsPreexistingOrphanedHistoryBeforeFirstRequest is the
+// end-to-end version of TestRepairOrphanedToolCalls (compaction_test.go):
+// a session resumed after the process died before it could run its own
+// in-process repair (a hard kill during an unresponsive/uninterruptible
+// hang, a crash — anything that skips executeToolCall(s)'s isCancelErr
+// path entirely) persists a dangling tool_use with no tool_result. The
+// very next turn must still produce a well-formed, fully-paired request
+// on its FIRST call to the adapter — streamIteration's
+// repairOrphanedToolCalls call is the only thing standing between this
+// stale history and the same "No tool output found for function call X"
+// 400 the earlier fixes in this file address for in-turn aborts.
+func TestTurn_RepairsPreexistingOrphanedHistoryBeforeFirstRequest(t *testing.T) {
+	cap := &capturingStreamer{turn: []adapter.StreamEvent{sseDone("all good")}}
+	cfg := LoopConfig{Adapter: cap, Registry: NewRegistry(), MaxIterations: 3}
+	hist := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "earlier task"},
+		{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
+			{ID: "stale-1", Name: "run_bash", ArgsJSON: `{"command":"sleep 999"}`},
+		}},
+		{Role: adapter.RoleUser, Content: "hey"},
+	}
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if len(cap.calls) == 0 {
+		t.Fatalf("adapter was never called")
+	}
+	assertFullyPaired(t, cap.calls[0].messages)
+}
+
 // TestToolError_DecisionsChannelClosedDuringApproval_SynthesizesOrphan
 // reproduces the root cause behind an "openai-auth: HTTP 400: No tool
 // output found for function call X" report: a tool call awaiting
