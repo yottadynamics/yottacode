@@ -1030,6 +1030,16 @@ type Model struct {
 	// either success-after-persist or any failure branch.
 	openAIAuthPendingAdd *pendingOpenAIAuthAdd
 	copilotPendingAdd    *pendingCopilotAdd
+
+	// mcpOAuthPending tracks an in-flight `/mcp auth <name>` sign-in.
+	// Non-nil between the URL-ready and done messages — mirrors
+	// openAIAuthPending's role for MCP's own auth = "oauth" servers.
+	// mcpOAuthCancel releases the mcpOAuthLoginTimeout deadline early
+	// once the attempt resolves (success, failure, or supersession)
+	// instead of leaking its timer until the full 10 minutes elapse.
+	mcpOAuthPending     *mcppkg.PendingOAuthLogin
+	mcpOAuthPendingName string
+	mcpOAuthCancel      context.CancelFunc
 }
 
 // pendingOpenAIAuthAdd carries everything persistProviderAdd would
@@ -2888,6 +2898,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inlineCopilotAuthDoneMsg:
 		return handleInlineCopilotAuthDone(m, msg)
+
+	case mcpOAuthURLMsg:
+		return handleMCPOAuthURL(m, msg)
+
+	case mcpOAuthDoneMsg:
+		return handleMCPOAuthDone(m, msg)
 
 	case mcpServerStartedMsg:
 		// Off-thread /mcp Add finished (see startMCPServerCmd) — tools are

@@ -102,17 +102,31 @@ func NewManager(servers []config.MCPServer, maxResultBytes int, policy Policy) *
 func (m *Manager) newClient(cfg config.MCPServer) Client {
 	switch cfg.Transport {
 	case "http":
-		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, false, m.policy, cfg.TLSCAFile)
+		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, false, m.policy, cfg.TLSCAFile, oauthOptionsFor(cfg))
 		c.ops.maxResultBytes = m.maxResultBytes
 		return c
 	case "sse":
-		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, true, m.policy, cfg.TLSCAFile)
+		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, true, m.policy, cfg.TLSCAFile, oauthOptionsFor(cfg))
 		c.ops.maxResultBytes = m.maxResultBytes
 		return c
 	default:
 		c := NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
 		c.ops.maxResultBytes = m.maxResultBytes
 		return c
+	}
+}
+
+// oauthOptionsFor returns the *OAuthOptions NewHTTPClient needs when
+// cfg.Auth is "oauth", or nil for every other auth mode ("", "none",
+// "static-header" — those authenticate via cfg.Headers instead).
+func oauthOptionsFor(cfg config.MCPServer) *OAuthOptions {
+	if cfg.Auth != "oauth" {
+		return nil
+	}
+	return &OAuthOptions{
+		ClientID:     cfg.OAuthClientID,
+		ClientSecret: cfg.OAuthClientSecret,
+		Scopes:       cfg.OAuthScopes,
 	}
 }
 

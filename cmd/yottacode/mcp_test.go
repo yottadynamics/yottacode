@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/oauth2"
+
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/mcp"
 )
 
 const mcpServerTOML = `
@@ -274,6 +277,97 @@ func TestMcpRemoveDeletesAndPersists(t *testing.T) {
 		if s.Name == "echo" {
 			t.Error("echo server should have been removed from config")
 		}
+	}
+}
+
+func TestMcpAddOAuthFlagsPersist(t *testing.T) {
+	isolateHome(t)
+	seedTestConfig(t, "")
+	out, _, err := runCobra(t, "mcp", "add", "gmail",
+		"--transport", "http", "--url", "https://gmailmcp.googleapis.com/mcp/v1",
+		"--auth", "oauth",
+		"--oauth-client-id", "$GOOGLE_MCP_CLIENT_ID",
+		"--oauth-client-secret", "$GOOGLE_MCP_CLIENT_SECRET",
+		"--oauth-scope", "https://www.googleapis.com/auth/gmail.readonly",
+		"--oauth-scope", "https://www.googleapis.com/auth/gmail.compose",
+	)
+	if err != nil {
+		t.Fatalf("mcp add: %v", err)
+	}
+	if !strings.Contains(out, "mcp auth gmail") {
+		t.Errorf("output should hint at the sign-in follow-up; got %q", out)
+	}
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected 1 server; got %d", len(cfg.MCPServers))
+	}
+	s := cfg.MCPServers[0]
+	if s.Auth != "oauth" {
+		t.Errorf("Auth = %q, want oauth", s.Auth)
+	}
+	if s.OAuthClientID != "$GOOGLE_MCP_CLIENT_ID" || s.OAuthClientSecret != "$GOOGLE_MCP_CLIENT_SECRET" {
+		t.Errorf("oauth credentials mangled: %+v", s)
+	}
+	if len(s.OAuthScopes) != 2 {
+		t.Errorf("OAuthScopes = %v, want 2 entries", s.OAuthScopes)
+	}
+}
+
+func TestMcpAuthUnknownServerErrors(t *testing.T) {
+	isolateHome(t)
+	seedTestConfig(t, "")
+	_, _, err := runCobra(t, "mcp", "auth", "ghost")
+	if err == nil {
+		t.Fatal("auth on an unknown server should error")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error should mention the missing name; got %q", err)
+	}
+}
+
+func TestMcpAuthRejectsNonOAuthServer(t *testing.T) {
+	isolateHome(t)
+	seedTestConfig(t, mcpServerTOML)
+	_, _, err := runCobra(t, "mcp", "auth", "echo")
+	if err == nil {
+		t.Fatal("auth on a stdio (non-oauth) server should error")
+	}
+	if !strings.Contains(err.Error(), "oauth") {
+		t.Errorf("error should explain the auth mode mismatch; got %q", err)
+	}
+}
+
+func TestMcpLogoutDeletesToken(t *testing.T) {
+	isolateHome(t)
+	seedTestConfig(t, "")
+	if err := mcp.SaveToken("gmail", &oauth2.Token{AccessToken: "at-1"}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	out, _, err := runCobra(t, "mcp", "logout", "gmail")
+	if err != nil {
+		t.Fatalf("mcp logout: %v", err)
+	}
+	if !strings.Contains(out, "logged out") {
+		t.Errorf("output should confirm logout; got %q", out)
+	}
+	if tok, err := mcp.LoadToken("gmail"); err != nil || tok != nil {
+		t.Errorf("LoadToken after logout = (%v, %v), want (nil, nil)", tok, err)
+	}
+}
+
+func TestMcpLogoutAlreadyLoggedOutIsNotAnError(t *testing.T) {
+	isolateHome(t)
+	seedTestConfig(t, "")
+	out, _, err := runCobra(t, "mcp", "logout", "never-signed-in")
+	if err != nil {
+		t.Fatalf("mcp logout on an absent token should not error: %v", err)
+	}
+	if !strings.Contains(out, "already logged out") {
+		t.Errorf("output should say already logged out; got %q", out)
 	}
 }
 

@@ -1431,6 +1431,104 @@ url       = "https://example.com/mcp"
 	}
 }
 
+func TestLoad_ParsesMCPOAuthServer(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name                = "gmail"
+transport           = "http"
+url                 = "https://gmailmcp.googleapis.com/mcp/v1"
+auth                = "oauth"
+oauth_client_id     = "$GOOGLE_MCP_CLIENT_ID"
+oauth_client_secret = "$GOOGLE_MCP_CLIENT_SECRET"
+oauth_scopes        = ["https://www.googleapis.com/auth/gmail.readonly"]
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("want 1 MCP server, got %d", len(cfg.MCPServers))
+	}
+	s := cfg.MCPServers[0]
+	if s.Auth != "oauth" {
+		t.Errorf("Auth = %q, want %q", s.Auth, "oauth")
+	}
+	if s.OAuthClientID != "$GOOGLE_MCP_CLIENT_ID" {
+		t.Errorf("OAuthClientID = %q", s.OAuthClientID)
+	}
+	if s.OAuthClientSecret != "$GOOGLE_MCP_CLIENT_SECRET" {
+		t.Errorf("OAuthClientSecret = %q", s.OAuthClientSecret)
+	}
+	if len(s.OAuthScopes) != 1 || s.OAuthScopes[0] != "https://www.googleapis.com/auth/gmail.readonly" {
+		t.Errorf("OAuthScopes = %v", s.OAuthScopes)
+	}
+}
+
+func TestLoad_RejectsMCPOAuthMissingClientID(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name      = "gmail"
+transport = "http"
+url       = "https://gmailmcp.googleapis.com/mcp/v1"
+auth      = "oauth"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for auth=oauth with no oauth_client_id")
+	}
+	if !strings.Contains(err.Error(), "oauth_client_id") {
+		t.Errorf("error should mention oauth_client_id; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPOAuthOverSSE(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name            = "gmail"
+transport       = "sse"
+url             = "https://gmailmcp.googleapis.com/mcp/v1"
+auth            = "oauth"
+oauth_client_id = "cid"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for auth=oauth over sse transport")
+	}
+	if !strings.Contains(err.Error(), "sse") {
+		t.Errorf("error should mention sse; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPAuthOverStdio(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name    = "fs"
+command = "npx"
+auth    = "static-header"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for auth set on a stdio server")
+	}
+}
+
+func TestLoad_RejectsMCPUnknownAuth(t *testing.T) {
+	src := `
+[[mcp_servers]]
+name      = "docs"
+transport = "http"
+url       = "https://example.com/mcp"
+auth      = "carrier-pigeon"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for unknown auth value")
+	}
+	if !strings.Contains(err.Error(), "auth") {
+		t.Errorf("error should mention auth; got %q", err)
+	}
+}
+
 func TestLoad_RejectsMCPUnknownKey(t *testing.T) {
 	src := `
 [[mcp_servers]]

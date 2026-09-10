@@ -33,6 +33,13 @@ type HTTPClient struct {
 	// construction time, mirroring StdioClient.Warnings' contract.
 	warnings []string
 
+	// oauth is set when the server's config has auth = "oauth" — Start
+	// builds a sdkauth.OAuthHandler from it, wrapped in
+	// nonInteractiveOAuthHandler, and wires it into
+	// StreamableClientTransport.OAuthHandler. Nil for every other auth
+	// mode (the zero value, "none", "static-header").
+	oauth *OAuthOptions
+
 	// Live state (mutated only by Start/Stop, guarded by ops.mu). Mirrors
 	// StdioClient's shape exactly — see that file's field comments.
 	ops     sessionOps
@@ -59,8 +66,10 @@ type HTTPClient struct {
 // environment (os.Expand semantics — an unresolved $VAR becomes the empty
 // string, same as stdio's mergeEnv); headerExpansionWarnings surfaces any
 // unresolved references via Warnings(). policy and tlsCAFile bound what
-// Start is willing to connect to — see Policy and buildTransport.
-func NewHTTPClient(name, url string, headers map[string]string, useSSE bool, policy Policy, tlsCAFile string) *HTTPClient {
+// Start is willing to connect to — see Policy and buildTransport. oauth is
+// non-nil only when the server's config has auth = "oauth"; its ClientID/
+// ClientSecret are $VAR-expanded here the same way headers are.
+func NewHTTPClient(name, url string, headers map[string]string, useSSE bool, policy Policy, tlsCAFile string, oauth *OAuthOptions) *HTTPClient {
 	warnings := headerExpansionWarnings(name, headers)
 	if tlsCAFile != "" {
 		if _, err := os.Stat(tlsCAFile); err != nil {
@@ -70,6 +79,15 @@ func NewHTTPClient(name, url string, headers map[string]string, useSSE bool, pol
 			warnings = append(warnings, fmt.Sprintf("mcp(%s): tls_ca_file %q: %v", name, tlsCAFile, err))
 		}
 	}
+	if oauth != nil {
+		warnings = append(warnings, oauthExpansionWarnings(name, oauth.ClientID, oauth.ClientSecret)...)
+		expanded := &OAuthOptions{
+			ClientID:     os.Expand(oauth.ClientID, os.Getenv),
+			ClientSecret: os.Expand(oauth.ClientSecret, os.Getenv),
+			Scopes:       oauth.Scopes,
+		}
+		oauth = expanded
+	}
 	return &HTTPClient{
 		name:      name,
 		url:       url,
@@ -77,6 +95,7 @@ func NewHTTPClient(name, url string, headers map[string]string, useSSE bool, pol
 		useSSE:    useSSE,
 		policy:    policy,
 		tlsCAFile: tlsCAFile,
+		oauth:     oauth,
 		warnings:  warnings,
 		logs:      newRingBuffer(stderrBufLines),
 	}
@@ -235,6 +254,15 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 		c.logf("policy: %v", err)
 		return fmt.Errorf("mcp(%s): %w", c.name, err)
 	}
+	if c.oauth != nil && c.useSSE {
+		// Defense in depth: config.Validate already rejects this combo
+		// at load time. StreamableClientTransport.OAuthHandler has no
+		// SSEClientTransport equivalent in the pinned SDK, so a caller
+		// that bypassed Validate (e.g. Manager.Add called directly)
+		// would otherwise silently connect with no auth at all.
+		c.logf("policy: auth=oauth is not supported over sse")
+		return fmt.Errorf("mcp(%s): auth=oauth is not supported over the legacy sse transport", c.name)
+	}
 
 	connCtx, cancelConn := context.WithCancel(context.Background())
 
@@ -258,7 +286,33 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 	if c.useSSE {
 		transport = &sdk.SSEClientTransport{Endpoint: c.url, HTTPClient: httpClient}
 	} else {
-		transport = &sdk.StreamableClientTransport{Endpoint: c.url, HTTPClient: httpClient}
+		streamable := &sdk.StreamableClientTransport{Endpoint: c.url, HTTPClient: httpClient}
+		if c.oauth != nil {
+			// A separate client for OAuth-protocol calls (discovery, token
+			// exchange/refresh) sharing baseTransport's policy hardening
+			// (TLS floor, DNS-rebind guard) but NOT headerTransport — c.headers
+			// is a static credential for the MCP endpoint itself and must not
+			// leak into requests to the authorization server.
+			discoveryClient := &http.Client{Transport: baseTransport, CheckRedirect: c.policy.CheckRedirect}
+			// onAuthURL is nil: the live connection's OAuthHandler is
+			// nonInteractiveOAuthHandler below, which never calls the inner
+			// handler's Authorize — so its AuthorizationCodeFetcher (the
+			// thing onAuthURL would report on) never runs here. The
+			// interactive flow only ever runs from /mcp auth's
+			// StartOAuthLogin, which builds and reports its own URL.
+			handler, herr := newOAuthHandler(c.name, c.url, *c.oauth, discoveryClient, nil)
+			if herr != nil {
+				cancelConn()
+				c.logf("oauth: %v", herr)
+				return fmt.Errorf("mcp(%s): oauth: %w", c.name, herr)
+			}
+			// Never the interactive handler directly — see
+			// nonInteractiveOAuthHandler's doc comment for why an
+			// unattended background connection must not be able to pop a
+			// browser or block on a human.
+			streamable.OAuthHandler = &nonInteractiveOAuthHandler{inner: handler, name: c.name}
+		}
+		transport = streamable
 	}
 
 	type connectResult struct {

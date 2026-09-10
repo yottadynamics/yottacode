@@ -57,7 +57,7 @@ func newTestHTTPServer(t *testing.T, useSSE bool) string {
 
 func TestHTTPClient_StreamableRoundTrip(t *testing.T) {
 	url := newTestHTTPServer(t, false)
-	c := NewHTTPClient("test", url, nil, false, Policy{}, "")
+	c := NewHTTPClient("test", url, nil, false, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	if err := c.Start(context.Background()); err != nil {
@@ -93,7 +93,7 @@ func TestHTTPClient_StreamableRoundTrip(t *testing.T) {
 
 func TestHTTPClient_SSERoundTrip(t *testing.T) {
 	url := newTestHTTPServer(t, true)
-	c := NewHTTPClient("test", url, nil, true, Policy{}, "")
+	c := NewHTTPClient("test", url, nil, true, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	if err := c.Start(context.Background()); err != nil {
@@ -120,7 +120,7 @@ func TestHTTPClient_SSERoundTrip(t *testing.T) {
 // bug fired synchronously, not as a rare race).
 func TestHTTPClient_SSE_CallToolAfterStartReturns(t *testing.T) {
 	url := newTestHTTPServer(t, true)
-	c := NewHTTPClient("test", url, nil, true, Policy{}, "")
+	c := NewHTTPClient("test", url, nil, true, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	if err := c.Start(context.Background()); err != nil {
@@ -138,7 +138,7 @@ func TestHTTPClient_SSE_CallToolAfterStartReturns(t *testing.T) {
 }
 
 func TestHTTPClient_ListToolsBeforeStartErrors(t *testing.T) {
-	c := NewHTTPClient("test", "http://127.0.0.1:0", nil, false, Policy{}, "")
+	c := NewHTTPClient("test", "http://127.0.0.1:0", nil, false, Policy{}, "", nil)
 	if _, err := c.ListTools(context.Background()); err != ErrNotStarted {
 		t.Errorf("ListTools before Start = %v, want ErrNotStarted", err)
 	}
@@ -226,7 +226,7 @@ func TestHTTPClient_SendsProtocolVersionHeader(t *testing.T) {
 	ts := httptest.NewServer(wrapped)
 	t.Cleanup(ts.Close)
 
-	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "")
+	c := NewHTTPClient("test", ts.URL, nil, false, Policy{}, "", nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -243,8 +243,8 @@ func TestHTTPClient_SendsProtocolVersionHeader(t *testing.T) {
 }
 
 func TestHTTPClient_BuildTransportIsIsolatedPerClient(t *testing.T) {
-	c1 := NewHTTPClient("one", "https://example.com", nil, false, Policy{}, "")
-	c2 := NewHTTPClient("two", "https://example.com", nil, false, Policy{}, "")
+	c1 := NewHTTPClient("one", "https://example.com", nil, false, Policy{}, "", nil)
+	c2 := NewHTTPClient("two", "https://example.com", nil, false, Policy{}, "", nil)
 	t1, err := c1.buildTransport()
 	if err != nil {
 		t.Fatalf("buildTransport (c1): %v", err)
@@ -263,7 +263,7 @@ func TestHTTPClient_BuildTransportIsIsolatedPerClient(t *testing.T) {
 }
 
 func TestHTTPClient_BuildTransportSetsResponseHeaderTimeout(t *testing.T) {
-	c := NewHTTPClient("test", "https://example.com", nil, false, Policy{}, "")
+	c := NewHTTPClient("test", "https://example.com", nil, false, Policy{}, "", nil)
 	transport, err := c.buildTransport()
 	if err != nil {
 		t.Fatalf("buildTransport: %v", err)
@@ -274,14 +274,14 @@ func TestHTTPClient_BuildTransportSetsResponseHeaderTimeout(t *testing.T) {
 }
 
 func TestHTTPClient_BuildTransportRejectsMissingCAFile(t *testing.T) {
-	c := NewHTTPClient("test", "https://example.com", nil, false, Policy{}, "/no/such/ca-bundle.pem")
+	c := NewHTTPClient("test", "https://example.com", nil, false, Policy{}, "/no/such/ca-bundle.pem", nil)
 	if _, err := c.buildTransport(); err == nil {
 		t.Error("buildTransport should fail when tls_ca_file doesn't exist")
 	}
 }
 
 func TestHTTPClient_StartRejectsPolicyViolation(t *testing.T) {
-	c := NewHTTPClient("test", "http://evil.example/mcp", nil, false, Policy{RequireTLS: true}, "")
+	c := NewHTTPClient("test", "http://evil.example/mcp", nil, false, Policy{RequireTLS: true}, "", nil)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Fatal("expected Start to fail the policy check before ever dialing")
@@ -298,7 +298,7 @@ func TestHTTPClient_StartFailureRecordsLogLine(t *testing.T) {
 	// Port 1 is a privileged, essentially always-closed TCP port — a
 	// deterministic, hermetic way to force a fast connection-refused
 	// failure without any external network dependency.
-	c := NewHTTPClient("test", "http://127.0.0.1:1", nil, false, Policy{}, "")
+	c := NewHTTPClient("test", "http://127.0.0.1:1", nil, false, Policy{}, "", nil)
 	if err := c.Start(context.Background()); err == nil {
 		t.Fatal("expected Start to fail against a closed port")
 	}
@@ -311,7 +311,7 @@ func TestNewHTTPClient_ExpandsHeaderVars(t *testing.T) {
 	t.Setenv("YOTTACODE_TEST_HTTP_TOKEN", "secret123")
 	c := NewHTTPClient("test", "https://example.com", map[string]string{
 		"Authorization": "Bearer $YOTTACODE_TEST_HTTP_TOKEN",
-	}, false, Policy{}, "")
+	}, false, Policy{}, "", nil)
 	if got := c.headers["Authorization"]; got != "Bearer secret123" {
 		t.Errorf("expanded header = %q, want %q", got, "Bearer secret123")
 	}
@@ -320,7 +320,7 @@ func TestNewHTTPClient_ExpandsHeaderVars(t *testing.T) {
 func TestNewHTTPClient_WarnsOnUnresolvedHeaderVar(t *testing.T) {
 	c := NewHTTPClient("test", "https://example.com", map[string]string{
 		"Authorization": "Bearer $YOTTACODE_TEST_DEFINITELY_UNSET_HTTP_VAR",
-	}, false, Policy{}, "")
+	}, false, Policy{}, "", nil)
 	warnings := c.Warnings()
 	if len(warnings) != 1 {
 		t.Fatalf("Warnings() = %v, want exactly 1", warnings)
@@ -410,7 +410,7 @@ func newTestTLSServerWithCA(t *testing.T) (serverURL, caPath string) {
 
 func TestHTTPClient_ConnectsWithValidTLSCAFile(t *testing.T) {
 	url, caPath := newTestTLSServerWithCA(t)
-	c := NewHTTPClient("test", url, nil, false, Policy{}, caPath)
+	c := NewHTTPClient("test", url, nil, false, Policy{}, caPath, nil)
 	t.Cleanup(func() { _ = c.Stop(context.Background()) })
 
 	if err := c.Start(context.Background()); err != nil {
@@ -427,7 +427,7 @@ func TestHTTPClient_ConnectsWithValidTLSCAFile(t *testing.T) {
 
 func TestHTTPClient_RejectsUntrustedCertWithoutCAFile(t *testing.T) {
 	url, _ := newTestTLSServerWithCA(t)
-	c := NewHTTPClient("test", url, nil, false, Policy{}, "")
+	c := NewHTTPClient("test", url, nil, false, Policy{}, "", nil)
 	err := c.Start(context.Background())
 	if err == nil {
 		t.Fatal("expected Start to fail against a self-signed cert when no tls_ca_file trusts its issuer")
@@ -438,7 +438,7 @@ func TestHTTPClient_RejectsUntrustedCertWithoutCAFile(t *testing.T) {
 }
 
 func TestHTTPClient_LogTailRedactsSecrets(t *testing.T) {
-	c := NewHTTPClient("test", "https://127.0.0.1:0", nil, false, Policy{}, "")
+	c := NewHTTPClient("test", "https://127.0.0.1:0", nil, false, Policy{}, "", nil)
 	c.logf("connect: unexpected header Authorization: Bearer sk-secret-abc123 got status 401")
 	lines := c.LogTail()
 	if len(lines) != 1 {
