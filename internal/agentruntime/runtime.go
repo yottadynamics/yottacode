@@ -208,6 +208,9 @@ func (rt *Runtime) Close(ctx context.Context) {
 	if rt.RecallIndex != nil {
 		_ = rt.RecallIndex.Close()
 	}
+	if cached, ok := rt.CodeMapProvider.(*codemap.CachedProvider); ok {
+		cached.Close()
+	}
 }
 
 // Builder constructs a Runtime from a SessionSpec. Stateless — safe to
@@ -252,18 +255,15 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	if err != nil {
 		return nil, err
 	}
+	commitTrailer := fileCfg.Attribution.CommitTrailer()
+	prFooter := fileCfg.Attribution.PRFooter()
 	rt.FileCfg = fileCfg
 
-	var embedClient *memory.EmbedClient
-	if s := fileCfg.Retrieval.Strategy; s == "semantic" || s == "auto" {
-		ec := memory.NewEmbedClient("", fileCfg.Retrieval.EmbeddingModel)
-		if reachable, installed := ec.Status(ctx); installed {
-			ec.Timeout = memory.InteractiveEmbedTimeout
-			embedClient = ec
-		} else if reachable {
-			rt.Warnings = append(rt.Warnings, fmt.Sprintf(
-				"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)", ec.Model, ec.Model))
-		}
+	embedClient, embedReachable := memory.ResolveEmbedClient(ctx, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.EmbeddingModel, "")
+	if embedClient == nil && embedReachable {
+		rt.Warnings = append(rt.Warnings, fmt.Sprintf(
+			"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)",
+			fileCfg.Retrieval.EmbeddingModel, fileCfg.Retrieval.EmbeddingModel))
 	}
 	rt.EmbedClient = embedClient
 
@@ -404,7 +404,14 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.LSPManager = lspManager
 	var codeMapProvider codemap.Provider
 	if expSet.IsEnabled(experimental.CodeMap) {
-		codeMapProvider = &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+		cached := &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd, Source: codemap.LSPSource{Manager: lspManager, Servers: fileCfg.LSP.Servers, Root: cwd}}}
+		// StartWatch is a soft-failure best-effort call: on any setup problem
+		// it silently leaves the provider on its per-call fingerprint-walk
+		// fallback, so its error is not worth surfacing as a runtime warning.
+		// The watch's own lifetime is independent of this build call's ctx —
+		// it runs until rt.Close cancels it via cached.Close below.
+		_ = cached.StartWatch(context.Background())
+		codeMapProvider = cached
 	}
 	rt.CodeMapProvider = codeMapProvider
 
@@ -456,6 +463,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		Sandbox:                cmdSandbox,
 		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
 		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,
+		CommitTrailer:          commitTrailer,
 	})
 
 	// Git worktree tools. enter_worktree/exit_worktree call process-global
@@ -475,7 +483,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 
 	// Local git-commit-workflow composites — no ghClient/network needed.
 	reg.Register(&agent.GitCommitContextTool{Cwd: cwdRef})
-	reg.Register(&agent.GitCommitApplyTool{Cwd: cwdRef})
+	reg.Register(&agent.GitCommitApplyTool{Cwd: cwdRef, Trailer: commitTrailer})
 
 	// GitHub tool suite (PR/Issue composites + git_push). Originally
 	// registered TUI-only ("ghClient-coupled, no ACP v1 equivalent
@@ -493,7 +501,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	ghClient := githubapi.NewCachingClient(githubapi.NewTypedClient(cwd))
 	rt.GHClient = ghClient
 	reg.Register(&agent.GHPRContextTool{Cwd: cwdRef})
-	reg.Register(&agent.GHPRCreateTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.GHPRCreateTool{Cwd: cwdRef, GH: ghClient, Footer: prFooter})
 	reg.Register(&agent.GHPRReviewContextTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.PRWatchChecksTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.PRCheckLogsTool{Cwd: cwdRef, GH: ghClient})
@@ -509,7 +517,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// see git_push_workflow.go's PushBranch — but every caller gets the
 	// real client now anyway).
 	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
-	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient})
+	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient, Footer: prFooter})
 	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
 	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
 		reg.Register(&agent.WebSearchTool{})
@@ -551,6 +559,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		Configs:            subRes.Configs,
 		Tasks:              subagentTasks,
 		Adapter:            ad,
+		PricingBaseURL:     opts.BaseURL,
+		PricingProvider:    string(ad.Profile().Provider),
 		ParentRegistry:     reg,
 		ImplementerAdapter: routerImplementer(routerAdapters),
 		ImplementerModel:   routerImplementerModel(routerAdapters),
@@ -582,6 +592,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
 		Agent:                  agentTool,
+		CommitTrailer:          commitTrailer,
 		SupportsImages:         ad.Profile().SupportsImages,
 		EnableLSP:              true,
 		LSPServers:             fileCfg.LSP.Servers,
@@ -710,6 +721,7 @@ func adapterConfig(opts cli.ChatOptions, fileCfg config.Config) adapter.Config {
 	return adapter.Config{
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
+		Headers:                cloneStringMap(opts.Headers),
 		Model:                  opts.Model,
 		ProviderOverride:       adapter.Provider(strings.TrimSpace(opts.ProviderKind)),
 		ReasoningEffort:        opts.ReasoningEffort,
@@ -728,6 +740,17 @@ func adapterConfig(opts cli.ChatOptions, fileCfg config.Config) adapter.Config {
 		XSearchFromDate:        strings.TrimSpace(opts.XSearchFromDate),
 		XSearchToDate:          strings.TrimSpace(opts.XSearchToDate),
 	}
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func preflight(ctx context.Context, cfg adapter.Config) error {

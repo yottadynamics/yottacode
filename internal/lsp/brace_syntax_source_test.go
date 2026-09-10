@@ -24,7 +24,7 @@ func TestBraceSyntaxSourceTypeScriptRangesOrdering(t *testing.T) {
 	if len(ranges) < 4 {
 		t.Fatalf("expected if/method/class/file ranges, got %#v", ranges)
 	}
-	wantPrefix := []string{"if", "method", "class", "file"}
+	wantPrefix := []SyntaxKind{"if", "method", "class", "file"}
 	for i, want := range wantPrefix {
 		if ranges[i].Kind != want {
 			t.Fatalf("ranges[%d].Kind = %q, want %q; all=%#v", i, ranges[i].Kind, want, ranges)
@@ -46,12 +46,97 @@ func TestBraceSyntaxSourceTypeScriptArrowFunction(t *testing.T) {
 	}
 	var found bool
 	for _, r := range ranges {
-		if r.Kind == "function" && r.Name == "handler" {
+		if r.Kind == SyntaxKindFunction && r.Name == "handler" {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatalf("expected arrow function named handler, got %#v", ranges)
+	}
+}
+
+func TestBraceSyntaxSourceTypeScriptCallUsesFullDottedCallee(t *testing.T) {
+	path := writeBraceFixture(t, "call.ts", "function run() {\n  console.log(\"target\");\n}\n")
+	ranges, err := braceSyntaxSource{spec: tsBraceSpec}.Ranges(context.Background(), path, Position{Line: 1, Character: 15})
+	if err != nil {
+		t.Fatalf("Ranges: %v", err)
+	}
+	for _, r := range ranges {
+		if r.Kind == SyntaxKindCall {
+			if r.Name != "console.log" || r.Range.Start.Line != 1 || r.Range.Start.Character != 2 {
+				t.Fatalf("call range = %#v, want full dotted callee", r)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected call range, got %#v", ranges)
+}
+
+func TestBraceSyntaxSourceDoesNotTreatMethodHeaderAsCall(t *testing.T) {
+	path := writeBraceFixture(t, "methods.ts", "interface Shape {\n  render(value: string): void;\n}\nclass Widget {\n  method<T>(value: T): Promise<T> { return value; }\n}\n")
+	for _, pos := range []Position{{Line: 1, Character: 12}, {Line: 4, Character: 15}} {
+		ranges, err := braceSyntaxSource{spec: tsBraceSpec}.Ranges(context.Background(), path, pos)
+		if err != nil {
+			t.Fatalf("Ranges: %v", err)
+		}
+		for _, r := range ranges {
+			if r.Kind == SyntaxKindCall {
+				t.Fatalf("method declaration must not be emitted as a call: %#v", ranges)
+			}
+		}
+	}
+}
+
+func TestBraceSyntaxSourceDirectFields(t *testing.T) {
+	cases := []struct {
+		name string
+		spec braceLanguageSpec
+		file string
+		body string
+		pos  Position
+	}{
+		{name: "typescript class", spec: tsBraceSpec, file: "class.ts", body: "class Widget {\n  value: [string, number];\n}\n", pos: Position{Line: 1, Character: 10}},
+		{name: "typescript interface", spec: tsBraceSpec, file: "interface.ts", body: "interface Widget {\n  readonly value: [string, number];\n}\n", pos: Position{Line: 1, Character: 12}},
+		{name: "rust struct", spec: rustBraceSpec, file: "field.rs", body: "struct Widget {\n  pub value: HashMap<String, usize>,\n}\n", pos: Position{Line: 1, Character: 8}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBraceFixture(t, tc.file, tc.body)
+			ranges, err := braceSyntaxSource{spec: tc.spec}.Ranges(context.Background(), path, tc.pos)
+			if err != nil {
+				t.Fatalf("Ranges: %v", err)
+			}
+			if !hasSyntaxKind(ranges, SyntaxKindField) {
+				t.Fatalf("direct field missing: %#v", ranges)
+			}
+		})
+	}
+}
+
+func TestBraceSyntaxSourceDoesNotTreatDeclarationParametersAsCall(t *testing.T) {
+	cases := []struct {
+		name string
+		spec braceLanguageSpec
+		file string
+		body string
+		pos  Position
+	}{
+		{name: "typescript", spec: tsBraceSpec, file: "decl.ts", body: "function run(value: string) {\n  return value;\n}\n", pos: Position{Line: 0, Character: 15}},
+		{name: "rust", spec: rustBraceSpec, file: "decl.rs", body: "fn run(value: String) {\n    println!(\"{}\", value);\n}\n", pos: Position{Line: 0, Character: 10}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeBraceFixture(t, tc.file, tc.body)
+			ranges, err := braceSyntaxSource{spec: tc.spec}.Ranges(context.Background(), path, tc.pos)
+			if err != nil {
+				t.Fatalf("Ranges: %v", err)
+			}
+			for _, r := range ranges {
+				if r.Kind == SyntaxKindCall {
+					t.Fatalf("declaration parameters must not be emitted as a call: %#v", ranges)
+				}
+			}
+		})
 	}
 }
 
@@ -72,13 +157,13 @@ impl Widget {
 	}
 	var method SyntaxRange
 	for _, r := range ranges {
-		if r.Kind == "fn" {
+		if r.Kind == SyntaxKindMethod {
 			method = r
 			break
 		}
 	}
 	if method.Name != "greet" || method.Detail != "Widget" {
-		t.Fatalf("fn range = %#v; all=%#v", method, ranges)
+		t.Fatalf("method range = %#v; all=%#v", method, ranges)
 	}
 }
 
@@ -93,7 +178,7 @@ func TestBraceSyntaxSourceRustImplTraitForName(t *testing.T) {
 	}
 	var impl SyntaxRange
 	for _, r := range ranges {
-		if r.Kind == "impl" {
+		if r.Kind == SyntaxKind("impl") {
 			impl = r
 			break
 		}
@@ -116,15 +201,15 @@ func TestBraceSyntaxSourceIgnoresBracesInStringsAndComments(t *testing.T) {
 	}
 	var fnCount int
 	for _, r := range ranges {
-		if r.Kind == "fn" {
+		if r.Kind == SyntaxKind("fn") {
 			fnCount++
 			if r.Range.Start.Line != 0 || r.Range.End.Line != 4 {
-				t.Fatalf("fn range should span the whole function, got %#v", r)
+				t.Fatalf("function range should span the whole function, got %#v", r)
 			}
 		}
 	}
 	if fnCount != 1 {
-		t.Fatalf("expected exactly one fn range (braces inside strings/comments must not open new frames), got %d: %#v", fnCount, ranges)
+		t.Fatalf("expected exactly one function range, got %d: %#v", fnCount, ranges)
 	}
 }
 
@@ -137,12 +222,12 @@ func TestBraceSyntaxSourceCRLF(t *testing.T) {
 	}
 	var found bool
 	for _, r := range ranges {
-		if r.Kind == "fn" && r.Name == "run" {
+		if r.Kind == SyntaxKind("fn") && r.Name == "run" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected fn run range with CRLF fixture, got %#v", ranges)
+		t.Fatalf("expected function run range with CRLF fixture, got %#v", ranges)
 	}
 }
 
@@ -177,6 +262,18 @@ function run() {}
 	}
 	if !haveClass || !haveMethod || !haveFunc {
 		t.Fatalf("missing expected symbols: class=%v method=%v func=%v; all=%#v", haveClass, haveMethod, haveFunc, symbols)
+	}
+}
+
+func TestBraceSyntaxSourceDeduplicatesMalformedCallWarnings(t *testing.T) {
+	path := writeBraceFixture(t, "malformed.ts", "function run() { f(f(f(f( }\n")
+	lang, _ := ResolveFile(path)
+	result, _, err := SyntaxFileRanges(context.Background(), lang, path, Position{})
+	if err != nil {
+		t.Fatalf("SyntaxFileRanges: %v", err)
+	}
+	if len(result.Warnings) > 2 {
+		t.Fatalf("warnings must be bounded and deduplicated, got %#v", result.Warnings)
 	}
 }
 

@@ -76,6 +76,16 @@ type modelsDevLimit struct {
 
 type modelsDevModel struct {
 	Limit modelsDevLimit `json:"limit"`
+	Cost  modelsDevCost  `json:"cost"`
+}
+
+// modelsDevCost contains public list prices in USD per one million tokens.
+// models.dev omits dimensions that a provider does not publish.
+type modelsDevCost struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cache_read"`
+	CacheWrite float64 `json:"cache_write"`
 }
 
 type modelsDevProvider struct {
@@ -299,6 +309,39 @@ func ModelsDevLimitsByProvider(providerID, model string) (contextWindow, maxOutp
 	return modelLimitsFrom(prov, model)
 }
 
+// ModelsDevPricing resolves public list pricing for a model. It first matches
+// the models.dev provider whose API host matches baseURL, then falls back to a
+// provider-name lookup for curated entries without an API URL. The bool is
+// false when no model entry with at least one price dimension is available.
+func ModelsDevPricing(baseURL, providerID, model string) (input, output, cacheRead, cacheWrite float64, ok bool) {
+	if strings.TrimSpace(model) == "" {
+		return 0, 0, 0, 0, false
+	}
+	cat := loadModelsDev()
+	if cat == nil {
+		return 0, 0, 0, 0, false
+	}
+	host := hostname(baseURL)
+	if host != "" {
+		for _, prov := range cat {
+			if hostname(prov.API) != host {
+				continue
+			}
+			if p, found := modelPricingFrom(prov, model); found {
+				return p.Input, p.Output, p.CacheRead, p.CacheWrite, true
+			}
+		}
+	}
+	if strings.TrimSpace(providerID) != "" {
+		if prov, found := cat[providerID]; found {
+			if p, found := modelPricingFrom(prov, model); found {
+				return p.Input, p.Output, p.CacheRead, p.CacheWrite, true
+			}
+		}
+	}
+	return 0, 0, 0, 0, false
+}
+
 // ModelsDevModelsByProvider returns model IDs from the local models.dev
 // snapshot for a provider, filtered by prefix. This backs picker lists with
 // a fresh offline catalog when the generated provider catalog lags a vendor
@@ -378,6 +421,23 @@ func ModelsDevWindow(baseURL, model string) int {
 func modelWindowFrom(prov modelsDevProvider, model string) int {
 	ctx, _ := modelLimitsFrom(prov, model)
 	return ctx
+}
+
+func modelPricingFrom(prov modelsDevProvider, model string) (modelsDevCost, bool) {
+	if m, ok := prov.Models[model]; ok && hasPricing(m.Cost) {
+		return m.Cost, true
+	}
+	lm := strings.ToLower(model)
+	for id, m := range prov.Models {
+		if strings.ToLower(id) == lm && hasPricing(m.Cost) {
+			return m.Cost, true
+		}
+	}
+	return modelsDevCost{}, false
+}
+
+func hasPricing(p modelsDevCost) bool {
+	return p.Input > 0 || p.Output > 0 || p.CacheRead > 0 || p.CacheWrite > 0
 }
 
 // modelLimitsFrom resolves a model's limits within one provider: exact id

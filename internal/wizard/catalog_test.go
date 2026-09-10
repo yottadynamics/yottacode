@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -31,15 +32,33 @@ func TestCatalogConsistency(t *testing.T) {
 // TestFindCatalogEntry checks that named lookup returns the right
 // entry and a nil for unknowns.
 func TestFindCatalogEntry(t *testing.T) {
-	for _, name := range []string{"anthropic", "openai", "gemini", "ollama", "xai", "nvidia-nim", "custom"} {
+	for _, name := range []string{"anthropic", "openai", "openrouter", "gemini", "ollama", "xai", "nvidia-nim", "custom"} {
 		if e := FindCatalogEntry(name); e == nil {
 			t.Errorf("FindCatalogEntry(%q) returned nil", name)
 		}
 	}
-	for _, name := range []string{"openrouter", "together", "nope"} {
+	for _, name := range []string{"together", "nope"} {
 		if FindCatalogEntry(name) != nil {
 			t.Errorf("FindCatalogEntry(%q) should be nil — it's not in the catalog", name)
 		}
+	}
+}
+
+func TestCatalog_OpenRouterPreset(t *testing.T) {
+	e := FindCatalogEntry("openrouter")
+	if e == nil {
+		t.Fatal("openrouter preset missing")
+	}
+	if e.Kind != "openai-compatible" || e.BaseURL != "https://openrouter.ai/api/v1" || e.APIKeyEnv != "OPENROUTER_API_KEY" {
+		t.Fatalf("openrouter preset = %+v", *e)
+	}
+	want := map[string]string{
+		"HTTP-Referer":            "https://yottacode.ai",
+		"X-OpenRouter-Title":      "yottacode",
+		"X-OpenRouter-Categories": "cli-agent",
+	}
+	if !reflect.DeepEqual(e.Headers, want) {
+		t.Fatalf("headers = %#v, want %#v", e.Headers, want)
 	}
 }
 

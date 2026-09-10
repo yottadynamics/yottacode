@@ -37,13 +37,15 @@ func newResponsesAdapter(cfg Config) *responsesAdapter {
 		apiKey = "local-no-auth"
 	}
 	profile := buildProfile(cfg, true)
-	c := openai.NewClient(
-		option.WithBaseURL(cfg.BaseURL),
+	opts := []option.RequestOption{option.WithBaseURL(cfg.BaseURL)}
+	opts = append(opts, headerOptions(cfg.Headers)...)
+	opts = append(opts,
 		option.WithAPIKey(apiKey),
 		// Snapshot rate-limit headers off every response so /usage can
 		// show live per-minute token/request headroom.
 		option.WithMiddleware(recordRateLimitMiddleware(profile.Provider)),
 	)
+	c := openai.NewClient(opts...)
 	return &responsesAdapter{
 		client:  c,
 		model:   cfg.Model,

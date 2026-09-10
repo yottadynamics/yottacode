@@ -50,6 +50,11 @@ type CatalogEntry struct {
 	// value when the variable is not already set in the environment.
 	APIKeyEnv string
 
+	// Headers are non-secret metadata automatically written by named
+	// presets such as OpenRouter. The setup UI does not expose secret header
+	// entry; credentials continue to use APIKeyEnv.
+	Headers map[string]string
+
 	// Note is a one-line hint shown next to the provider in the
 	// multi-select. Keep short — anything longer than 50 chars wraps
 	// awkwardly on narrow terminals.
@@ -64,6 +69,11 @@ var Catalog = []CatalogEntry{
 	{Name: "copilot-auth", Kind: "copilot", BaseURL: "https://api.githubcopilot.com", APIKeyEnv: "", Note: "GitHub Copilot (device code OAuth)"},
 	{Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com", APIKeyEnv: "ANTHROPIC_API_KEY", Note: "Claude (Anthropic) — model list from internal/catalog (refresh via cmd/yotta-models)"},
 	{Name: "openai", Kind: "openai", BaseURL: "https://api.openai.com/v1", APIKeyEnv: "OPENAI_API_KEY", Note: "GPT + o-series (OpenAI) — model list from internal/catalog"},
+	{Name: "openrouter", Kind: "openai-compatible", BaseURL: "https://openrouter.ai/api/v1", APIKeyEnv: "OPENROUTER_API_KEY", Headers: map[string]string{
+		"HTTP-Referer":            "https://yottacode.ai",
+		"X-OpenRouter-Title":      "yottacode",
+		"X-OpenRouter-Categories": "cli-agent",
+	}, Note: "OpenRouter — OpenAI-compatible models with yottacode attribution"},
 	{Name: "gemini", Kind: "gemini", BaseURL: "https://generativelanguage.googleapis.com", APIKeyEnv: "GEMINI_API_KEY", Note: "Gemini (Google) — model list from internal/catalog"},
 	{Name: "xai", Kind: "xai", BaseURL: "https://api.x.ai/v1", APIKeyEnv: "XAI_API_KEY", Note: "Grok (xAI) — model list from internal/catalog"},
 	// Google Vertex AI is one UX row. The configure screen asks for the

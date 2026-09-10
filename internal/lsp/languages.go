@@ -47,7 +47,7 @@ func Languages() []Language {
 		{
 			ID:             "typescript",
 			Name:           "TypeScript/JavaScript",
-			Extensions:     []string{".ts", ".tsx", ".js", ".jsx"},
+			Extensions:     []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"},
 			Command:        []string{"typescript-language-server", "--stdio"},
 			InstallHint:    "Install TypeScript language server: npm install -g typescript typescript-language-server.",
 			InstallCommand: "npm install -g typescript typescript-language-server",

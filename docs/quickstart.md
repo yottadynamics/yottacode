@@ -167,7 +167,7 @@ Useful interactive commands:
 yottacode run "summarize the public API of this repo"
 ```
 
-`yottacode run` prints the final answer to stdout and sends status/tool progress to stderr, so it composes cleanly with pipes, redirects, and CI logs.
+`yottacode run` prints the final answer to stdout and sends consistently prefixed status/tool progress to stderr, so it composes cleanly with pipes, redirects, and CI logs. Use `--format json` for one structured stdout object, and see the [one-shot recipes](run-recipes.md) for complete CI examples.
 
 ## 5. Understand approvals
 

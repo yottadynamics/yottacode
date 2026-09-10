@@ -3,7 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,6 +15,11 @@ import (
 
 const codeMapVisibleRows = 28
 const codemapDefaultImpactDepth = codemap.MaxDepthAll
+
+// codeMapExportMax is the effective "unbounded" cap used when writing a
+// diagram to disk via `/map diagram --export`, instead of the smaller cap
+// used for the on-screen picker render.
+const codeMapExportMax = 1_000_000
 
 type codeMapMode string
 
@@ -27,18 +34,20 @@ const (
 )
 
 type codeMapPickerState struct {
-	index     *codemap.CodeIndex
-	rows      []codeMapRow
-	mode      codeMapMode
-	depth     int
-	expanded  map[codemap.NodeID]bool
-	cursor    int
-	filter    string
-	hereFiles []string
-	diagram   string
-	status    string
-	loading   bool
-	err       string
+	index      *codemap.CodeIndex
+	rows       []codeMapRow
+	mode       codeMapMode
+	depth      int
+	expanded   map[codemap.NodeID]bool
+	cursor     int
+	filter     string
+	hereFiles  []string
+	diagram    string
+	subsystem  string
+	exportPath string
+	status     string
+	loading    bool
+	err        string
 }
 
 type codeMapRow struct {
@@ -55,7 +64,7 @@ type codeMapLoadedMsg struct {
 	err    error
 }
 
-func (m Model) openCodeMapPicker(mode codeMapMode, filter string, depth int) (Model, tea.Cmd) {
+func (m Model) openCodeMapPicker(mode codeMapMode, filter string, depth int, exportPath string) (Model, tea.Cmd) {
 	if m.codeMapProvider == nil {
 		m.appendLine(styleError.Render(SysMsg(SysWarning, "map", "experimental feature required", "--experimental code_map")))
 		return m, nil
@@ -64,7 +73,10 @@ func (m Model) openCodeMapPicker(mode codeMapMode, filter string, depth int) (Mo
 	if mode == codeMapModeHere {
 		hereFiles = m.codeMapHereFiles(filter)
 	}
-	m.codeMapPicker = &codeMapPickerState{mode: mode, depth: depth, filter: filter, hereFiles: hereFiles, expanded: map[codemap.NodeID]bool{}, loading: true, status: "building code map…"}
+	if exportPath != "" && !filepath.IsAbs(exportPath) {
+		exportPath = filepath.Join(m.cwd, exportPath)
+	}
+	m.codeMapPicker = &codeMapPickerState{mode: mode, depth: depth, filter: filter, hereFiles: hereFiles, exportPath: exportPath, expanded: map[codemap.NodeID]bool{}, loading: true, status: "building code map…"}
 	m.codeMapPickerOpen = true
 	return m, m.loadCodeMapCmd(mode, filter, depth)
 }
@@ -177,6 +189,12 @@ func (m Model) updateCodeMapPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			p.loading = true
 			p.status = "rebuilding code map…"
 			return m, m.loadCodeMapCmd(p.mode, p.filter, p.depth)
+		case "a":
+			if p.mode == codeMapModeHere {
+				return m.acceptCodeMapAttachAll(), nil
+			}
+			p.filter += msg.Text
+			p.rebuildRows()
 		default:
 			p.filter += msg.Text
 			p.rebuildRows()
@@ -227,6 +245,32 @@ func (m Model) acceptCodeMapSelection() Model {
 	return m
 }
 
+// acceptCodeMapAttachAll inserts an @path ref for every file-kind row
+// currently listed in `/map here`'s suggested-context list, then closes the
+// picker — the bulk counterpart to Enter's single-row insert-and-close.
+func (m Model) acceptCodeMapAttachAll() Model {
+	p := m.codeMapPicker
+	if p == nil || p.index == nil {
+		return m
+	}
+	attached := 0
+	for _, row := range p.rows {
+		n, ok := p.index.Node(row.id)
+		if !ok || n.Kind != codemap.NodeFile {
+			continue
+		}
+		m.insertCodeMapRef(n.RelPath)
+		attached++
+	}
+	if attached == 0 {
+		p.status = "no files to attach"
+		return m
+	}
+	m.codeMapPickerOpen = false
+	m.codeMapPicker = nil
+	return m
+}
+
 func (m *Model) insertCodeMapRef(path string) {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "." {
@@ -246,6 +290,7 @@ func (p *codeMapPickerState) rebuildRows() {
 		return
 	}
 	p.diagram = ""
+	p.subsystem = ""
 	if p.mode != "" && p.mode != codeMapModeStructure {
 		p.rows = p.rows[:0]
 		if strings.TrimSpace(p.filter) == "" && p.mode != codeMapModeCycles && p.mode != codeMapModeDiagram && p.mode != codeMapModeHere {
@@ -272,6 +317,12 @@ func (p *codeMapPickerState) rebuildRows() {
 			for _, n := range impact.TransitiveDependents {
 				p.rows = append(p.rows, codeMapRow{id: n.ID, depth: 0, label: "transitive dependent"})
 			}
+			for _, n := range impact.LikelyTests {
+				p.rows = append(p.rows, codeMapRow{id: n.ID, depth: 0, label: "likely test"})
+			}
+			for _, n := range impact.LikelyDocs {
+				p.rows = append(p.rows, codeMapRow{id: n.ID, depth: 0, label: "likely docs"})
+			}
 			if len(p.rows) == 0 {
 				p.status = "no impact found for " + p.filter
 			} else {
@@ -288,6 +339,13 @@ func (p *codeMapPickerState) rebuildRows() {
 		case codeMapModeDiagram:
 			p.diagram = codemap.MermaidDiagram(p.index, p.filter, codeMapVisibleRows*2)
 			p.status = "Mermaid diagram generated"
+			if p.exportPath != "" {
+				if strings.TrimSpace(p.filter) == "" {
+					p.status = "diagram export needs a path to focus on: /map diagram --export <path> <file>"
+				} else {
+					p.status = p.exportDiagram()
+				}
+			}
 			p.clampCursor()
 			return
 		}
@@ -303,6 +361,12 @@ func (p *codeMapPickerState) rebuildRows() {
 		return
 	}
 	if strings.TrimSpace(p.filter) != "" {
+		if overview, ok := codemap.BuildSubsystemOverview(p.index, p.filter, codeMapVisibleRows); ok {
+			p.subsystem = codemap.FormatSubsystemOverview(overview, codeMapVisibleRows)
+			p.status = "subsystem overview: " + overview.Dir.RelPath
+			p.clampCursor()
+			return
+		}
 		matches := p.index.Filter(p.filter, codeMapVisibleRows*2)
 		p.rows = p.rows[:0]
 		for _, n := range matches {
@@ -326,47 +390,53 @@ func (p *codeMapPickerState) rebuildRows() {
 	p.clampCursor()
 }
 
+// exportDiagram writes the full, unbounded diagram for the current filter to
+// p.exportPath (already resolved to an absolute path in openCodeMapPicker)
+// and returns a status line describing the outcome.
+func (p *codeMapPickerState) exportDiagram() string {
+	full := codemap.MermaidDiagram(p.index, p.filter, codeMapExportMax)
+	if err := os.MkdirAll(filepath.Dir(p.exportPath), 0o755); err != nil {
+		return "diagram export failed: " + err.Error()
+	}
+	if err := os.WriteFile(p.exportPath, []byte(full), 0o644); err != nil {
+		return "diagram export failed: " + err.Error()
+	}
+	return fmt.Sprintf("diagram exported to %s (%d bytes)", p.exportPath, len(full))
+}
+
 func (p *codeMapPickerState) rebuildHereRows() {
 	if len(p.hereFiles) == 0 {
 		p.status = "no changed files found; pass a path: /map here <path>"
 		p.clampCursor()
 		return
 	}
-	seen := map[codemap.NodeID]bool{}
+	changed := make([]string, 0, len(p.hereFiles))
 	for _, path := range p.hereFiles {
 		matches := p.index.Filter(path, 20)
 		for _, n := range matches {
-			if n.Kind != codemap.NodeFile || seen[n.ID] {
-				continue
-			}
-			p.rows = append(p.rows, codeMapRow{id: n.ID, label: "changed"})
-			seen[n.ID] = true
-			for _, dep := range p.index.Dependencies(n.RelPath, 8) {
-				if !seen[dep.ID] {
-					p.rows = append(p.rows, codeMapRow{id: dep.ID, label: "imports"})
-					seen[dep.ID] = true
-				}
-			}
-			for _, dependent := range p.index.Dependents(n.RelPath, 8) {
-				if !seen[dependent.ID] {
-					p.rows = append(p.rows, codeMapRow{id: dependent.ID, label: "imported by"})
-					seen[dependent.ID] = true
-				}
-			}
-			for _, sym := range p.index.SymbolsForFile(n.RelPath) {
-				if !seen[sym.ID] {
-					p.rows = append(p.rows, codeMapRow{id: sym.ID, depth: 1, label: "symbol"})
-					seen[sym.ID] = true
-				}
+			if n.Kind == codemap.NodeFile {
+				changed = append(changed, n.RelPath)
 			}
 		}
+	}
+	items := codemap.SuggestedContext(p.index, changed, codeMapVisibleRows)
+	for _, item := range items {
+		p.rows = append(p.rows, codeMapRow{id: item.Node.ID, label: reasonsLabel(item.Reasons)})
 	}
 	if len(p.rows) == 0 {
 		p.status = "no indexed matches for changed files"
 	} else {
-		p.status = fmt.Sprintf("%d relevant entries around %d file(s)", len(p.rows), len(p.hereFiles))
+		p.status = fmt.Sprintf("suggested context: %d file(s) around %d changed", len(p.rows), len(changed))
 	}
 	p.clampCursor()
+}
+
+func reasonsLabel(reasons []codemap.Reason) string {
+	parts := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		parts = append(parts, string(r))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (p *codeMapPickerState) clampCursor() {
@@ -387,7 +457,11 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 		return styleEmpty.Render("(code map unavailable)")
 	}
 	var b strings.Builder
-	desc := string(p.mode) + " · ↑↓/jk navigate · type filters · backspace edits · ↵ expand/select · r rebuild · esc closes"
+	desc := string(p.mode) + " · ↑↓/jk navigate · type filters · backspace edits · ↵ expand/select"
+	if p.mode == codeMapModeHere {
+		desc += " · a attach all"
+	}
+	desc += " · r rebuild · esc closes"
 	if p.filter != "" {
 		desc = fmt.Sprintf("filter %q · %s", p.filter, desc)
 	}
@@ -405,7 +479,15 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 		if p.status != "" {
 			b.WriteString("\n" + styleMeta.Render("  "+p.status))
 		}
-		b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [path]"))
+		b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [--export <path>] [path]"))
+		return strings.TrimRight(b.String(), "\n")
+	}
+	if p.subsystem != "" {
+		b.WriteString(stylePaletteItem.Render(p.subsystem))
+		if p.status != "" {
+			b.WriteString("\n" + styleMeta.Render("  "+p.status))
+		}
+		b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [--export <path>] [path]"))
 		return strings.TrimRight(b.String(), "\n")
 	}
 	if len(p.rows) == 0 {
@@ -434,7 +516,7 @@ func renderCodeMapPicker(p *codeMapPickerState, width int, hits ...*pickerHits) 
 	if p.status != "" {
 		b.WriteString("\n" + styleMeta.Render("  "+p.status))
 	}
-	b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [path]"))
+	b.WriteString("\n" + styleFooter.Render("modes: /map · /map deps <path> · /map dependents <path> · /map impact [--depth N|all] <path> · /map cycles [path] · /map diagram [--export <path>] [path]"))
 	return strings.TrimRight(b.String(), "\n")
 }
 

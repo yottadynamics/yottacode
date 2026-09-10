@@ -86,6 +86,11 @@ type ImpactResult struct {
 	DirectDependents     []Node
 	TransitiveDependents []Node
 	Cycles               [][]Node
+	// LikelyTests are files in the target's neighborhood that plausibly test
+	// it, per IsTestFor. LikelyDocs are indexed markdown files that mention
+	// the target. Both are best-effort relevance signals, not exhaustive.
+	LikelyTests []Node
+	LikelyDocs  []Node
 }
 
 // MaxDepthAll means dependency traversal should continue until exhausted.
@@ -217,6 +222,72 @@ func (i *CodeIndex) Nodes() []Node {
 	return out
 }
 
+// filesInDir returns direct file-node children of a repo-relative directory.
+func (i *CodeIndex) filesInDir(dir string) []Node {
+	if i == nil {
+		return nil
+	}
+	var out []Node
+	for _, childID := range i.children[dirID(dir)] {
+		if n, ok := i.nodes[childID]; ok && n.Kind == NodeFile {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// descendantFiles returns every file node under a repo-relative directory,
+// including files in nested subdirectories.
+func (i *CodeIndex) descendantFiles(dir string) []Node {
+	if i == nil {
+		return nil
+	}
+	var out []Node
+	var walk func(NodeID)
+	walk = func(id NodeID) {
+		for _, childID := range i.children[id] {
+			n, ok := i.nodes[childID]
+			if !ok {
+				continue
+			}
+			switch n.Kind {
+			case NodeFile:
+				out = append(out, n)
+			case NodeDirectory:
+				walk(childID)
+			}
+		}
+	}
+	walk(dirID(dir))
+	return out
+}
+
+// firstDirMatch returns the directory node matching an exact repo-relative
+// or absolute path, or "" if none exists. Unlike firstFileMatch this never
+// substring-matches — directories are far less unique than files, so an
+// exact match keeps `/map <dir>` subsystem-overview triggering predictable.
+func (i *CodeIndex) firstDirMatch(path string) NodeID {
+	if i == nil {
+		return ""
+	}
+	key := filepath.Clean(strings.TrimSpace(path))
+	if key == "" {
+		return ""
+	}
+	if filepath.IsAbs(key) {
+		rel, err := filepath.Rel(i.root, key)
+		if err != nil {
+			return ""
+		}
+		key = rel
+	}
+	id := dirID(filepath.ToSlash(key))
+	if _, ok := i.nodes[id]; ok {
+		return id
+	}
+	return ""
+}
+
 // SymbolsForFile returns symbol children for one repo-relative or absolute path.
 func (i *CodeIndex) SymbolsForFile(path string) []Node {
 	if i == nil {
@@ -302,7 +373,30 @@ func (i *CodeIndex) Impact(pathOrQuery string, depth, max int) ImpactResult {
 		DirectDependents:     i.Dependents(pathOrQuery, max),
 		TransitiveDependents: i.walkImportEdges(start, false, depth, max),
 		Cycles:               i.Cycles(pathOrQuery, max),
+		LikelyTests:          i.likelyTestsFor(target, max),
+		LikelyDocs:           LikelyDocsFor(i, target.RelPath, min(max, 5)),
 	}
+}
+
+// likelyTestsFor collects IsTestFor matches for the target itself plus its
+// immediate directory neighbors, so a blast-radius query surfaces the tests
+// most likely worth re-running.
+func (i *CodeIndex) likelyTestsFor(target Node, max int) []Node {
+	if i == nil || target.ID == "" {
+		return nil
+	}
+	seen := map[NodeID]bool{}
+	var out []Node
+	for _, sibling := range i.filesInDir(parentRel(target.RelPath)) {
+		if IsTestFor(sibling.RelPath, target.RelPath) && !seen[sibling.ID] {
+			seen[sibling.ID] = true
+			out = append(out, sibling)
+			if len(out) >= max {
+				break
+			}
+		}
+	}
+	return proximityNodes(target, out)
 }
 
 func (i *CodeIndex) walkImportEdges(start NodeID, outgoing bool, depth, max int) []Node {
@@ -347,17 +441,41 @@ func (i *CodeIndex) walkImportEdges(start NodeID, outgoing bool, depth, max int)
 			queue = append(queue, item{id: next, depth: cur.depth + 1})
 		}
 	}
-	return sortedNodes(out)
+	return proximityNodes(i.nodes[start], out)
 }
 
-func sortedNodes(nodes []Node) []Node {
+// proximityNodes orders nodes by relevance to target: same directory first,
+// then by shared path-prefix depth with target's directory, falling back to
+// RelPath for a deterministic tie-break (which is also what plain
+// alphabetical order reduces to when every candidate shares one directory).
+func proximityNodes(target Node, nodes []Node) []Node {
+	targetDir := parentRel(target.RelPath)
 	sort.SliceStable(nodes, func(i, j int) bool {
-		if nodes[i].RelPath != nodes[j].RelPath {
-			return nodes[i].RelPath < nodes[j].RelPath
+		a, b := nodes[i], nodes[j]
+		aDir, bDir := parentRel(a.RelPath), parentRel(b.RelPath)
+		aSame, bSame := aDir == targetDir, bDir == targetDir
+		if aSame != bSame {
+			return aSame
 		}
-		return nodes[i].Name < nodes[j].Name
+		if ap, bp := sharedDirPrefixLen(targetDir, aDir), sharedDirPrefixLen(targetDir, bDir); ap != bp {
+			return ap > bp
+		}
+		if a.RelPath != b.RelPath {
+			return a.RelPath < b.RelPath
+		}
+		return a.Name < b.Name
 	})
 	return nodes
+}
+
+func sharedDirPrefixLen(a, b string) int {
+	as := strings.Split(a, "/")
+	bs := strings.Split(b, "/")
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
 }
 
 func (i *CodeIndex) edgeNodes(pathOrQuery string, outgoing bool, max int) []Node {
@@ -393,7 +511,7 @@ func (i *CodeIndex) edgeNodes(pathOrQuery string, outgoing bool, max int) []Node
 			}
 		}
 	}
-	return sortedNodes(out)
+	return proximityNodes(i.nodes[start], out)
 }
 
 func (i *CodeIndex) firstFileMatch(pathOrQuery string) NodeID {

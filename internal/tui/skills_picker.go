@@ -17,13 +17,19 @@ import (
 )
 
 // skillsCatalogTab is the visible-rows filter for the Catalog picker.
-// Official browses the public yottacode-skills repo; Installed shows
-// disk-loaded skills; Bundled shows the embedded fallback library.
+// Official browses the public yottacode-skills catalog, annotating rows
+// already installed from it; Bundled shows the embedded fallback library;
+// Custom shows on-disk skills installed from anywhere else (a local path,
+// an arbitrary GitHub repo, or a raw URL — i.e. `yottacode skills install
+// <source>` with a source that isn't `official/<name>`), which otherwise
+// have no tab to appear in.
 type skillsCatalogTab int
 
 const (
 	catalogTabOfficial skillsCatalogTab = iota
 	catalogTabBundled
+	catalogTabCustom
+	numCatalogTabs
 )
 
 // skillsPickerState backs the Catalog overlay. Lifetime is one
@@ -103,13 +109,16 @@ func installOfficialSkillCmd(name string) tea.Cmd {
 	}
 }
 
-// visibleRows returns the slice of rows the current tab should render. Official
-// shows the public catalog and annotates rows that are already installed; Bundled
-// shows embedded fallback skills. The filter buffer is applied on top.
+// visibleRows returns the slice of rows the current tab should render.
+// Official shows the public catalog and annotates rows that are already
+// installed; Bundled shows embedded fallback skills; Custom shows loaded
+// skills that came from anywhere other than the official catalog (no
+// catalog.json name match) and aren't built in — otherwise those installs
+// have no tab to appear in at all. The filter buffer is applied on top.
 func (p *skillsPickerState) visibleRows() []skills.Skill {
 	q := strings.ToLower(strings.TrimSpace(p.filter))
 	source := p.officialRows
-	if p.tab == catalogTabBundled {
+	if p.tab == catalogTabCustom || p.tab == catalogTabBundled {
 		source = p.rows
 	}
 	out := make([]skills.Skill, 0, len(source))
@@ -126,6 +135,10 @@ func (p *skillsPickerState) visibleRows() []skills.Skill {
 			if matches(sk) {
 				out = append(out, sk)
 			}
+		case catalogTabCustom:
+			if sk.Source != skills.ScopeBuiltin && !p.isOfficialCatalogName(sk.Name) && matches(sk) {
+				out = append(out, sk)
+			}
 		case catalogTabBundled:
 			if sk.Source == skills.ScopeBuiltin && matches(sk) {
 				out = append(out, sk)
@@ -133,6 +146,18 @@ func (p *skillsPickerState) visibleRows() []skills.Skill {
 		}
 	}
 	return out
+}
+
+// isOfficialCatalogName reports whether name matches an entry in the cached
+// official catalog — used to route an installed skill to the Official tab
+// (where it renders as "installed"/"installed/enabled") rather than Custom.
+func (p *skillsPickerState) isOfficialCatalogName(name string) bool {
+	for _, sk := range p.officialRows {
+		if sk.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *skillsPickerState) installedSkill(name string) (skills.Skill, bool) {
@@ -177,10 +202,9 @@ func (m *Model) openSkillsPicker() {
 // Navigation: Up/Down moves within the current tab; Tab cycles tabs.
 // Space toggles the cursor row's enablement. `a` enables all rows
 // in the current tab; `n` disables all in the current tab. Enter
-// opens the body in $PAGER. `u` uninstalls the cursor row when the
-// Installed tab is active (built-ins can't be uninstalled — they're
-// embedded). `c` commits the enablement toggles and closes; Esc
-// cancels.
+// opens the body in $PAGER. `u` uninstalls the cursor row on the Official
+// or Custom tab (built-ins can't be uninstalled — they're embedded).
+// `c` commits the enablement toggles and closes; Esc cancels.
 func (m Model) updateSkillsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	if m.skillsPicker == nil {
 		m.skillsPickerOpen = false
@@ -218,13 +242,13 @@ func (m Model) updateSkillsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		// awkward (e.g. tiling-WM users). Reset cursor + status so
 		// the user lands on a row that exists and any stale "enabled
 		// all" message clears.
-		p.tab = (p.tab + 1) % 2
+		p.tab = (p.tab + 1) % numCatalogTabs
 		p.cursor = 0
 		p.status = ""
 		return m, nil
 	case "shift+tab", "left":
-		// Cycle tabs backward across Official and Bundled.
-		p.tab = (p.tab + 1) % 2
+		// Cycle tabs backward across Official, Bundled, and Custom.
+		p.tab = (p.tab - 1 + numCatalogTabs) % numCatalogTabs
 		p.cursor = 0
 		p.status = ""
 		return m, nil
@@ -246,8 +270,9 @@ func (m Model) updateSkillsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			}
 			return installOfficialFromSkillsPicker(m, p, sk)
 		}
-		// Enter views bundled bodies in $PAGER. Official rows install, or view the
-		// installed body when the row is already present locally.
+		// Custom/Bundled rows are always already on disk, so Enter just
+		// views the body in $PAGER; only Official rows have the
+		// install-vs-view branch above.
 		path, err := stageSkillBodyForPager(sk)
 		if err != nil {
 			p.status = "could not open body: " + err.Error()
@@ -287,7 +312,7 @@ func (m Model) updateSkillsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if p.tab == catalogTabOfficial {
 				return refreshOfficialCatalogFromPicker(m, p)
 			}
-			return m, nil
+			return rescanLocalSkillsFromPicker(m, p)
 		case "a":
 			if p.tab == catalogTabOfficial {
 				changed := 0
@@ -408,6 +433,47 @@ func refreshOfficialCatalogFromPicker(m Model, p *skillsPickerState) (Model, tea
 	return m, tea.Batch(m.spinner.Tick, refreshOfficialCatalogCmd())
 }
 
+// rescanLocalSkillsFromPicker re-reads the on-disk + embedded skill
+// universe and refreshes the picker's row set, so a skill installed by a
+// separate `yottacode skills install` CLI invocation (or edited/removed by
+// hand) while this session was already running becomes visible without
+// restarting. Bound to `r` on the Bundled and Custom tabs — Official's `r`
+// is the existing remote-catalog-metadata refresh, a different action.
+// Synchronous and local-only (no network), unlike the Official refresh, so
+// it needs no busy state.
+//
+// p.rows is shared across all three tabs, so this also fixes the Official
+// tab's "installed" status for a same-session official CLI install — the
+// user just needs to hit `r` once on Bundled or Custom first.
+//
+// Existing toggles survive by name; only newly-discovered names get an
+// entry, seeded from SkillTool.IsEnabled's default for that name.
+func rescanLocalSkillsFromPicker(m Model, p *skillsPickerState) (Model, tea.Cmd) {
+	m = reloadSkillsRegistry(m)
+	if m.skillTool == nil {
+		return m, nil
+	}
+	rows := append([]skills.Skill(nil), m.skillTool.All...)
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	p.rows = rows
+	added := 0
+	for _, sk := range rows {
+		if _, ok := p.enabled[sk.Name]; !ok {
+			p.enabled[sk.Name] = m.skillTool.IsEnabled(sk.Name)
+			added++
+		}
+	}
+	if visible := p.visibleRows(); p.cursor >= len(visible) {
+		p.cursor = 0
+	}
+	if added > 0 {
+		p.status = fmt.Sprintf("rescanned disk — %d new skill(s) found", added)
+	} else {
+		p.status = "rescanned disk — no new skills found"
+	}
+	return m, nil
+}
+
 func handleSkillsCatalogRefreshDone(m Model, msg skillsCatalogRefreshDoneMsg) (Model, tea.Cmd) {
 	if !m.skillsPickerOpen || m.skillsPicker == nil || m.skillsPicker.busyKind != "refresh" {
 		return m, nil
@@ -427,7 +493,8 @@ func handleSkillsCatalogRefreshDone(m Model, msg skillsCatalogRefreshDoneMsg) (M
 }
 
 // installOfficialFromSkillsPicker installs the selected public catalog row and
-// refreshes the in-session registry so it immediately appears in Installed.
+// refreshes the in-session registry so it immediately shows as installed on
+// the Official tab.
 func installOfficialFromSkillsPicker(m Model, p *skillsPickerState, sk skills.Skill) (Model, tea.Cmd) {
 	if dir, ok := installedUserSkillDir(sk.Name); ok {
 		m = switchPickerToInstalledSkill(m, p, sk.Name)
@@ -529,14 +596,14 @@ func switchPickerToInstalledSkill(m Model, p *skillsPickerState, name string) Mo
 }
 
 // uninstallFromSkillsPicker removes the cursor row's skill from
-// ~/.yottacode/skills/ when invoked on the Installed tab. Built-ins
-// surface a status hint instead — the user gets feedback in the
-// same overlay rather than losing the menu to an error appendLine.
-// On success the picker is rebuilt against the refreshed registry so
-// the row disappears immediately.
+// ~/.yottacode/skills/ when invoked on the Official or Custom tab (the two
+// tabs that can hold an on-disk install). Built-ins surface a status hint
+// instead — the user gets feedback in the same overlay rather than losing
+// the menu to an error appendLine. On success the picker is rebuilt against
+// the refreshed registry so the row disappears immediately.
 func uninstallFromSkillsPicker(m Model, p *skillsPickerState, visible []skills.Skill) (Model, tea.Cmd) {
-	if p.tab != catalogTabOfficial {
-		p.status = "uninstall only works on installed Official rows"
+	if p.tab != catalogTabOfficial && p.tab != catalogTabCustom {
+		p.status = "uninstall only works on installed Official or Custom rows"
 		return m, nil
 	}
 	if len(visible) == 0 {
@@ -545,7 +612,7 @@ func uninstallFromSkillsPicker(m Model, p *skillsPickerState, visible []skills.S
 	sk := visible[p.cursor]
 	installed, ok := p.installedSkill(sk.Name)
 	if !ok {
-		p.status = "only installed Official rows can be uninstalled here"
+		p.status = "only installed rows can be uninstalled here"
 		return m, nil
 	}
 	sk = installed
@@ -707,9 +774,9 @@ func stageSkillBodyForPager(sk skills.Skill) (string, error) {
 }
 
 // renderSkillsPicker draws the Catalog overlay. The header carries
-// the tab bar (Built-in | Installed) so the user always sees which
-// subset is rendered + which key (Tab) cycles. Each row is one skill
-// with a check/uncheck glyph reflecting the working enablement
+// the tab bar (Official | Bundled | Custom) so the user always sees
+// which subset is rendered + which key (Tab) cycles. Each row is one
+// skill with a check/uncheck glyph reflecting the working enablement
 // state, the skill name, its source tag, and a truncated description.
 // Cursor highlighting is handled by renderMenuItem.
 func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits) string {
@@ -721,19 +788,22 @@ func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits
 		h = hits[0]
 	}
 	hint := "←/→ switches view · / filters · Enter installs · r refreshes catalog · Esc closes"
-	if state.tab == catalogTabBundled {
-		hint = "←/→ switches view · / filters · Space toggles · Enter views body · a/n · Esc saves and closes"
+	switch state.tab {
+	case catalogTabCustom:
+		hint = "←/→ switches view · / filters · Space toggles · Enter views body · u uninstalls · r rescans disk · a/n · Esc saves and closes"
+	case catalogTabBundled:
+		hint = "←/→ switches view · / filters · Space toggles · Enter views body · r rescans disk · a/n · Esc saves and closes"
 	}
 	if state.filterMode {
 		hint = "Type to filter · Backspace edits · Enter applies · Esc clears filter"
 	}
 	header := renderMenuHeader("Catalog", hint, width)
-	// Selection semantics — shown above the tab bar on both tabs because the
+	// Selection semantics — shown above the tab bar on all tabs because the
 	// checkbox is the model-autonomy gate; disk presence alone keeps slash
 	// invocation alive either way. Keep the status legend inline so the Official
 	// catalog's installed/enabled wording is self-explanatory.
 	tabIntro := styleMeta.Render(
-		"  Official status: not installed, installed, installed/enabled (available to the model this session). Bundled rows toggle model access.")
+		"  Official status: not installed, installed, installed/enabled (available to the model this session). Custom and Bundled rows toggle model access; Custom rows can also be uninstalled (u).")
 	tabRow := strings.Count(header+"\n"+tabIntro+"\n\n", "\n")
 	body := header + "\n" + tabIntro + "\n\n" + renderSkillsTabs(state.tab, h, tabRow) + "\n"
 	if state.filter != "" || state.filterMode {
@@ -757,7 +827,10 @@ func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits
 	visible := state.visibleRows()
 	if len(visible) == 0 {
 		empty := "  official catalog unavailable or empty — try /skills install official/<name>"
-		if state.tab == catalogTabBundled {
+		switch state.tab {
+		case catalogTabCustom:
+			empty = "  no custom-installed skills (local path, GitHub repo, or URL — try /skills install <source>)"
+		case catalogTabBundled:
 			empty = "  no bundled fallback skills compiled into this binary"
 		}
 		body += styleEmpty.Render(empty) + "\n"
@@ -836,6 +909,7 @@ func renderSkillsTabs(active skillsCatalogTab, h *pickerHits, row int) string {
 	}{
 		{"Official", catalogTabOfficial},
 		{"Bundled", catalogTabBundled},
+		{"Custom", catalogTabCustom},
 	}
 	var parts []string
 	col := 2 // leading "  "

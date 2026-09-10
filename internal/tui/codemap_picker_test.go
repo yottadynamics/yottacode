@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,6 +28,19 @@ func TestRenderCodeMapPicker(t *testing.T) {
 	out := stripANSI(renderCodeMapPicker(p, 100))
 	if !strings.Contains(out, "Code map") || !strings.Contains(out, "main.go") || !strings.Contains(out, "file · go") {
 		t.Fatalf("unexpected render: %q", out)
+	}
+}
+
+func TestCodeMapPickerDirectoryFilterShowsSubsystemOverview(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	p := &codeMapPickerState{index: idx, mode: codeMapModeStructure, expanded: map[codemap.NodeID]bool{idx.Root(): true}, filter: "."}
+	p.rebuildRows()
+	if p.subsystem == "" {
+		t.Fatal("exact directory filter should render a subsystem overview")
+	}
+	out := stripANSI(renderCodeMapPicker(p, 120))
+	if !strings.Contains(out, "subsystem") || !strings.Contains(out, "entry points") {
+		t.Fatalf("unexpected subsystem render: %q", out)
 	}
 }
 
@@ -85,9 +100,52 @@ func TestCodeMapPickerHereModeShowsChangedNeighborhood(t *testing.T) {
 	idx := testCodeMapIndex(t)
 	p := &codeMapPickerState{index: idx, mode: codeMapModeHere, hereFiles: []string{"main.go"}, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
 	p.rebuildRows()
+	if len(p.rows) == 0 {
+		t.Fatal("expected suggested-context rows")
+	}
+	first, _ := idx.Node(p.rows[0].id)
+	if first.RelPath != "main.go" {
+		t.Fatalf("changed file should rank first, got %+v", first)
+	}
 	out := stripANSI(renderCodeMapPicker(p, 120))
-	if !strings.Contains(out, "changed") || !strings.Contains(out, "imports") || !strings.Contains(out, "Run") {
+	if !strings.Contains(out, "changed") || !strings.Contains(out, "imports target") {
 		t.Fatalf("unexpected here render: %q", out)
+	}
+	if !strings.Contains(p.status, "suggested context") {
+		t.Fatalf("status should describe suggested context: %q", p.status)
+	}
+}
+
+func TestCodeMapAttachAllInsertsEveryFileRef(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	p := &codeMapPickerState{index: idx, mode: codeMapModeHere, hereFiles: []string{"main.go"}, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
+	p.rebuildRows()
+	m := newTestModel(t)
+	m.codeMapPickerOpen = true
+	m.codeMapPicker = p
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
+	got := m.textInput.Value()
+	if !strings.Contains(got, "@main.go") || !strings.Contains(got, "@dep.go") {
+		t.Fatalf("attach-all should insert every file ref, got %q", got)
+	}
+	if m.codeMapPickerOpen || m.codeMapPicker != nil {
+		t.Fatal("picker should close after attach-all")
+	}
+}
+
+func TestCodeMapAttachAllOnlyAppliesToHereMode(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	p := &codeMapPickerState{index: idx, mode: codeMapModeStructure, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
+	p.rebuildRows()
+	m := newTestModel(t)
+	m.codeMapPickerOpen = true
+	m.codeMapPicker = p
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
+	if m.codeMapPicker.filter != "a" {
+		t.Fatalf("outside here mode, 'a' should filter as normal text, got filter=%q", m.codeMapPicker.filter)
+	}
+	if !m.codeMapPickerOpen {
+		t.Fatal("picker should stay open when 'a' is treated as a filter keystroke")
 	}
 }
 
@@ -157,6 +215,60 @@ func TestCodeMapPickerDiagramMode(t *testing.T) {
 	out := stripANSI(renderCodeMapPicker(p, 120))
 	if !strings.Contains(out, "```mermaid") || !strings.Contains(out, "main.go") || !strings.Contains(out, "-->") {
 		t.Fatalf("unexpected diagram render: %q", out)
+	}
+}
+
+// TestCodeMapPickerDiagramExportRequiresFilter guards a real bug found via
+// live testing against this repo: `/map diagram --export <path>` with no
+// filter wrote the full unfocused import graph (24k+ edges, several MB) to
+// disk — exactly the "full-repo hairball graph" this feature must never
+// produce (see docs/code-map.md's non-goals).
+func TestCodeMapPickerDiagramExportRequiresFilter(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	exportPath := filepath.Join(t.TempDir(), "out", "diagram.md")
+	p := &codeMapPickerState{index: idx, mode: codeMapModeDiagram, exportPath: exportPath, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
+	p.rebuildRows()
+	if strings.Contains(p.status, "diagram exported to") {
+		t.Fatalf("an unfocused export should be refused, not written: %q", p.status)
+	}
+	if _, err := os.Stat(exportPath); err == nil {
+		t.Fatal("no file should have been written for an unfocused export request")
+	}
+}
+
+func TestCodeMapPickerDiagramExportWritesFile(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	exportPath := filepath.Join(t.TempDir(), "out", "diagram.md")
+	p := &codeMapPickerState{index: idx, mode: codeMapModeDiagram, filter: "main.go", exportPath: exportPath, expanded: map[codemap.NodeID]bool{idx.Root(): true}}
+	p.rebuildRows()
+	if !strings.Contains(p.status, "diagram exported to") {
+		t.Fatalf("unexpected status: %q", p.status)
+	}
+	content, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatalf("expected export file to exist: %v", err)
+	}
+	if !strings.Contains(string(content), "```mermaid") {
+		t.Fatalf("exported diagram missing mermaid fence: %q", content)
+	}
+}
+
+func TestMapCommandParsesDiagramExportFlag(t *testing.T) {
+	idx := testCodeMapIndex(t)
+	m := Model{codeMapProvider: codemap.StaticProvider{Snapshot: idx}, cwd: t.TempDir()}
+	out, cmd := cmdMap(m, []string{"diagram", "--export", "diagram.md", "main.go"})
+	if cmd == nil {
+		t.Fatal("expected diagram load command")
+	}
+	if out.codeMapPicker == nil || out.codeMapPicker.exportPath == "" {
+		t.Fatal("expected exportPath to be set on the picker")
+	}
+	if !filepath.IsAbs(out.codeMapPicker.exportPath) {
+		t.Fatalf("relative --export path should resolve against cwd, got %q", out.codeMapPicker.exportPath)
+	}
+	msg := cmd().(codeMapLoadedMsg)
+	if msg.mode != codeMapModeDiagram || msg.filter != "main.go" {
+		t.Fatalf("diagram export msg = %+v, want mode diagram filter main.go", msg)
 	}
 }
 
