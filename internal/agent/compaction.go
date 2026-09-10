@@ -378,6 +378,75 @@ func mergeAdjacentAssistant(msgs []adapter.Message) []adapter.Message {
 	return out
 }
 
+// orphanedToolCallRepairedResult is the synthetic tool_result content
+// repairOrphanedToolCalls injects. Deliberately distinct from
+// interruptedToolResult ("interrupted by user"): by the time this
+// repair runs, the call could have been orphaned by anything —
+// including a hard kill (SIGKILL, a crashed process, or a hung
+// operation the user couldn't interrupt cleanly) that gave no in-process
+// code the chance to run isCancelErr's own repair before the process
+// died and the corrupted history got persisted. Telling the model the
+// outcome is unknown, rather than implying the user stopped it, is the
+// honest description of what repairOrphanedToolCalls actually knows.
+const orphanedToolCallRepairedResult = "no result was recorded for this tool call (history repaired before sending this request) — its outcome is unknown; do not assume it succeeded or failed"
+
+// repairOrphanedToolCalls is streamIteration's second defensive
+// normalization, run immediately after mergeAdjacentAssistant and for
+// the same reason: some providers (the Codex/openai-auth backend is the
+// strict one in practice) reject the ENTIRE request outright — "No tool
+// output found for function call X" — if any assistant tool_use lacks a
+// matching tool_result. executeToolCall(s) already keeps in-process
+// aborts (cancellation, a genuine error) from producing this, but that
+// repair only runs if the process is still alive to run it. A hard
+// kill, a crash, or a session resumed from a file edited/corrupted out
+// of band bypasses all of that — this is the last line of defense,
+// re-checked on every single iteration for every provider, so a
+// dangling tool_use from ANY cause is nonetheless always healed before
+// it ever reaches the wire. Mirrors mergeAdjacentAssistant: returns the
+// input slice untouched (no allocation) when nothing is orphaned, which
+// is the common case.
+func repairOrphanedToolCalls(msgs []adapter.Message) []adapter.Message {
+	hasResult := make(map[string]bool, len(msgs))
+	for _, m := range msgs {
+		if m.Role == adapter.RoleTool {
+			hasResult[m.ToolCallID] = true
+		}
+	}
+	orphaned := false
+outer:
+	for _, m := range msgs {
+		if m.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if !hasResult[tc.ID] {
+				orphaned = true
+				break outer
+			}
+		}
+	}
+	if !orphaned {
+		return msgs
+	}
+	out := make([]adapter.Message, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m)
+		if m.Role != adapter.RoleAssistant {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if !hasResult[tc.ID] {
+				out = append(out, adapter.Message{
+					Role:       adapter.RoleTool,
+					Content:    orphanedToolCallRepairedResult,
+					ToolCallID: tc.ID,
+				})
+			}
+		}
+	}
+	return out
+}
+
 // joinAssistantContent concatenates two assistant text bodies, dropping
 // the blank-line separator when either side is empty (a tool-call-only
 // assistant message carries no text).
