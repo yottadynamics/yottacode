@@ -8,6 +8,9 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-mighty-running-dolphin
+- **Structured `yottacode run` output and CI recipes.** `--format json` emits one stable stdout object with content, tool-call summaries, provider usage, exit reason, nullable error, and session id while preserving shell exit semantics. Default text stdout remains answer-only and gains clearer, consistently prefixed stderr status lines; the legacy `--json` stderr receipt remains available for compatibility. See [`run-recipes.md`](docs/run-recipes.md) for PR description, codemod, test-triage, dependency-audit, and changelog workflows.
+
 worktree-vivid-gliding-koala
 - **Headless memory recall.** `yottacode memory recall --query <text>` now
   exposes the production memory ranker to scripts, CI, and external benchmarks,

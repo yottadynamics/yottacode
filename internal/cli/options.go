@@ -122,12 +122,20 @@ type ChatOptions struct {
 	// set (e.g. the connection probe never sets it).
 	CacheKey string
 
-	// RunJSONStatus asks `yottacode run` to append a machine-readable status
-	// envelope to stderr after the turn finishes. Stdout remains final-answer
-	// only so existing shell pipelines can keep redirecting the assistant body
-	// without parsing around metadata.
+	// RunJSONStatus asks `yottacode run --json` to append the legacy
+	// machine-readable status receipt to stderr while stdout remains answer-only.
 	RunJSONStatus bool
+	// RunFormat selects the primary stdout contract for `yottacode run`.
+	// Text preserves streamed answer-only output; JSON emits one RunResult object.
+	RunFormat string
 }
+
+const (
+	// RunFormatText preserves the original answer-only stdout contract.
+	RunFormatText = "text"
+	// RunFormatJSON emits one structured result object to stdout.
+	RunFormatJSON = "json"
+)
 
 // ValidPermissionModes is the closed set the --permission-mode flag
 // accepts. Exported so the flag-registration site and tests can keep
@@ -303,6 +311,18 @@ func Resolve(opts *ChatOptions) error {
 	opts.PermissionMode = strings.ToLower(strings.TrimSpace(opts.PermissionMode))
 	if !IsValidPermissionMode(opts.PermissionMode) {
 		return fmt.Errorf("invalid --permission-mode %q: use default, plan, or auto", opts.PermissionMode)
+	}
+	opts.RunFormat = strings.ToLower(strings.TrimSpace(opts.RunFormat))
+	if opts.RunFormat == "" {
+		opts.RunFormat = RunFormatText
+	}
+	switch opts.RunFormat {
+	case RunFormatText, RunFormatJSON:
+	default:
+		return fmt.Errorf("invalid --format %q: use text or json", opts.RunFormat)
+	}
+	if opts.RunJSONStatus && opts.RunFormat == RunFormatJSON {
+		return errors.New("--json and --format json cannot be combined: --json is the legacy stderr status receipt")
 	}
 	return nil
 }

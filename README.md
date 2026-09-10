@@ -193,6 +193,7 @@ Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.
 | [`docs/sessions.md`](docs/sessions.md) | Session management and recall |
 | [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) | TUI command reference |
 | [`docs/cli.md`](docs/cli.md) | CLI command reference |
+| [`docs/run-recipes.md`](docs/run-recipes.md) | `yottacode run` scripting and CI recipes |
 | [`docs/architecture.md`](docs/architecture.md) | Internals |
 | [`docs/development.md`](docs/development.md) | Contribution workflow |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues |
