@@ -249,6 +249,33 @@ func TestBuild_SupportsBackgroundDispatch_ControlsAgentAndDispatchTools(t *testi
 // Build must always construct an *mcp.Manager, even with no configured
 // servers, so a future session/new call carrying per-session MCP servers
 // has something to Add() against.
+// TestBuild_CodeMapWatchIntegration exercises the real construction and
+// teardown path for CachedProvider.StartWatch wired into Build/Close (see
+// runtime.go's codeMapProvider construction and the CachedProvider.Close
+// call in Runtime.Close) — the one part of the Code Map watcher work that
+// unit tests on CachedProvider alone can't cover, since they never go
+// through Builder.Build.
+func TestBuild_CodeMapWatchIntegration(t *testing.T) {
+	spec := newTestSpec(t)
+	spec.ChatOptions.Experimental = []string{"code_map"}
+	rt := mustBuild(t, spec)
+
+	if rt.CodeMapProvider == nil {
+		t.Fatal("Runtime.CodeMapProvider is nil with code_map enabled")
+	}
+	if _, ok := rt.Registry.Get("code_map"); !ok {
+		t.Error("expected code_map tool to be registered")
+	}
+	idx, err := rt.CodeMapProvider.Index(context.Background())
+	if err != nil {
+		t.Fatalf("CodeMapProvider.Index: %v", err)
+	}
+	if idx == nil {
+		t.Fatal("CodeMapProvider.Index returned a nil index")
+	}
+	rt.Close(context.Background()) // must not panic; stops the watch goroutine
+}
+
 func TestBuild_MCPManagerAlwaysConstructed(t *testing.T) {
 	spec := newTestSpec(t)
 	rt := mustBuild(t, spec)
