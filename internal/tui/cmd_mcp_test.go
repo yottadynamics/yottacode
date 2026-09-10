@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -486,6 +487,31 @@ func TestSlash_MCPAuthStartsFlowAndSurfacesURL(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(ts.Close)
 	t.Setenv("HOME", t.TempDir())
+	// Without this, StartOAuthLogin's real openBrowserFunc launches an
+	// actual browser at the constructed (test-fixture) authorize URL —
+	// internal/mcp/oauth_test.go's own tests all override the var
+	// in-package; this one can't reach it directly since it lives in
+	// internal/tui, hence the exported test-only seam.
+	//
+	// openBrowserFunc is called from a goroutine StartOAuthLogin spawns
+	// internally (oauth.go's Authorize flow) — a separate goroutine
+	// from the one that receives the authorize URL and returns to this
+	// test, with no ordering guarantee between "URL delivered" and
+	// "browser-open attempted" beyond both happening on that same
+	// background goroutine, sequentially, moments apart. Restoring the
+	// var via a bare t.Cleanup would race that still-in-flight call.
+	// Waiting on this channel below (with a bounded timeout) before the
+	// test returns gives the restore a real happens-after relationship
+	// to the read, and independently doubles as an assertion that the
+	// browser-open was actually attempted with the right URL.
+	openBrowserCalled := make(chan string, 1)
+	t.Cleanup(mcp.SetOpenBrowserFuncForTest(func(u string) error {
+		select {
+		case openBrowserCalled <- u:
+		default:
+		}
+		return nil
+	}))
 
 	m := newTestModel(t)
 	seedConfigTOML(t, fmt.Sprintf(`
@@ -504,6 +530,15 @@ oauth_client_id = "test-client"
 	}
 	if m.mcpOAuthCancel == nil {
 		t.Error("expected mcpOAuthCancel to be set while a sign-in is starting")
+	} else {
+		// This test never drives the flow to completion (no real
+		// callback ever arrives), so nothing else cancels the ctx
+		// StartOAuthLogin's background goroutine is blocked on —
+		// without this, its HTTP listener holds the fixed OAuth
+		// loopback port open for the full mcpOAuthLoginTimeout (10m)
+		// after the test returns, which fails any other test in the
+		// same binary run that also needs that port meanwhile.
+		t.Cleanup(m.mcpOAuthCancel)
 	}
 
 	msg := cmd()
@@ -513,6 +548,15 @@ oauth_client_id = "test-client"
 	}
 	if urlMsg.err != nil {
 		t.Fatalf("unexpected error building the authorize URL: %v", urlMsg.err)
+	}
+
+	select {
+	case gotURL := <-openBrowserCalled:
+		if gotURL != urlMsg.pending.AuthURL {
+			t.Errorf("openBrowserFunc called with %q, want %q", gotURL, urlMsg.pending.AuthURL)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("openBrowserFunc was never called for the authorize URL")
 	}
 
 	m, _ = applyMsg(m, urlMsg)
