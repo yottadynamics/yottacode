@@ -1454,6 +1454,124 @@ func TestLoad_MCPServersOptional(t *testing.T) {
 	}
 }
 
+func TestLoad_MCPPolicyDefaults(t *testing.T) {
+	cfg, err := Load(writeFile(t, ``))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MCP.ApprovalMode != MCPApprovalAsk {
+		t.Errorf("default approval_mode = %q, want %q", cfg.MCP.ApprovalMode, MCPApprovalAsk)
+	}
+	if got := cfg.MCPMaxResultBytes(); got != DefaultMCPMaxResultBytes {
+		t.Errorf("default MCPMaxResultBytes() = %d, want %d", got, DefaultMCPMaxResultBytes)
+	}
+	if got := cfg.MCPCallTimeout(); got != DefaultMCPCallTimeoutSeconds {
+		t.Errorf("default MCPCallTimeout() = %d, want %d", got, DefaultMCPCallTimeoutSeconds)
+	}
+}
+
+func TestLoad_ParsesMCPPolicy(t *testing.T) {
+	src := `
+[mcp]
+approval_mode        = "allow-readonly"
+trust_annotations     = ["filesystem", "memory"]
+call_timeout_seconds  = 30
+max_result_bytes      = 8192
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MCP.ApprovalMode != MCPApprovalAllowReadonly {
+		t.Errorf("approval_mode = %q, want %q", cfg.MCP.ApprovalMode, MCPApprovalAllowReadonly)
+	}
+	if len(cfg.MCP.TrustAnnotations) != 2 || cfg.MCP.TrustAnnotations[0] != "filesystem" {
+		t.Errorf("trust_annotations = %+v", cfg.MCP.TrustAnnotations)
+	}
+	if got := cfg.MCPCallTimeout(); got != 30 {
+		t.Errorf("MCPCallTimeout() = %d, want 30", got)
+	}
+	if got := cfg.MCPMaxResultBytes(); got != 8192 {
+		t.Errorf("MCPMaxResultBytes() = %d, want 8192", got)
+	}
+	if !cfg.MCP.TrustsAnnotations("filesystem") {
+		t.Error("TrustsAnnotations(filesystem) = false, want true under allow-readonly")
+	}
+	if cfg.MCP.TrustsAnnotations("github") {
+		t.Error("TrustsAnnotations(github) = true, want false (not in trust_annotations)")
+	}
+}
+
+func TestLoad_RejectsMCPInvalidApprovalMode(t *testing.T) {
+	src := `
+[mcp]
+approval_mode = "trust-everything"
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for invalid approval_mode")
+	}
+	if !strings.Contains(err.Error(), "approval_mode") {
+		t.Errorf("error should mention approval_mode; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPNegativeCallTimeout(t *testing.T) {
+	src := `
+[mcp]
+call_timeout_seconds = -1
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for negative call_timeout_seconds")
+	}
+	if !strings.Contains(err.Error(), "call_timeout_seconds") {
+		t.Errorf("error should mention call_timeout_seconds; got %q", err)
+	}
+}
+
+func TestLoad_RejectsMCPMaxResultBytesTooSmall(t *testing.T) {
+	src := `
+[mcp]
+max_result_bytes = 100
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for max_result_bytes below the 4096 floor")
+	}
+	if !strings.Contains(err.Error(), "max_result_bytes") {
+		t.Errorf("error should mention max_result_bytes; got %q", err)
+	}
+}
+
+func TestLoad_MCPMaxResultBytesZeroMeansDefault(t *testing.T) {
+	src := `
+[mcp]
+max_result_bytes = 0
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v (zero should fall through to the default, not be rejected)", err)
+	}
+	if got := cfg.MCPMaxResultBytes(); got != DefaultMCPMaxResultBytes {
+		t.Errorf("MCPMaxResultBytes() = %d, want default %d", got, DefaultMCPMaxResultBytes)
+	}
+}
+
+func TestLoad_RejectsMCPTrustAnnotationsInvalidName(t *testing.T) {
+	src := `
+[mcp]
+trust_annotations = ["Not-Valid!"]
+`
+	_, err := Load(writeFile(t, src))
+	if err == nil {
+		t.Fatal("expected error for invalid trust_annotations server name")
+	}
+	if !strings.Contains(err.Error(), "trust_annotations") {
+		t.Errorf("error should mention trust_annotations; got %q", err)
+	}
+}
+
 func writeFile(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()

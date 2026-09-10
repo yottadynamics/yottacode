@@ -8,24 +8,29 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-noble-hopping-quail
 - **Explicit Code Map context assembly.** Experimental `/map here` now ranks up to eight high-signal changed or related files, labels each suggestion, and lets `a` attach them as explicit `@path` references. `/context` shows the latest turn working set, and stale references are cleared across turns, `/clear`, and session resume.
 
 harden-syntax-range-selection
+- **Semantic-first research subagents.** The stock `Explore` and `Plan` roles
+  now receive read-only LSP navigation and feature-gated Code Map queries, use
+  indexed/semantic relationships before targeted grep and file reads, and keep
+  an evidence ledger to avoid restarting broad discovery. The shared agent loop
+  also adds strategy guidance after a third exact successful read-only call in
+  an unchanged workspace while preserving legitimate post-mutation rechecks.
+
 - **Hardened `syntax_range` selection contract.** Canonical kinds, exact half-open byte spans, hashline-compatible receipts, immutable request snapshots, honest parser/scanner capability labels, recoverable warnings, and `.mjs`/`.cjs` resolution make offline structural selection safer for downstream edits.
 - **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply` or auto-created by dispatch workers now end with GitHub's standard `Co-authored-by` trailer. Created and updated PR descriptions include an idempotent yottacode link; attribution can be disabled in configuration.
 - **Code Map's full 5-phase roadmap** remains experimental: `/map here` suggests context, `/map impact` groups blast radius, language import resolution covers TypeScript/JavaScript, Python, and Rust, Go edges narrow to referenced files, and the index supports watcher-backed updates and bounded file exports. See [`code-map.md`](docs/code-map.md).
 
-worktree-mighty-running-dolphin
 - **Structured `yottacode run` output and CI recipes.** `--format json` emits one stable stdout object with content, tool-call summaries, provider usage, exit reason, nullable error, and session id while preserving shell exit semantics. Default text stdout remains answer-only and gains clearer, consistently prefixed stderr status lines; the legacy `--json` stderr receipt remains available for compatibility. See [`run-recipes.md`](docs/run-recipes.md) for PR description, codemod, test-triage, dependency-audit, and changelog workflows.
 
-worktree-vivid-gliding-koala
 - **Headless memory recall.** `yottacode memory recall --query <text>` now
   exposes the production memory ranker to scripts, CI, and external benchmarks,
   with user/project/all scope selection, configurable top-K, human-readable or
   stable JSON output, normalized relevance scores, and the same semantic-to-BM25
   fallback used by live sessions. See [`memory.md`](docs/memory.md#headless-recall-and-external-benchmarks).
 
-feature/commit-pr-attribution
 - **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply`
   or auto-created by dispatch workers now end with GitHub's standard
   `Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>`

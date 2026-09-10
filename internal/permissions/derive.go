@@ -44,6 +44,11 @@ type PathNormalizer func(string) string
 //     rule, joined with " -> ".
 //   - Git: first arg + " *".
 //   - Tests: same as Bash — first argv-token of the test command + " *".
+//   - MCP: exact `MCP(<server>/<tool>)` only — never a glob. A
+//     destructive MCP tool must not become auto-allowed just because
+//     it shares a server prefix with a tool the user actually meant
+//     to bless; see the destructive-glob-refusal enforcement in
+//     internal/agent/loop.go, which this pairs with.
 //   - Glob/Grep/Fetch/Rollback: not derived (too varied or too
 //     high-trust to grant blanket on one click).
 //
@@ -67,6 +72,13 @@ func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (
 			return "", false
 		}
 		return "Git(" + first + " *)", true
+	case "MCP":
+		// Exact match only — never derive a glob. See the doc comment
+		// above and the destructive-glob-refusal check in loop.go.
+		if strings.TrimSpace(target.Descriptor) == "" {
+			return "", false
+		}
+		return "MCP(" + target.Descriptor + ")", true
 	case "Read", "Write", "Edit", "Mkdir", "Delete", "List":
 		pat, ok := derivePathPattern(target.Descriptor, cwd, normalize)
 		if !ok {

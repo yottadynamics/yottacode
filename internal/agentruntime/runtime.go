@@ -635,7 +635,8 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// always constructed; starting it is skipped when the caller wants
 	// to do that itself asynchronously (see SessionSpec.DeferMCPStart).
 	mcpServers := mergeMCPServers(fileCfg.MCPServers, spec.MCPServers)
-	mcpManager := mcppkg.NewManager(mcpServers)
+	mcpPolicy := mcppkg.Policy{RequireTLS: fileCfg.MCP.RequireTLS, AllowedHosts: fileCfg.MCP.AllowedHosts}
+	mcpManager := mcppkg.NewManager(mcpServers, fileCfg.MCPMaxResultBytes(), mcpPolicy)
 	if !spec.DeferMCPStart {
 		startMCPAndRegisterTools(ctx, rt, mcpManager, reg)
 	}

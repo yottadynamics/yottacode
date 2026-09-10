@@ -297,6 +297,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Retrieval    RetrievalConfig   `toml:"retrieval"`
 		Cache        CacheConfig       `toml:"cache"`
 		Memory       MemoryConfig      `toml:"memory"`
+		MCP          MCPConfig         `toml:"mcp"`
 		LSP          LSPConfig         `toml:"lsp"`
 		Sandbox      SandboxConfig     `toml:"sandbox"`
 		Media        MediaConfig       `toml:"media"`
@@ -307,6 +308,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Retrieval:    cfg.Retrieval,
 		Cache:        cfg.Cache,
 		Memory:       cfg.Memory,
+		MCP:          cfg.MCP,
 		LSP:          cfg.LSP,
 		Sandbox:      cfg.Sandbox,
 		Media:        cfg.Media,
