@@ -44,6 +44,7 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	// that mismatch pushes the right border out on tab-indented lines
 	// (notably Go source in a write_file approval).
 	body = strings.ReplaceAll(body, "\t", "    ")
+	body = collapseApprovalBlankLines(body)
 
 	// capW == 0 means we don't know the terminal width yet (test
 	// fixtures, very early frames) — hardWrapLabeled/renderLabeledBox
@@ -56,6 +57,9 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	capW := capApprovalBoxWidth(m.width)
 
 	previewLines := approvalPreviewLines(body, capW)
+	if target := approvalModalTargetInnerWidth(capW); len(previewLines) > 0 && ansi.StringWidth(previewLines[0]) < target {
+		previewLines[0] += strings.Repeat(" ", target-ansi.StringWidth(previewLines[0]))
+	}
 	hotkeyRows := approvalHotkeyRows(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule)
 	hotkeyLines := approvalHotkeyLines(hotkeyRows, capW)
 	previewBudget := approvalPreviewBudget(m.height, len(hotkeyLines))
@@ -65,12 +69,12 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	// modal body focused on the preview so the title is not repeated inside
 	// the decision card.
 
-	bodyLines := []string{strings.Repeat(" ", approvalModalTargetInnerWidth(capW))}
-	bodyLines = append(bodyLines, previewLines...)
+	// Keep the preview and decision keys adjacent. The preview itself owns
+	// any meaningful blank lines; the modal should not add layout-only rows.
+	bodyLines := append([]string(nil), previewLines...)
 	if hint != "" {
 		bodyLines = append(bodyLines, labeledBoxIndent+styleHint.Render(hint))
 	}
-	bodyLines = append(bodyLines, "")
 	if len(hotkeyRows) > 0 {
 		for _, line := range hotkeyLines {
 			row := len(bodyLines)
@@ -78,7 +82,6 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 			registerBracketHotkeys(h, row, ansi.Strip(line))
 		}
 	}
-	bodyLines = append(bodyLines, "")
 
 	leftLabel := " " + styleApprovalTitle.Render("Approval needed") + " "
 	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
@@ -113,7 +116,26 @@ func approvalHotkeyLines(rows []approvalHotkeyRow, capW int) []string {
 	return lines
 }
 
-// approvalBodyFor returns the focused, Content-styled body for the
+// collapseApprovalBlankLines removes repeated empty rows from compact
+// approval previews while retaining intentional single blank separators.
+func collapseApprovalBlankLines(s string) string {
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	blank := false
+	for _, line := range lines {
+		if ansi.Strip(line) == "" {
+			if blank {
+				continue
+			}
+			blank = true
+		} else {
+			blank = false
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // modal — the actual command / diff / file content the user is being
 // asked to approve. Per-tool customizers handle edit_file (diff),
 // write_file (rendered file), and run_bash (parsed compound command);
@@ -130,7 +152,7 @@ func approvalBodyFor(m Model) string {
 		// doesn't cram the box. Here we render only the destination
 		// path + size summary — the user already saw the body above.
 		if rendered, ok := renderWriteFileApprovalSummary(m.approvalArgs); ok {
-			return rendered
+			return collapseApprovalBlankLines(rendered)
 		}
 	case "run_bash":
 		if rendered, _, ok := renderRunBashApproval(m.approvalArgs, m.cwd); ok {
@@ -204,11 +226,12 @@ func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {
 	if termHeight <= 0 {
 		return 0
 	}
-	// The approval box has two border rows plus fixed interior rows for the
-	// title, title/body spacer, body/hotkey spacer, hotkeys, and trailing spacer.
-	// When a preview is clipped, reserve one more row for the scroll hint so the
-	// approval/rejection controls remain visible at the bottom of the modal.
-	budget := termHeight - 2 - 4 - hotkeyLineCount - 1
+	// The approval box has two border rows plus the preview and hotkeys.
+	// Content previews retain their own meaningful single blank separators.
+	// Every approval now keeps the preview and decision keys adjacent;
+	// only the border rows remain fixed layout overhead.
+	budget := termHeight - 2 - hotkeyLineCount - 1
+
 	if budget < 1 {
 		return 1
 	}

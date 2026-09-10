@@ -7012,14 +7012,24 @@ func renderAssistantBlock(rendered string) string {
 	lines := strings.Split(rendered, "\n")
 	out := make([]string, 0, len(lines))
 	state := &assistantRenderState{}
+	previousBlank := false
 	for _, line := range lines {
 		renderedLine, extraBlank := renderAssistantLineWithState(line, state)
 		if renderedLine == "" && !extraBlank {
 			continue
 		}
+		if renderedLine == "" {
+			if previousBlank {
+				continue
+			}
+			previousBlank = true
+		} else {
+			previousBlank = false
+		}
 		out = append(out, renderedLine)
 		if extraBlank && renderedLine != "" {
 			out = append(out, "")
+			previousBlank = true
 		}
 	}
 	return strings.Join(out, "\n")

@@ -41,10 +41,7 @@ Step 3 — compose the refreshed title and body:
   commit list now also adds Y). Title churn for cosmetic
   reasons (rewording, capitalization fixes) is NOT a reason to
   edit — it just adds noise to the PR's GitHub history.
-- BODY: regenerate from the full ## commits.log. If the
-  existing body had a recognizable structure (Summary / Changes
-  / Test plan / Notes), preserve that section order and update
-  each section's contents. Otherwise use the standard skeleton:
+- BODY: update the existing body in place from the full ## commits.log. Treat the existing body as authoritative Markdown: preserve its section order, headings, lists, tables, badges, links, HTML/details blocks, checkboxes, indentation, and intentional blank lines. Change only stale facts and add genuinely new content; do not replace the body with a newly invented skeleton when an existing body is present. Do not normalize, rewrap, or remove Markdown formatting. If the existing body is empty, use the standard skeleton:
 
   ## Summary
   <1-3 bullets, the "why">

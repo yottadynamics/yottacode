@@ -868,6 +868,17 @@ func TestFixTableAlignment_NoChangeWhenAligned(t *testing.T) {
 	}
 }
 
+func TestRenderAssistantBlock_CollapsesRepeatedBlankLines(t *testing.T) {
+	got := stripANSI(renderAssistantBlock("## Summary\n\n\n\nDetails\n\n\nChecklist"))
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("assistant block retained repeated blank rows: %q", got)
+	}
+	for _, want := range []string{"## Summary", "Details", "Checklist"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("assistant block lost %q: %q", want, got)
+		}
+	}
+}
 func TestModel_BlankLineMidTableDoesNotSplit(t *testing.T) {
 	m := newTestModel(t)
 	// Stream a table with a blank line between rows. The blank line should not
