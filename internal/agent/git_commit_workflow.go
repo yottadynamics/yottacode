@@ -297,7 +297,11 @@ func renderCommitContext(s CommitContext) string {
 // without auto-retry or auto-amend — the legacy directive's "hard
 // prohibitions" become an unreachable code path rather than a model
 // discipline ask.
-type GitCommitApplyTool struct{ Cwd *CwdRef }
+type GitCommitApplyTool struct {
+	Cwd *CwdRef
+	// Trailer is appended after subject validation. Empty disables attribution.
+	Trailer string
+}
 
 func (t *GitCommitApplyTool) Name() string { return "git_commit_apply" }
 
@@ -333,7 +337,7 @@ func (t *GitCommitApplyTool) PreviewCall(argsJSON string) string {
 		Message string `json:"message"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("git_commit_apply(%q)", a.Message)
+	return fmt.Sprintf("git_commit_apply(%q)", appendCommitTrailer(a.Message, t.Trailer))
 }
 
 // CommitResult is the typed envelope ApplyCommit returns. Rendering
@@ -357,7 +361,7 @@ func (t *GitCommitApplyTool) Execute(ctx context.Context, argsJSON string) (stri
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("git_commit_apply: invalid args: %w", err)
 	}
-	res, err := ApplyCommit(ctx, t.Cwd.Get(), a.Message)
+	res, err := ApplyCommit(ctx, t.Cwd.Get(), a.Message, t.Trailer)
 	if err != nil {
 		return "", fmt.Errorf("git_commit_apply: %w", err)
 	}
@@ -371,7 +375,7 @@ func (t *GitCommitApplyTool) Execute(ctx context.Context, argsJSON string) (stri
 // missing, ctx canceled, fork failure); validation failures and hook
 // rejections populate the result envelope so callers can branch
 // without a stringy err = "..." check.
-func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error) {
+func ApplyCommit(ctx context.Context, cwd, message, trailer string) (CommitResult, error) {
 	var res CommitResult
 
 	if _, err := exec.LookPath("git"); err != nil {
@@ -392,12 +396,14 @@ func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error)
 		return res, nil
 	}
 
+	fullMessage := appendCommitTrailer(message, trailer)
 	// git commit -F - reads the message from stdin so quotes, dollar
 	// signs, backticks pass through unmangled — matches the legacy
-	// directive's heredoc shape without invoking a shell.
-	cmd := exec.CommandContext(ctx, "git", "commit", "-F", "-")
+	// directive's heredoc shape without invoking a shell. Verbatim cleanup
+	// preserves a configured trailer exactly as supplied.
+	cmd := exec.CommandContext(ctx, "git", "commit", "--cleanup=verbatim", "-F", "-")
 	cmd.Dir = cwd
-	cmd.Stdin = strings.NewReader(message)
+	cmd.Stdin = strings.NewReader(fullMessage)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		// Distinguish hook/lint rejections (expected, surfaced via
@@ -422,6 +428,15 @@ func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error)
 	return res, nil
 }
 
+func appendCommitTrailer(message, trailer string) string {
+	// Preserve disabled calls byte-for-byte; enabled calls normalize only the
+	// single trailing newline accepted by validateCommitSubject.
+	if trailer == "" {
+		return message
+	}
+	return strings.TrimSuffix(message, "\n") + "\n\n" + trailer
+}
+
 // validateCommitSubject enforces the hard guarantees the legacy
 // directive could only ask the model to honor. Returns the empty
 // string when the subject is acceptable; otherwise returns a short
@@ -431,7 +446,10 @@ func ApplyCommit(ctx context.Context, cwd, message string) (CommitResult, error)
 // "\n" to a one-liner shouldn't trip the multi-line check) but
 // nothing else.
 func validateCommitSubject(message string) string {
-	msg := strings.TrimRight(message, "\n")
+	if strings.HasSuffix(message, "\n\n") {
+		return "message must be a single line (no body / footer)"
+	}
+	msg := strings.TrimSuffix(message, "\n")
 	if strings.TrimSpace(msg) == "" {
 		return "message is empty"
 	}

@@ -8,6 +8,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+feature/commit-pr-attribution
+- **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply`
+  or auto-created by dispatch workers now end with GitHub's standard
+  `Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>`
+  trailer, linking the contribution to the public `yottacode-agent` profile.
+  Created and updated PR descriptions end with a small yottacode link, with
+  repeated updates kept idempotent. Set `[attribution] disabled = true` to
+  remove both, or override `trailer` for commit attribution only. Conversation
+  comments remain untouched. See
+  [`configuration.md`](docs/configuration.md#commit-and-pr-attribution).
+
 - **Code Map's full 5-phase roadmap** (`--experimental code_map`, still
   experimental). `/map here` now ranks a suggested-context list (changed
   files, direct import neighbors, likely tests, likely docs) with `a` to

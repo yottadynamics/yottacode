@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -103,6 +105,53 @@ func TestBuild_GitHubToolSuiteRegistered(t *testing.T) {
 		if rt.GHClient == nil {
 			t.Errorf("DisableWorktreeTools=%v: expected rt.GHClient to be set", disableWorktree)
 		}
+	}
+}
+
+func TestBuild_AttributionConfigWiredConsistently(t *testing.T) {
+	tests := []struct {
+		name        string
+		configBody  string
+		wantTrailer string
+		wantFooter  string
+	}{
+		{name: "defaults", wantTrailer: config.DefaultCommitAttributionTrailer, wantFooter: config.DefaultPRAttributionFooter},
+		{name: "disabled", configBody: "[attribution]\ndisabled = true\n"},
+		{name: "custom commit trailer", configBody: "[attribution]\ntrailer = \"custom trailer\"\n", wantTrailer: "custom trailer", wantFooter: config.DefaultPRAttributionFooter},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := newTestSpec(t)
+			if tt.configBody != "" {
+				path := filepath.Join(os.Getenv("HOME"), ".yottacode", "config.toml")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatalf("mkdir config: %v", err)
+				}
+				if err := os.WriteFile(path, []byte(tt.configBody), 0o600); err != nil {
+					t.Fatalf("write config: %v", err)
+				}
+			}
+			rt := mustBuild(t, spec)
+
+			commitAny, _ := rt.Registry.Get("git_commit_apply")
+			commitTool := commitAny.(*agent.GitCommitApplyTool)
+			legacyCommitAny, _ := rt.Registry.Get("git_commit")
+			legacyCommitTool := legacyCommitAny.(*agent.GitCommitTool)
+			createAny, _ := rt.Registry.Get("pr_create")
+			createTool := createAny.(*agent.GHPRCreateTool)
+			updateAny, _ := rt.Registry.Get("pr_update")
+			updateTool := updateAny.(*agent.GHPRUpdateTool)
+			dispatchAny, _ := rt.Registry.Get("dispatch")
+			dispatchTool := dispatchAny.(*agent.DispatchTool)
+
+			if commitTool.Trailer != tt.wantTrailer || legacyCommitTool.Trailer != tt.wantTrailer || dispatchTool.CommitTrailer != tt.wantTrailer {
+				t.Fatalf("commit attribution: apply=%q legacy=%q dispatch=%q want=%q", commitTool.Trailer, legacyCommitTool.Trailer, dispatchTool.CommitTrailer, tt.wantTrailer)
+			}
+			if createTool.Footer != tt.wantFooter || updateTool.Footer != tt.wantFooter {
+				t.Fatalf("PR attribution: create=%q update=%q want=%q", createTool.Footer, updateTool.Footer, tt.wantFooter)
+			}
+		})
 	}
 }
 

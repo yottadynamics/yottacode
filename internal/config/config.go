@@ -77,6 +77,49 @@ type Config struct {
 	// media_analyze/media_render/media_compose tools. Absent block falls
 	// through to the conservative defaults below.
 	Media MediaConfig `toml:"media"`
+	// Attribution controls honest authorship markers on commit messages and PR
+	// bodies drafted through yottacode. The zero value is deliberately enabled;
+	// set Disabled to opt out of both surfaces.
+	Attribution AttributionConfig `toml:"attribution"`
+}
+
+const (
+	// DefaultCommitAttributionTrailer is GitHub's standard co-author trailer for
+	// the public yottacode-agent account. Its ID-based noreply address remains
+	// associated if the account is renamed.
+	DefaultCommitAttributionTrailer = "Co-authored-by: yottacode <325888353+yottacode-agent@users.noreply.github.com>"
+	// DefaultPRAttributionFooter is the human-readable attribution used in PR
+	// descriptions; Co-authored-by has no special meaning outside git messages.
+	DefaultPRAttributionFooter = "---\nDrafted with [yottacode](https://yottacode.ai)"
+)
+
+// AttributionConfig controls the optional attribution appended to drafted git
+// commits and PR descriptions. Trailer overrides only commit attribution; PR
+// attribution intentionally remains a stable human-readable footer.
+type AttributionConfig struct {
+	Disabled bool   `toml:"disabled"`
+	Trailer  string `toml:"trailer"`
+}
+
+// CommitTrailer resolves the commit trailer for a session. Empty means
+// attribution is disabled.
+func (a AttributionConfig) CommitTrailer() string {
+	if a.Disabled {
+		return ""
+	}
+	if a.Trailer != "" {
+		return a.Trailer
+	}
+	return DefaultCommitAttributionTrailer
+}
+
+// PRFooter resolves the fixed PR footer for a session. Empty means attribution
+// is disabled.
+func (a AttributionConfig) PRFooter() string {
+	if a.Disabled {
+		return ""
+	}
+	return DefaultPRAttributionFooter
 }
 
 // SubagentsConfig tunes the subagent subsystem. SessionTokenBudget caps
@@ -1510,6 +1553,13 @@ const DefaultsTOML = `# yottacode configuration
 # Values out of range are rejected at load time, not silently clamped.
 # Unknown sections and keys are also rejected so typos surface
 # immediately.
+
+[attribution]
+# Add honest attribution to commits and pull-request descriptions drafted by
+# yottacode. Set disabled = true to opt out of both. The optional trailer value
+# overrides commit attribution only; PR descriptions keep the standard footer.
+disabled = false
+# trailer = "Co-authored-by: my-agent <noreply@example.com>"
 
 [context]
 # Context-window watermarks. As the running conversation fills the active

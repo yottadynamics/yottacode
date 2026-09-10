@@ -408,6 +408,74 @@ func TestBuildPRContext_FlagsIgnoredGeneratedLocalArtifacts(t *testing.T) {
 	}
 }
 
+func TestPRTools_AppendFooterOnce(t *testing.T) {
+	const footer = "---\nDrafted with [yottacode](https://yottacode.ai)"
+
+	t.Run("create appends footer", func(t *testing.T) {
+		gh := &fakeGH{res: github.CreatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
+		res, err := CreatePR(context.Background(), gh, github.CreatePRRequest{
+			Base: "main", Head: "feature", Title: "add feature", Body: "summary\n\n", Draft: true,
+		}, footer)
+		if err != nil || !res.Created {
+			t.Fatalf("CreatePR: res=%+v err=%v", res, err)
+		}
+		if got, want := gh.lastReq.Body, "summary\n\n"+footer; got != want {
+			t.Fatalf("create body = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("update preserves exact final footer", func(t *testing.T) {
+		gh := &fakeGH{updatePRRes: github.UpdatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
+		body := "summary\n\n" + footer
+		res, err := UpdatePR(context.Background(), gh, github.UpdatePRRequest{
+			Ref: "3", Title: "refresh feature", Body: body,
+		}, footer)
+		if err != nil || !res.Updated {
+			t.Fatalf("UpdatePR: res=%+v err=%v", res, err)
+		}
+		if gh.updatePRReq.Body != body {
+			t.Fatalf("update duplicated or changed footer: %q", gh.updatePRReq.Body)
+		}
+	})
+
+	t.Run("disabled leaves bodies unchanged", func(t *testing.T) {
+		gh := &fakeGH{res: github.CreatePRResult{URL: "https://github.com/o/r/pull/3", Number: 3}}
+		_, err := CreatePR(context.Background(), gh, github.CreatePRRequest{
+			Base: "main", Head: "feature", Title: "add feature", Body: "summary\n",
+		}, "")
+		if err != nil {
+			t.Fatalf("CreatePR: %v", err)
+		}
+		if gh.lastReq.Body != "summary\n" {
+			t.Fatalf("disabled body changed: %q", gh.lastReq.Body)
+		}
+	})
+
+	t.Run("approval previews show effective body", func(t *testing.T) {
+		create := (&GHPRCreateTool{Footer: footer}).PreviewCall(`{"base":"main","title":"add feature","body":"summary","draft":true}`)
+		if !strings.HasSuffix(create, "summary\n\n"+footer) {
+			t.Fatalf("create preview hides footer: %q", create)
+		}
+		update := (&GHPRUpdateTool{Footer: footer}).PreviewCall(`{"ref":"3","title":"refresh feature","body":"summary"}`)
+		if !strings.HasSuffix(update, "summary\n\n"+footer) {
+			t.Fatalf("update preview hides footer: %q", update)
+		}
+	})
+
+	t.Run("empty body rejected before footer", func(t *testing.T) {
+		gh := &fakeGH{}
+		res, err := CreatePR(context.Background(), gh, github.CreatePRRequest{
+			Base: "main", Head: "feature", Title: "add feature", Body: "  ",
+		}, footer)
+		if err != nil {
+			t.Fatalf("CreatePR: %v", err)
+		}
+		if res.ValidationErr == "" || gh.calls != 0 {
+			t.Fatalf("empty body bypassed validation: res=%+v calls=%d", res, gh.calls)
+		}
+	})
+}
+
 func TestGHPRCreateTool_RoundsThroughTool(t *testing.T) {
 	tmp := gitRepoOnBranch(t, "feature/live-head")
 
@@ -779,6 +847,9 @@ func TestAddPRComment_HappyPath(t *testing.T) {
 	}
 	if gh.addPRCommentReq.Ref != "29" {
 		t.Errorf("Ref not propagated to request: %q", gh.addPRCommentReq.Ref)
+	}
+	if got, want := gh.addPRCommentReq.Body, "LGTM, cross-linking Refs #42"; got != want {
+		t.Errorf("comment body changed: got %q, want %q", got, want)
 	}
 }
 
