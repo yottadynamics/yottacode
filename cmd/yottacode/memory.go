@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -24,12 +25,14 @@ func newMemoryCmd() *cobra.Command {
 into non-interactive cobra subcommands.
 
   list     list saved memories (defaults to project scope)
+  recall   rank memories for a query using the production retriever
   audit    report memories that need curation
   forget   delete a saved memory by name`,
 		Args: cobra.NoArgs,
 	}
 	cmd.AddCommand(
 		newMemoryListCmd(),
+		newMemoryRecallCmd(),
 		newMemoryForgetCmd(),
 		newMemoryReindexCmd(),
 		newMemoryAuditCmd(),
@@ -186,6 +189,109 @@ Configure the model via [retrieval] embedding_model in
 			return nil
 		},
 	}
+}
+
+// memoryRecallResponse is the stable machine-readable recall envelope. A
+// dedicated DTO prevents internal paths and provenance metadata from leaking.
+type memoryRecallResponse struct {
+	Query   string               `json:"query"`
+	Results []memoryRecallResult `json:"results"`
+}
+
+// memoryRecallResult is one ranked memory returned by the recall command.
+type memoryRecallResult struct {
+	Name        string  `json:"name"`
+	Scope       string  `json:"scope"`
+	Type        string  `json:"type"`
+	Score       float64 `json:"score"`
+	Description string  `json:"description"`
+	Body        string  `json:"body"`
+}
+
+// newMemoryRecallCmd exposes the production memory retriever to scripts without
+// constructing an agent session or duplicating ranking policy.
+func newMemoryRecallCmd() *cobra.Command {
+	var query, scope, format string
+	var topK int
+	c := &cobra.Command{
+		Use:   "recall",
+		Short: "Rank saved memories for a query",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query = strings.TrimSpace(query)
+			if query == "" {
+				return errors.New("memory recall requires a non-empty --query")
+			}
+			if scope != "all" && scope != "user" && scope != "project" {
+				return fmt.Errorf("unknown scope %q (want all, user, or project)", scope)
+			}
+			if format != "text" && format != "json" {
+				return fmt.Errorf("unknown format %q (want text or json)", format)
+			}
+			if cmd.Flags().Changed("top-k") && topK < 1 {
+				return errors.New("--top-k must be greater than zero")
+			}
+
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("memory recall: resolve working directory: %w", err)
+			}
+			cfg, err := config.LoadDefault()
+			if err != nil {
+				return fmt.Errorf("memory recall: load config: %w", err)
+			}
+			loaded, err := memory.Load(cwd)
+			if err != nil {
+				return fmt.Errorf("memory recall: load store: %w", err)
+			}
+
+			retrieval := cfg.Retrieval
+			retrieval.Enabled = true
+			if cmd.Flags().Changed("top-k") {
+				retrieval.TopK = topK
+			}
+			var entries []memory.MemoryEntry
+			switch scope {
+			case "user":
+				entries = loaded.UserMemories
+			case "project":
+				entries = loaded.ProjectMemories
+			default:
+				entries = memory.EffectiveEntries(loaded.UserMemories, loaded.ProjectMemories)
+			}
+			embedClient, _ := memory.ResolveEmbedClient(cmd.Context(), retrieval.Strategy, retrieval.EmbeddingModel, "")
+			scored := memory.SelectWithEmbeddingsScored(cmd.Context(), entries, query, retrieval, embedClient)
+			response := memoryRecallResponse{Query: query, Results: make([]memoryRecallResult, 0, len(scored))}
+			for _, result := range scored {
+				e := result.Entry
+				response.Results = append(response.Results, memoryRecallResult{
+					Name: e.Name, Scope: e.Scope, Type: e.Type, Score: result.Score,
+					Description: e.Description, Body: e.Body,
+				})
+			}
+			if format == "json" {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(response); err != nil {
+					return fmt.Errorf("memory recall: encode JSON: %w", err)
+				}
+				return nil
+			}
+			if len(response.Results) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "(no matching memories)")
+				return nil
+			}
+			for i, result := range response.Results {
+				fmt.Fprintf(cmd.OutOrStdout(), "%d. %.4f  %s/%s  %s\n   %s\n%s\n", i+1, result.Score, result.Scope, result.Type, result.Name, result.Description, result.Body)
+			}
+			return nil
+		},
+	}
+	c.Flags().StringVar(&query, "query", "", "query text to rank memories against")
+	c.Flags().StringVar(&scope, "scope", "all", "memory scope (all, user, or project)")
+	c.Flags().IntVar(&topK, "top-k", 0, "maximum results (defaults to retrieval.top_k)")
+	c.Flags().StringVar(&format, "format", "text", "output format (text or json)")
+	return c
 }
 
 func renderAuditHealth(health memory.AuditHealth) string {

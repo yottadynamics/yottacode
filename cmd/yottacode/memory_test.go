@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
@@ -35,6 +38,9 @@ func withCwdAndHome(t *testing.T) string {
 	// Memory paths now honor $YOTTACODE_HOME; clear it so a developer/CI
 	// with the override exported doesn't read or mutate the real store.
 	t.Setenv("YOTTACODE_HOME", "")
+	// Keep recall tests independent of any Ollama service configured on the
+	// developer host; semantic availability has dedicated httptest coverage.
+	t.Setenv("OLLAMA_HOST", "http://localhost:1")
 	cwd := t.TempDir()
 	prev, err := os.Getwd()
 	if err != nil {
@@ -82,14 +88,164 @@ func TestMemoryList_EmptyFolderPrintsHint(t *testing.T) {
 	}
 }
 
-func TestMemorySearchCommandRemoved(t *testing.T) {
+func TestMemoryCommandRegistration(t *testing.T) {
 	cmd := newCLI()
-	memoryCmd, _, err := cmd.Find([]string{"memory", "search"})
+	searchCmd, _, err := cmd.Find([]string{"memory", "search"})
 	if err != nil {
 		t.Fatalf("find memory search: %v", err)
 	}
-	if memoryCmd != nil && memoryCmd.Name() == "search" {
-		t.Fatalf("memory search command should not be registered")
+	if searchCmd != nil && searchCmd.Name() == "search" {
+		t.Fatal("memory search command should not be registered")
+	}
+	recallCmd, _, err := cmd.Find([]string{"memory", "recall"})
+	if err != nil {
+		t.Fatalf("find memory recall: %v", err)
+	}
+	if recallCmd == nil || recallCmd.Name() != "recall" {
+		t.Fatal("memory recall command should be registered")
+	}
+}
+
+func TestMemoryRecallJSONAndScope(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "project-match", "deployment kubernetes production")
+	userDir, err := memory.UserMemoryDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "user-match.md"), []byte("---\nname: user-match\ntype: user\ndescription: personal testing preference\n---\nUse table-driven tests.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "recall", "--query", "testing preference", "--scope", "user", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var response memoryRecallResponse
+	if err := json.Unmarshal([]byte(out.String()), &response); err != nil {
+		t.Fatalf("decode JSON: %v\n%s", err, out.String())
+	}
+	if response.Query != "testing preference" || len(response.Results) == 0 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+	for _, result := range response.Results {
+		if result.Scope != "user" {
+			t.Fatalf("user scope returned %+v", result)
+		}
+	}
+	if response.Results[0].Body != "Use table-driven tests." {
+		t.Fatalf("body = %q", response.Results[0].Body)
+	}
+}
+
+func TestMemoryRecallEmptyJSONUsesArray(t *testing.T) {
+	withCwdAndHome(t)
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "recall", "--query", "anything", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), `"results": []`) {
+		t.Fatalf("empty JSON must use an array: %s", out.String())
+	}
+}
+
+func TestMemoryRecallAllShadowsUserAndHonorsTopK(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "shared", "project deployment answer")
+	seedProjectMemory(t, cwd, "other", "unrelated body")
+	userDir, err := memory.UserMemoryDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "shared.md"), []byte("---\nname: shared\ntype: user\ndescription: x\n---\nuser deployment answer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "recall", "--query", "deployment", "--top-k", "1", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var response memoryRecallResponse
+	if err := json.Unmarshal([]byte(out.String()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != 1 || response.Results[0].Name != "shared" || response.Results[0].Scope != "project" {
+		t.Fatalf("shadowed/top-k response = %+v", response.Results)
+	}
+}
+
+func TestMemoryRecallMatchesProductionSelector(t *testing.T) {
+	cwd := withCwdAndHome(t)
+	seedProjectMemory(t, cwd, "deploy", "kubernetes deployment production")
+	seedProjectMemory(t, cwd, "testing", "table driven unit tests")
+	loaded, err := memory.Load(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default().Retrieval
+	cfg.Enabled = true
+	cfg.Strategy = "bm25"
+	want := memory.SelectWithEmbeddingsScored(context.Background(), memory.EffectiveEntries(loaded.UserMemories, loaded.ProjectMemories), "production deployment", cfg, nil)
+
+	cmd := newCLI()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"memory", "recall", "--query", "production deployment", "--format", "json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var response memoryRecallResponse
+	if err := json.Unmarshal([]byte(out.String()), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Results) != len(want) {
+		t.Fatalf("result count = %d, want %d", len(response.Results), len(want))
+	}
+	for i := range want {
+		if response.Results[i].Name != want[i].Entry.Name || response.Results[i].Score != want[i].Score {
+			t.Fatalf("result %d = %+v, want %s score %v", i, response.Results[i], want[i].Entry.Name, want[i].Score)
+		}
+	}
+	prompt := memory.SystemPromptForSemantic(context.Background(), "base", loaded, "production deployment", cfg, nil)
+	for _, result := range want {
+		if !strings.Contains(prompt, result.Entry.Body) {
+			t.Fatalf("live prompt omitted selected memory %q", result.Entry.Name)
+		}
+	}
+}
+
+func TestMemoryRecallValidation(t *testing.T) {
+	withCwdAndHome(t)
+	for _, args := range [][]string{
+		{"memory", "recall"},
+		{"memory", "recall", "--query", "q", "--scope", "bad"},
+		{"memory", "recall", "--query", "q", "--format", "yaml"},
+		{"memory", "recall", "--query", "q", "--top-k", "0"},
+	} {
+		cmd := newCLI()
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("expected validation error for %v", args)
+		}
 	}
 }
 
