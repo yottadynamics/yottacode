@@ -120,13 +120,13 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 // function correctly classifies canonical read-only and mutating tools.
 func TestIsReadOnlyTool_Classification(t *testing.T) {
 	// Read-only tools must return true.
-	for _, name := range []string{"read_file", "grep", "glob", "lsp_diagnostics", "git_branch_status", "list_git_changed_files"} {
+	for _, name := range []string{"read_file", "read_document", "search_document", "grep", "glob", "lsp_diagnostics", "lsp_impact", "code_map", "code_symbols", "code_impact", "syntax_range", "git_branch_status", "git_diff_stat", "git_branch_diff", "list_git_changed_files"} {
 		if !IsReadOnlyTool(name) {
 			t.Errorf("IsReadOnlyTool(%q) = false, want true", name)
 		}
 	}
 	// Mutating tools must return false.
-	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_hashline", "apply_diff"} {
+	for _, name := range []string{"edit_file", "write_file", "run_bash", "run_tests", "git_commit", "apply_hashline", "apply_diff", "lsp_apply_workspace_edit"} {
 		if IsReadOnlyTool(name) {
 			t.Errorf("IsReadOnlyTool(%q) = true, want false", name)
 		}
@@ -426,6 +426,35 @@ func TestAgentTool_AppliesToolAllowlist(t *testing.T) {
 	}
 	if _, ok := child.Get("run_bash"); ok {
 		t.Errorf("run_bash should be filtered out by the allowlist")
+	}
+}
+
+func TestAgentTool_ResearchBuiltinGetsRegisteredSemanticTools(t *testing.T) {
+	builtins := subagents.LoadBuiltins()
+	var cfg *subagents.AgentConfig
+	for i := range builtins {
+		if builtins[i].Name == "Explore" {
+			cfg = &builtins[i]
+			break
+		}
+	}
+	if cfg == nil {
+		t.Fatal("Explore builtin missing")
+	}
+	tool, parent := newTestAgentTool(t, []subagents.AgentConfig{*cfg}, nil, false)
+	for _, name := range []string{"lsp_symbols", "lsp_references", "code_symbols", "code_impact", "lsp_apply_workspace_edit"} {
+		parent.Register(&mockTool{name: name})
+	}
+	child := tool.buildChildRegistry(cfg)
+	for _, name := range []string{"lsp_symbols", "lsp_references", "code_symbols", "code_impact"} {
+		if _, ok := child.Get(name); !ok {
+			t.Errorf("child registry missing allowed semantic tool %q", name)
+		}
+	}
+	for _, name := range []string{"lsp_apply_workspace_edit", AgentToolName} {
+		if _, ok := child.Get(name); ok {
+			t.Errorf("child registry unexpectedly contains %q", name)
+		}
 	}
 }
 

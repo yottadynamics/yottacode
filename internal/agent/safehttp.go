@@ -6,23 +6,9 @@ import (
 	"net/http"
 	"syscall"
 	"time"
-)
 
-// isNonPublicIP reports whether ip is loopback, link-local (this covers
-// the 169.254.169.254 cloud-instance-metadata endpoint), private,
-// multicast, or unspecified — the address ranges an auto-approved,
-// prompt-injectable fetch must never reach.
-func isNonPublicIP(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsPrivate() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
-}
+	"github.com/yottadynamics/yottacode/internal/netguard"
+)
 
 // blockedDialControl is a net.Dialer Control hook that refuses connections
 // to non-public destinations. It runs AFTER DNS resolution, on the actual
@@ -38,7 +24,7 @@ func blockedDialControl(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("ssrf guard: unresolved address %q", address)
 	}
-	if isNonPublicIP(ip) {
+	if netguard.IsNonPublicIP(ip) {
 		return fmt.Errorf("ssrf guard: refusing to connect to non-public address %s (use run_bash if you genuinely need a local/private host)", ip)
 	}
 	return nil

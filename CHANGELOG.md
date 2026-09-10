@@ -8,12 +8,22 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+
 - **Responsive startup and bounded shutdown lifecycle.** The TUI now paints
   before optional provider/embedding, Git/LSP, diagnostics, and maintenance
   probes; `YOTTACODE_STARTUP_TRACE=1` timestamps launch milestones. Update
   notices use stale-while-revalidate caching. Quitting starts no hidden final
   AI turn, and MCP/LSP/recall teardown shares a bounded deadline so hanging
   protocol peers or background embedding cannot indefinitely delay exit.
+
+
+- **Semantic-first research subagents.** The stock `Explore` and `Plan` roles
+  now receive read-only LSP navigation and feature-gated Code Map queries, use
+  indexed/semantic relationships before targeted grep and file reads, and keep
+  an evidence ledger to avoid restarting broad discovery. The shared agent loop
+  also adds strategy guidance after a third exact successful read-only call in
+  an unchanged workspace while preserving legitimate post-mutation rechecks.
+
 
 - **Hardened `syntax_range` selection contract.** Canonical kinds, exact half-open byte spans, hashline-compatible receipts, immutable request snapshots, honest parser/scanner capability labels, recoverable warnings, and `.mjs`/`.cjs` resolution make offline structural selection safer for downstream edits.
 - **Default-on commit and PR attribution.** Commits drafted through `git_commit_apply` or auto-created by dispatch workers now end with GitHub's standard `Co-authored-by` trailer. Created and updated PR descriptions include an idempotent yottacode link; attribution can be disabled in configuration.

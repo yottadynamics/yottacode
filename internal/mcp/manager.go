@@ -24,12 +24,23 @@ type Manager struct {
 	clients map[string]Client           // live clients keyed by name
 	order   []string                    // stable iteration order (registration order)
 	status  map[string]StartResult      // most recent Start outcome per name
-	// gen tracks a per-server restart generation. Restart bumps it under
-	// mu at entry and re-checks it before publishing the rebuilt client,
-	// so two concurrent restarts of the same server can't both win: the
-	// latest generation publishes, any superseded restart stops the
-	// client it spawned (so its subprocess doesn't leak) and returns the
-	// winner's result. Keyed by name; missing == 0.
+	// maxResultBytes is threaded into every client's sessionOps at
+	// construction time (see newClient) so the single, config-resolved
+	// cap is authoritative — there is no second, hardcoded cap anywhere
+	// downstream (see internal/agent/mcp_tool.go's Execute, which no
+	// longer re-caps).
+	maxResultBytes int
+	// policy is the transport security policy applied to every http/sse
+	// client this Manager constructs — see newClient and Policy.
+	policy Policy
+	// gen tracks a per-server generation. Restart, Enable, and Disable
+	// each bump it under mu at entry; startAndPublish (used by Restart and
+	// Enable) re-checks it before publishing a freshly built client, so
+	// any interleaving of concurrent Restart/Enable/Disable calls on the
+	// same server can't both win or race the client into an inconsistent
+	// state: the latest generation publishes, any superseded call stops
+	// the client it spawned (so its subprocess/connection doesn't leak)
+	// and returns the winner's result. Keyed by name; missing == 0.
 	gen map[string]uint64
 }
 
@@ -37,32 +48,44 @@ type Manager struct {
 // for healthy starts; ToolCount is 0 when Err is non-nil. Warnings
 // carries non-fatal config-time observations (e.g. an unresolved $VAR
 // in the env block) so the caller can surface them — they don't
-// prevent the server from starting.
+// prevent the server from starting. Disabled marks an entry that was
+// never started at all (config.MCPServer.Disabled) — Err/ToolCount are
+// always zero-value alongside it.
 type StartResult struct {
 	Name      string
 	Err       error
 	ToolCount int
 	Warnings  []string
+	Disabled  bool
 }
 
 // NewManager constructs a Manager from the parsed config block. Each
 // non-disabled MCPServer becomes one Client (stdio, HTTP, or SSE — see
-// newClient). Disabled entries are dropped — they don't appear in /mcp
-// at all in v1; the file is the only place that knows about them.
-func NewManager(servers []config.MCPServer) *Manager {
+// newClient). A disabled entry stays visible — it appears in Names/
+// Statuses/`/mcp` with a "disabled" status — but gets no client at all
+// (no subprocess spawned, no connection dialed) until Enable is called.
+// maxResultBytes (config.Config.MCPMaxResultBytes()) is threaded into
+// every constructed client so the flattened-result cap is a single,
+// config-aware value instead of a second hardcoded one downstream.
+// policy bounds which URLs the manager's http/sse clients are willing to
+// connect to — see Policy.
+func NewManager(servers []config.MCPServer, maxResultBytes int, policy Policy) *Manager {
 	m := &Manager{
-		configs: make(map[string]config.MCPServer, len(servers)),
-		clients: make(map[string]Client, len(servers)),
-		status:  make(map[string]StartResult, len(servers)),
-		gen:     make(map[string]uint64, len(servers)),
+		configs:        make(map[string]config.MCPServer, len(servers)),
+		clients:        make(map[string]Client, len(servers)),
+		status:         make(map[string]StartResult, len(servers)),
+		gen:            make(map[string]uint64, len(servers)),
+		maxResultBytes: maxResultBytes,
+		policy:         policy,
 	}
 	for _, s := range servers {
+		m.configs[s.Name] = s
+		m.order = append(m.order, s.Name)
 		if s.Disabled {
+			m.status[s.Name] = StartResult{Name: s.Name, Disabled: true}
 			continue
 		}
-		m.configs[s.Name] = s
-		m.clients[s.Name] = newClient(s)
-		m.order = append(m.order, s.Name)
+		m.clients[s.Name] = m.newClient(s)
 	}
 	return m
 }
@@ -76,14 +99,20 @@ func NewManager(servers []config.MCPServer) *Manager {
 // through to stdio rather than panicking — with an empty Command that
 // fails cleanly at Start() ("command not found") instead of silently
 // misbehaving.
-func newClient(cfg config.MCPServer) Client {
+func (m *Manager) newClient(cfg config.MCPServer) Client {
 	switch cfg.Transport {
 	case "http":
-		return NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, false)
+		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, false, m.policy, cfg.TLSCAFile)
+		c.ops.maxResultBytes = m.maxResultBytes
+		return c
 	case "sse":
-		return NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, true)
+		c := NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, true, m.policy, cfg.TLSCAFile)
+		c.ops.maxResultBytes = m.maxResultBytes
+		return c
 	default:
-		return NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+		c := NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+		c.ops.maxResultBytes = m.maxResultBytes
+		return c
 	}
 }
 
@@ -97,10 +126,16 @@ func (m *Manager) Start(ctx context.Context) []StartResult {
 	type pair struct {
 		name   string
 		client Client
+		gen    uint64
 	}
 	pairs := make([]pair, 0, len(m.order))
 	for _, name := range m.order {
-		pairs = append(pairs, pair{name, m.clients[name]})
+		// A disabled entry has no client at all — skip it so startOne
+		// never sees a nil Client, and leave its pre-seeded
+		// StartResult{Disabled: true} in m.status untouched.
+		if c, ok := m.clients[name]; ok {
+			pairs = append(pairs, pair{name, c, m.gen[name]})
+		}
 	}
 	m.mu.RUnlock()
 
@@ -117,8 +152,10 @@ func (m *Manager) Start(ctx context.Context) []StartResult {
 	wg.Wait()
 
 	m.mu.Lock()
-	for _, r := range results {
-		m.status[r.Name] = r
+	for i, r := range results {
+		if m.gen[pairs[i].name] == pairs[i].gen && m.clients[pairs[i].name] == pairs[i].client {
+			m.status[r.Name] = r
+		}
 	}
 	m.mu.Unlock()
 	return results
@@ -209,16 +246,28 @@ func (m *Manager) Add(ctx context.Context, cfg config.MCPServer) (StartResult, e
 		m.mu.Unlock()
 		return StartResult{}, fmt.Errorf("mcp: server %q already exists", cfg.Name)
 	}
-	client := newClient(cfg)
+	if cfg.Disabled {
+		m.configs[cfg.Name] = cfg
+		m.order = append(m.order, cfg.Name)
+		m.status[cfg.Name] = StartResult{Name: cfg.Name, Disabled: true}
+		result := m.status[cfg.Name]
+		m.mu.Unlock()
+		return result, nil
+	}
+	client := m.newClient(cfg)
 	m.configs[cfg.Name] = cfg
 	m.clients[cfg.Name] = client
 	m.order = append(m.order, cfg.Name)
+	m.gen[cfg.Name]++
+	myGen := m.gen[cfg.Name]
 	m.mu.Unlock()
 
 	result := startOne(ctx, client)
 
 	m.mu.Lock()
-	m.status[cfg.Name] = result
+	if m.gen[cfg.Name] == myGen && m.clients[cfg.Name] == client {
+		m.status[cfg.Name] = result
+	}
 	m.mu.Unlock()
 	return result, nil
 }
@@ -249,6 +298,10 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 		m.mu.Unlock()
 		return StartResult{}, fmt.Errorf("mcp: no server named %q", name)
 	}
+	if cfg.Disabled {
+		m.mu.Unlock()
+		return StartResult{}, fmt.Errorf("mcp: server %q is disabled — use Enable to start it", name)
+	}
 	m.gen[name]++
 	myGen := m.gen[name]
 	m.mu.Unlock()
@@ -256,15 +309,24 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 	if old != nil {
 		_ = old.Stop(ctx)
 	}
+	return m.startAndPublish(ctx, name, cfg, myGen)
+}
 
-	fresh := newClient(cfg)
+// startAndPublish builds a fresh client from cfg and starts it, then
+// publishes it as name's live client and status — but only if no other
+// Restart/Enable/Disable call has bumped the generation counter in the
+// meantime (see the gen field's doc comment). If superseded, the freshly
+// built client is stopped (so its subprocess/connection doesn't leak) and
+// the winner's current status is returned instead. Shared by Restart and
+// Enable — the only difference between them is where cfg comes from and
+// whether a prior client needs stopping first (Restart's caller does that;
+// Enable never has a prior client to stop).
+func (m *Manager) startAndPublish(ctx context.Context, name string, cfg config.MCPServer, myGen uint64) (StartResult, error) {
+	fresh := m.newClient(cfg)
 	result := startOne(ctx, fresh)
 
 	m.mu.Lock()
 	if m.gen[name] != myGen {
-		// A newer restart superseded us while we were (re)starting.
-		// Drop the client we just built so its subprocess doesn't leak,
-		// and let the winner's published client/status stand.
 		winner := m.status[name]
 		m.mu.Unlock()
 		_ = fresh.Stop(ctx)
@@ -276,18 +338,18 @@ func (m *Manager) Restart(ctx context.Context, name string) (StartResult, error)
 	return result, nil
 }
 
-// Remove stops the named client and removes it from the manager's
-// internal state. After Remove, the name no longer appears in Names(),
-// Statuses(), or Client(). Callers must Deregister the server's tools
-// from the agent registry separately. Returns an error if the name is
-// unknown.
+// Remove stops the named client (if any — a disabled entry has none) and
+// removes it from the manager's internal state. After Remove, the name no
+// longer appears in Names(), Statuses(), or Client(). Callers must
+// Deregister the server's tools from the agent registry separately.
+// Returns an error if the name is unknown.
 func (m *Manager) Remove(ctx context.Context, name string) error {
 	m.mu.Lock()
-	client, ok := m.clients[name]
-	if !ok {
+	if _, ok := m.configs[name]; !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("mcp: no server named %q", name)
 	}
+	client := m.clients[name]
 	delete(m.configs, name)
 	delete(m.clients, name)
 	delete(m.status, name)
@@ -306,8 +368,74 @@ func (m *Manager) Remove(ctx context.Context, name string) error {
 	return nil
 }
 
-// Stop shuts every client down concurrently. It returns as soon as every client
-// has stopped or ctx expires; a misbehaving transport cannot hold process teardown.
+// Disable stops the named client (if running) and marks the entry
+// disabled, leaving it visible in Names()/Statuses() with a Disabled
+// StartResult and no live client. The caller is responsible for
+// persisting config.MCPServer.Disabled = true and for deregistering the
+// server's tools from the agent registry. Returns an error if the name
+// is unknown.
+//
+// Concurrency: bumps the generation counter before returning, same as
+// Restart/Enable. That's what makes this safe against a concurrent
+// Restart/Enable that's mid-flight when Disable runs: startAndPublish's
+// post-startOne gen check will see it's been superseded and stop the
+// client it just built instead of publishing it over the disable.
+func (m *Manager) Disable(ctx context.Context, name string) error {
+	m.mu.Lock()
+	cfg, ok := m.configs[name]
+	client := m.clients[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("mcp: no server named %q", name)
+	}
+	cfg.Disabled = true
+	m.configs[name] = cfg
+	delete(m.clients, name)
+	m.gen[name]++
+	m.status[name] = StartResult{Name: name, Disabled: true}
+	m.mu.Unlock()
+
+	if client != nil {
+		_ = client.Stop(ctx)
+	}
+	return nil
+}
+
+// Enable constructs a fresh client for a previously-disabled entry and
+// starts it — the mirror of Disable. The caller is responsible for
+// persisting config.MCPServer.Disabled = false and for registering the
+// returned tools with the agent registry. Returns an error if the name is
+// unknown; re-enabling an already-enabled server is a no-op success.
+//
+// Concurrency: shares startAndPublish with Restart, so a concurrent
+// Enable/Restart/Disable of the same server can't race the client into an
+// inconsistent published state — see startAndPublish's doc comment.
+func (m *Manager) Enable(ctx context.Context, name string) (StartResult, error) {
+	m.mu.Lock()
+	cfg, ok := m.configs[name]
+	if !ok {
+		m.mu.Unlock()
+		return StartResult{}, fmt.Errorf("mcp: no server named %q", name)
+	}
+	if _, running := m.clients[name]; running {
+		status := m.status[name]
+		m.mu.Unlock()
+		return status, nil
+	}
+	cfg.Disabled = false
+	m.configs[name] = cfg
+	m.gen[name]++
+	myGen := m.gen[name]
+	m.mu.Unlock()
+
+	return m.startAndPublish(ctx, name, cfg, myGen)
+}
+
+// Stop shuts every client down concurrently. Each Stop call is bounded
+// by the SDK's TerminateGracePeriod (closing stdin, then SIGTERM,
+// then SIGKILL); the caller's ctx is forwarded so a cancelled
+// shutdown surfaces quickly.
+
 func (m *Manager) Stop(ctx context.Context) {
 	m.mu.RLock()
 	clients := make([]Client, 0, len(m.order))

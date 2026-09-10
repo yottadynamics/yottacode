@@ -63,3 +63,32 @@ func TestLoadBuiltins_NewRoles(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBuiltins_ResearchRolesPreferSemanticTools pins the stock research
+// policy: indexed/semantic navigation first, targeted text search as fallback,
+// with no workspace-edit capability leaking into read-only children.
+func TestLoadBuiltins_ResearchRolesPreferSemanticTools(t *testing.T) {
+	byName := map[string]AgentConfig{}
+	for _, cfg := range LoadBuiltins() {
+		byName[cfg.Name] = cfg
+	}
+	for _, role := range []string{"Explore", "Plan"} {
+		cfg, ok := byName[role]
+		if !ok {
+			t.Fatalf("builtin %q not loaded", role)
+		}
+		for _, tool := range []string{"lsp_status", "lsp_symbols", "lsp_references", "lsp_implementation", "lsp_impact", "code_map", "code_symbols", "code_impact"} {
+			if !cfg.ToolAllowed(tool) {
+				t.Errorf("%s does not allow semantic tool %q", role, tool)
+			}
+		}
+		if cfg.ToolAllowed("lsp_apply_workspace_edit") {
+			t.Errorf("%s must not allow lsp_apply_workspace_edit", role)
+		}
+		for _, want := range []string{"Code Map", "lsp_status", "unsupported languages", "Do not repeat"} {
+			if !strings.Contains(strings.ToLower(cfg.Prompt), strings.ToLower(want)) {
+				t.Errorf("%s prompt missing policy %q", role, want)
+			}
+		}
+	}
+}

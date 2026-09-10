@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/mcp"
 )
 
 func newMcpCmd() *cobra.Command {
@@ -69,24 +70,59 @@ func newMcpListCmd() *cobra.Command {
 
 func newMcpAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "add NAME CMD [ARGS...]",
+		Use:   "add NAME [CMD [ARGS...]] [--transport http|sse --url URL] [--header K=V]... [--env K=V]... [--disabled]",
 		Short: "Add a new MCP server to config.toml",
-		Long: `Adds a [[mcp_servers]] entry. The first argument is the server name,
-the second is the executable, and everything after is passed as args.
-The server will start automatically on the next yottacode session.
+		Long: `Adds a [[mcp_servers]] entry. For a stdio server, the first argument is
+the server name, the second is the executable, and everything after is
+passed as args. For a remote server, omit CMD/ARGS and pass --transport
+http or --transport sse with --url instead. The server will start
+automatically on the next yottacode session.
+
+Flags (--command-style args and these may appear in any order after NAME,
+except that once CMD begins every following token is passed to it verbatim):
+  --transport   ""  (stdio, default) | "http" | "sse"
+  --url         Server URL, required for --transport http/sse
+  --header      HTTP header as KEY=VALUE (repeatable, http/sse only)
+  --env         Environment variable as KEY=VALUE (repeatable, stdio only)
+  --disabled    Add the entry without starting it
 
 Examples:
   yottacode mcp add podman npx -y podman-mcp-server@latest
   yottacode mcp add filesystem npx -y @modelcontextprotocol/server-filesystem /workspace
-  yottacode mcp add excalidraw node /path/to/dist/index.js --stdio`,
-		Args: cobra.MinimumNArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+  yottacode mcp add excalidraw node /path/to/dist/index.js --stdio
+  yottacode mcp add linear --transport http --url https://mcp.linear.app/mcp \
+      --header "Authorization=Bearer $LINEAR_API_KEY"`,
+		DisableFlagParsing: true, // see parseAddArgs — flags may follow NAME, which pflag's
+		// interspersed=false mode (needed so raw CMD args like "-y" pass through
+		// untouched) would otherwise swallow as positional args too.
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, rawArgs []string) error {
+			if len(rawArgs) > 0 && (rawArgs[0] == "-h" || rawArgs[0] == "--help") {
+				return cmd.Help()
+			}
+			name, transport, url, cmdTokens, headers, envFlags, disabled, err := parseAddArgs(rawArgs)
+			if err != nil {
+				return err
+			}
 			if !config.MCPNameValid(name) {
 				return fmt.Errorf("invalid name %q (must be lowercase letters, digits, hyphens, underscores; start with a letter)", name)
 			}
+			if len(cmdTokens) > 0 && url != "" {
+				return fmt.Errorf("cannot combine a command with --url; pick one transport shape")
+			}
+			for _, tok := range stragglerFlagsIn(cmdTokens) {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: %q looks like an `mcp add` flag but appeared after the command — it was passed to the command verbatim instead. Move it before CMD if that's not what you wanted.\n", tok)
+			}
 
-			cmdTokens := args[1:]
+			headerMap, err := parseKeyValueFlags(headers)
+			if err != nil {
+				return fmt.Errorf("--header: %w", err)
+			}
+			envMap, err := parseKeyValueFlags(envFlags)
+			if err != nil {
+				return fmt.Errorf("--env: %w", err)
+			}
 
 			cfg, err := config.LoadDefault()
 			if err != nil {
@@ -99,12 +135,26 @@ Examples:
 			}
 
 			server := config.MCPServer{
-				Name:    name,
-				Command: cmdTokens[0],
-				Args:    cmdTokens[1:],
+				Name:      name,
+				Transport: transport,
+				URL:       url,
+				Headers:   headerMap,
+				Env:       envMap,
+				Disabled:  disabled,
 			}
-			cfg.MCPServers = append(cfg.MCPServers, server)
+			if len(cmdTokens) > 0 {
+				server.Command = cmdTokens[0]
+				server.Args = cmdTokens[1:]
+			}
 
+			if server.Transport == "http" || server.Transport == "sse" {
+				policy := mcp.Policy{RequireTLS: cfg.MCP.RequireTLS, AllowedHosts: cfg.MCP.AllowedHosts}
+				if err := policy.CheckURL(server.URL); err != nil {
+					return err
+				}
+			}
+
+			cfg.MCPServers = append(cfg.MCPServers, server)
 			if err := config.Validate(cfg); err != nil {
 				return fmt.Errorf("config invalid after add: %w", err)
 			}
@@ -113,15 +163,117 @@ Examples:
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "added MCP server %q to config.toml\n", name)
-			fmt.Fprintf(cmd.OutOrStdout(), "  command: %s\n", cmdTokens[0])
-			if len(cmdTokens) > 1 {
-				fmt.Fprintf(cmd.OutOrStdout(), "  args:    %s\n", strings.Join(cmdTokens[1:], " "))
+			switch {
+			case server.URL != "":
+				fmt.Fprintf(cmd.OutOrStdout(), "  transport: %s\n  url:       %s\n", orDefault(server.Transport, "stdio"), server.URL)
+			case len(cmdTokens) > 0:
+				fmt.Fprintf(cmd.OutOrStdout(), "  command: %s\n", cmdTokens[0])
+				if len(cmdTokens) > 1 {
+					fmt.Fprintf(cmd.OutOrStdout(), "  args:    %s\n", strings.Join(cmdTokens[1:], " "))
+				}
 			}
 			return nil
 		},
 	}
-	cmd.Flags().SetInterspersed(false)
 	return cmd
+}
+
+// mcpAddRecognizedFlags is `mcp add`'s own flag vocabulary — used by
+// stragglerFlagsIn to catch the ordering footgun where one of these,
+// typed after the command starts, silently becomes a literal argument to
+// that command instead of being parsed as a flag (see parseAddArgs).
+var mcpAddRecognizedFlags = []string{"--transport", "--url", "--header", "--env", "--disabled"}
+
+// stragglerFlagsIn scans a command's captured argument tokens for
+// anything that looks like one of mcp add's own flags. It can't tell
+// whether the user meant "pass --disabled to the command" or "I put
+// --disabled in the wrong place" — so it returns candidates for a
+// warning rather than blocking the add, since the former is a legitimate
+// (if rare) thing a real executable's own flag could be.
+func stragglerFlagsIn(cmdTokens []string) []string {
+	var found []string
+	for _, tok := range cmdTokens {
+		for _, flag := range mcpAddRecognizedFlags {
+			if tok == flag {
+				found = append(found, tok)
+				break
+			}
+		}
+	}
+	return found
+}
+
+// parseAddArgs hand-parses `mcp add`'s raw argument list (flag parsing is
+// disabled on the command — see newMcpAddCmd's DisableFlagParsing comment).
+// NAME is the first token that isn't a recognized flag; once a second such
+// token appears, it and everything after it become cmdTokens verbatim
+// (so a stdio executable's own flags, e.g. "-y", are never mistaken for
+// `mcp add`'s flags). --transport/--url/--header/--env/--disabled may
+// appear anywhere else, in any order, and --header/--env are repeatable.
+func parseAddArgs(args []string) (name, transport, url string, cmdTokens, headers, envFlags []string, disabled bool, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--transport":
+			i++
+			if i >= len(args) {
+				return "", "", "", nil, nil, nil, false, fmt.Errorf("--transport requires a value")
+			}
+			transport = args[i]
+		case "--url":
+			i++
+			if i >= len(args) {
+				return "", "", "", nil, nil, nil, false, fmt.Errorf("--url requires a value")
+			}
+			url = args[i]
+		case "--header":
+			i++
+			if i >= len(args) {
+				return "", "", "", nil, nil, nil, false, fmt.Errorf("--header requires a KEY=VALUE value")
+			}
+			headers = append(headers, args[i])
+		case "--env":
+			i++
+			if i >= len(args) {
+				return "", "", "", nil, nil, nil, false, fmt.Errorf("--env requires a KEY=VALUE value")
+			}
+			envFlags = append(envFlags, args[i])
+		case "--disabled":
+			disabled = true
+		default:
+			if name == "" {
+				name = args[i]
+			} else {
+				cmdTokens = args[i:]
+				return name, transport, url, cmdTokens, headers, envFlags, disabled, nil
+			}
+		}
+	}
+	return name, transport, url, cmdTokens, headers, envFlags, disabled, nil
+}
+
+// parseKeyValueFlags parses repeated "KEY=VALUE" flag values into a map.
+// Returns nil (not an empty map) when kvs is empty, so callers can leave
+// config.MCPServer.Headers/Env unset rather than an empty non-nil map.
+func parseKeyValueFlags(kvs []string) (map[string]string, error) {
+	if len(kvs) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(kvs))
+	for _, kv := range kvs {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("expected KEY=VALUE, got %q", kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+func orDefault(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 func newMcpRemoveCmd() *cobra.Command {

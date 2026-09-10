@@ -48,6 +48,12 @@ LSP tools are registered by default. Most are read-only; `lsp_apply_workspace_ed
 
 Positions are zero-based line and UTF-16 character offsets, matching LSP. Output locations are rendered one-based as `path:line:column` for terminal readability.
 
+Stock `Explore` and `Plan` subagents call `lsp_status` once when semantic code
+navigation is useful, then prefer definitions, implementations, references,
+call hierarchy, and `lsp_impact` over broad text searches. They fall back to
+targeted grep/glob when the server or capability is unavailable, or when the
+question concerns literal text, documentation, configuration, or generated code.
+
 `lsp_code_actions` is intentionally read-only. Semantic edits use a two-step flow: preview tools (`lsp_code_action_preview`, `lsp_rename_preview`, and `lsp_format_preview`) return normalized WorkspaceEdit JSON, then `lsp_apply_workspace_edit` validates every path, snapshots affected files through the normal mutator flow, writes the edits itself, and notifies the LSP manager. The language server never writes directly to the repository.
 
 When a server advertises `textDocument/prepareRename`, `lsp_rename_preview` preflights the target position before asking for edits and returns an explicit unavailable result for invalid rename targets. The WorkspaceEdit applier uses LSP UTF-16 character offsets, applies text edits from the bottom of each file upward, and validates every path before writing. Broad semantic refactors should still be reviewed carefully because server-proposed multi-file edits can be large.
@@ -105,7 +111,7 @@ The GA bridge includes these production-readiness behaviors:
 1. Restart the TUI and look for the **LSP Code Intelligence** advisory card when a supported server is missing. On the next relevant user turn, the agent should offer the displayed install command through approval-gated `run_bash`.
 2. Run `yottacode doctor` to see the command-line LSP Code Intelligence section.
 3. Confirm the server works outside yottacode, for example `gopls version` or `pyright-langserver --version`.
-4. If a workspace symbol query fails, yottacode may fall back to an approximate regex symbol index. Definition, references, diagnostics, hover, code actions, and call hierarchy require a real server.
+4. If a workspace symbol query fails, yottacode may fall back to an approximate regex symbol index. Definition, references, diagnostics, hover, code actions, and call hierarchy require a real server; research subagents continue with targeted text search instead of blocking.
 
 5. Post-edit LSP sync is advisory. If a local language server dies while yottacode writes a file, yottacode evicts/retries the server and keeps raw transport text such as `broken pipe` out of the edit result.
 

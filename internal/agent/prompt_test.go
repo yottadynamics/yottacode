@@ -131,6 +131,9 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 		// on a file that fits in a single read.
 		"prefer ONE read_file call with a generous limit",
 		"stop — grep for the symbol you're actually hunting instead",
+		"prefer indexed/semantic navigation before text search",
+		"semantic/indexed lookup first, targeted text/read fallback",
+		"repeated with the exact same arguments in an unchanged workspace",
 		"offer to run the reported install_command through normal run_bash approval",
 		"never auto-install or imply it has already run",
 	} {
