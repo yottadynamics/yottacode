@@ -19,8 +19,8 @@ Nine agent types ship with the binary:
 | Name | Tools | Purpose |
 | --- | --- | --- |
 | `general-purpose` | all parent tools (except `Agent` itself) | Answer open-ended questions. Falls back to writing if the task demands it. |
-| `Explore` | read-only (read_file, grep, glob, list_*, git read subcommands, fetch_url) | Fast code search and location lookup. |
-| `Plan` | Explore's tools + `todo_write` | Produce a written plan for a coding task. Ends with a `### Critical Files for Implementation` trailer. |
+| `Explore` | read-only file/git tools + LSP; Code Map when enabled | Fast semantic/indexed code navigation with targeted text search as fallback. |
+| `Plan` | Explore's tools + `todo_write` | Investigate semantically, then produce a written implementation plan ending with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Runs foreground by default in standalone `Agent` calls because it needs `run_bash`; use foreground when command execution is required. |
 | `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree with owned-file enforcement, but `run_tests`/`run_bash` are disabled because no human can approve command execution. |
 | `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree, but `run_tests`/`run_bash` are disabled and the worker must report the verification gap. |
@@ -205,8 +205,8 @@ or `--permission-mode plan`):
 - The child enters plan mode with the **same plan file** as the
   parent (pointer-shared `PlanModeState`).
 - The child can call any read-only tool freely
-  (`read_file`, `grep`, `glob`, `list_*`, `git_*` read subcommands,
-  `fetch_url`, `todo_write`).
+  (`read_file`, `grep`, `glob`, `list_*`, `git_*` read subcommands, LSP
+  navigation, enabled Code Map queries, `fetch_url`, and `todo_write`).
 - The child's write attempts go through `PlanModeGate`, which
   allows writes ONLY to the parent's plan file. Any other write
   target (other than the plan file) returns the gate's block
@@ -426,6 +426,13 @@ apply to children. This keeps delegated loops bounded while giving
 read-heavy jobs like `/code-review` enough room to finish; if a child
 still hits the cap, split the work into smaller subagent calls.
 
+The loop also notices exact successful read-only calls repeated in the same
+unchanged-workspace epoch. On the third call it appends guidance to reuse the
+existing evidence, narrow the query, switch to Code Map/LSP, or finish. The call
+still executes because external processes may have changed a read result; any
+intervening mutation resets the duplicate epoch so verification rechecks remain
+valid.
+
 ## Token cost
 
 Subagents make their own API calls against the same provider key as
@@ -552,6 +559,13 @@ context with read_file outputs, none of which the parent needs after
 the answer is found. By delegating to an `Explore` subagent, the
 parent gets back a single concise reply — the equivalent of asking a
 colleague to look something up instead of doing it yourself.
+
+Stock `Explore` and `Plan` agents do not begin with broad grep loops. When Code
+Map is enabled they use its cached index for structure and import impact; for
+supported source they use LSP for definitions, implementations, references,
+callers, and types. Targeted grep/glob remains the right fallback for literals,
+documentation, configuration, generated code, unsupported languages, and gaps
+in semantic tooling. They then batch reads for only the narrowed files/ranges.
 
 ## Open decisions (next steps)
 
