@@ -321,6 +321,18 @@ func TestEvaluate_PathPatternsUseDoublestar(t *testing.T) {
 	}
 }
 
+func TestEvaluate_AnchoredEditUsesEditPermissionNamespace(t *testing.T) {
+	cwd := t.TempDir()
+	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+		[]string{"Edit(internal/**)"}, nil, nil)
+	p, _ := Load(cwd)
+	if got := p.Evaluate("edit_anchored", `{"path":"internal/tui/tool_card.go","operations":[]}`); got != Allow {
+		t.Fatalf("Edit(internal/**) should match edit_anchored; got %v", got)
+	}
+	if got := p.Evaluate("edit_anchored", `{"path":"cmd/main.go","operations":[]}`); got != Default {
+		t.Fatalf("Edit(internal/**) should not match cmd/main.go; got %v", got)
+	}
+}
 func TestEvaluate_AbsolutePathRule(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
@@ -634,6 +646,7 @@ func TestDeriveAllowRule(t *testing.T) {
 		{"bash sudo", "run_bash", `{"command":"sudo apt update"}`, false, ""},
 		{"edit nested", "edit_file", `{"path":"internal/foo.go"}`, true, "Edit(" + cwdSlash + "/**)"},
 		{"edit deep", "edit_file", `{"path":"internal/agent/x.go"}`, true, "Edit(" + cwdSlash + "/**)"},
+		{"edit anchored", "edit_anchored", `{"path":"internal/agent/x.go"}`, true, "Edit(" + cwdSlash + "/**)"},
 		{"write top-level", "write_file", `{"path":"new.txt"}`, true, "Write(" + cwdSlash + "/**)"},
 		{"delete top-level", "delete_file", `{"path":"hello.txt"}`, true, "Delete(" + cwdSlash + "/**)"},
 		{"list cwd", "list_dir", `{"path":"."}`, true, "List(" + cwdSlash + "/**)"},

@@ -79,6 +79,17 @@ func TestEditAnchoredToolRejectsStaleAnchor(t *testing.T) {
 	}
 }
 
+func TestEditAnchoredToolRejectsNoOpWithOperationIndex(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "x.txt", "one\ntwo\n")
+	idx := buildAnchoredLineIndex([]string{"one", "two"})
+	tool := &EditAnchoredTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	args := `{"path":"x.txt","operations":[{"op":"replace_range","start_anchor":"2#` + idx.ByLine[2].Hash + `","end_anchor":"2#` + idx.ByLine[2].Hash + `","new_text":"two"}]}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "operation 1/1") || !strings.Contains(err.Error(), "no-op") {
+		t.Fatalf("expected indexed no-op error, got %v", err)
+	}
+}
 func TestEditAnchoredToolRejectsOverlap(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "x.txt", "one\ntwo\nthree\nfour\n")
