@@ -7030,6 +7030,13 @@ func renderAssistantBlock(rendered string) string {
 	state := &assistantRenderState{}
 	for _, line := range lines {
 		renderedLine, extraBlank := renderAssistantLineWithState(line, state)
+		if renderedLine == "" && extraBlank {
+			if len(out) > 0 && out[len(out)-1] == "" {
+				continue
+			}
+			out = append(out, renderedLine)
+			continue
+		}
 		if renderedLine == "" && !extraBlank {
 			continue
 		}
@@ -7052,16 +7059,17 @@ var (
 	// the chunk with those bytes still inside, and the embedded `[0m`
 	// (with its ESC eaten by adjacent escape sequences) leaks into the
 	// terminal as visible literal text.
-	inlinePathRE          = regexp.MustCompile("(^|[\\s(])((?:\\./|\\../|~/|/)[^\\s:;,)\\]\x1b]+|[A-Za-z0-9._/-]+\\.(?:go|md|txt|json|ya?ml|toml|ts|tsx|js|jsx|py|rs|sh|bash|zsh|sql|css|html|xml))")
-	bulletLineRE          = regexp.MustCompile(`^•\s+(.*)$`)
-	markdownBulletLineRE  = regexp.MustCompile(`^(\s*)([-*+])\s+(.*)$`)
-	numberedListLineRE    = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
-	markdownHeadingLineRE = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	blockquoteLineRE      = regexp.MustCompile(`^>\s?(.*)$`)
-	actionSummaryRE       = regexp.MustCompile(`^(Edited|Explored|Read|Ran)\s+(.+)$`)
-	treeLineRE            = regexp.MustCompile(`^\s*[└├│].*$`)
-	separatorLineRE       = regexp.MustCompile(`^[\s─—-]{8,}$`)
-	diffCountsRE          = regexp.MustCompile(`\(\+\d+\s+-\d+\)`)
+	inlinePathRE           = regexp.MustCompile("(^|[\\s(])((?:\\./|\\../|~/|/)[^\\s:;,)\\]\x1b]+|[A-Za-z0-9._/-]+\\.(?:go|md|txt|json|ya?ml|toml|ts|tsx|js|jsx|py|rs|sh|bash|zsh|sql|css|html|xml))")
+	bulletLineRE           = regexp.MustCompile(`^•\s+(.*)$`)
+	markdownBulletLineRE   = regexp.MustCompile(`^(\s*)([-*+])\s+(.*)$`)
+	numberedListLineRE     = regexp.MustCompile(`^(\s*)(\d+[.)])\s+(.*)$`)
+	markdownCheckboxLineRE = regexp.MustCompile(`^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$`)
+	markdownHeadingLineRE  = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	blockquoteLineRE       = regexp.MustCompile(`^>\s?(.*)$`)
+	actionSummaryRE        = regexp.MustCompile(`^(Edited|Explored|Read|Ran)\s+(.+)$`)
+	treeLineRE             = regexp.MustCompile(`^\s*[└├│].*$`)
+	separatorLineRE        = regexp.MustCompile(`^[\s─—-]{8,}$`)
+	diffCountsRE           = regexp.MustCompile(`\(\+\d+\s+-\d+\)`)
 )
 
 func renderAssistantLine(line string) string {
@@ -7118,7 +7126,7 @@ func renderHeadingLine(line string) string {
 	if len(m) != 3 {
 		return ""
 	}
-	return styleAssistantHeading.Render(m[1] + " " + m[2])
+	return styleAssistantHeading.Render(m[2])
 }
 
 func renderBlockquoteLine(line string) string {
@@ -7146,13 +7154,20 @@ func renderBulletLine(line string) string {
 }
 
 func renderMarkdownListLine(line string) string {
+	if m := markdownCheckboxLineRE.FindStringSubmatch(line); len(m) == 4 {
+		mark := "☐"
+		if strings.EqualFold(m[2], "x") {
+			mark = "☑"
+		}
+		return styleAssistantBody.Render(m[1] + mark + " " + renderInlineDecorations(m[3]))
+	}
 	if m := markdownBulletLineRE.FindStringSubmatch(line); len(m) == 4 {
-		indent, marker, body := m[1], m[2], m[3]
-		return styleAssistantBody.Render(indent + styleListMarker.Render(marker+" ") + renderInlineDecorations(body))
+		indent, _, body := m[1], m[2], m[3]
+		return styleAssistantBody.Render(indent + styleBullet.Render("• ") + renderInlineDecorations(body))
 	}
 	if m := numberedListLineRE.FindStringSubmatch(line); len(m) == 4 {
-		indent, marker, body := m[1], m[2], m[3]
-		return styleAssistantBody.Render(indent + styleListMarker.Render(marker+" ") + renderInlineDecorations(body))
+		indent, _, body := m[1], m[2], m[3]
+		return styleAssistantBody.Render(indent + styleBullet.Render("• ") + renderInlineDecorations(body))
 	}
 	return ""
 }

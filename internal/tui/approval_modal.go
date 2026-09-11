@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -142,6 +143,10 @@ func collapseApprovalBlankLines(s string) string {
 // other tools fall back to the raw preview.
 func approvalBodyFor(m Model) string {
 	switch m.approvalTool {
+	case "pr_create", "pr_update":
+		if rendered, ok := renderPRApprovalPreview(m.approvalTool, m.approvalArgs); ok {
+			return rendered
+		}
 	case "edit_file":
 		if diff, ok := renderEditDiff(m.approvalArgs); ok {
 			return diff
@@ -160,6 +165,68 @@ func approvalBodyFor(m Model) string {
 		}
 	}
 	return styleApprovalCommand.Render(m.approvalPreview)
+}
+
+// renderPRApprovalPreview builds a compact, readable approval body for PR
+// mutations. The stored body remains Markdown; only this decision preview
+// converts headings, lists, checkboxes, and inline code for the terminal.
+func renderPRApprovalPreview(tool, argsJSON string) (string, bool) {
+	var args struct {
+		Base  string `json:"base"`
+		Ref   string `json:"ref"`
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || strings.TrimSpace(args.Body) == "" {
+		return "", false
+	}
+	label := tool + "("
+	if args.Base != "" {
+		label += "base=" + args.Base + ")"
+	} else if args.Ref != "" {
+		label += "ref=" + args.Ref + ")"
+	} else {
+		label += ")"
+	}
+	lines := []string{"  title: " + args.Title}
+	for _, line := range strings.Split(strings.TrimSpace(args.Body), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			if len(lines) > 0 && lines[len(lines)-1] != "" {
+				lines = append(lines, "")
+			}
+		case strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "# "):
+			line = strings.TrimSpace(strings.TrimLeft(line, "#"))
+			lines = append(lines, "  "+line)
+		case strings.HasPrefix(line, "- [x] ") || strings.HasPrefix(line, "- [X] "):
+			lines = append(lines, "  ☑ "+strings.TrimSpace(line[6:]))
+		case strings.HasPrefix(line, "- [ ] "):
+			lines = append(lines, "  ☐ "+strings.TrimSpace(line[6:]))
+		case strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ "):
+			lines = append(lines, "  • "+strings.TrimSpace(line[2:]))
+		case line == "---":
+			lines = append(lines, "  ────────────────────")
+		default:
+			lines = append(lines, "  "+line)
+		}
+	}
+	for i := range lines {
+		lines[i] = renderInlinePRPreview(lines[i])
+	}
+	return strings.Join(lines, "\n"), true
+}
+
+func renderInlinePRPreview(line string) string {
+	for strings.Contains(line, "`") {
+		start := strings.IndexByte(line, '`')
+		end := strings.IndexByte(line[start+1:], '`')
+		if end < 0 {
+			break
+		}
+		line = line[:start] + line[start+1:start+1+end] + line[start+2+end:]
+	}
+	return line
 }
 
 // approvalHotkeyGrid composes the legacy plain-text hotkey block used by tests

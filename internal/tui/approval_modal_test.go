@@ -158,6 +158,27 @@ func TestRenderApprovalModal_CompactPreviewDoesNotAddBlankSpacerRows(t *testing.
 	}
 }
 
+func TestRenderApprovalModal_PRCreateRendersMarkdownBody(t *testing.T) {
+	m := newTestModel(t)
+	m.width = 80
+	m.height = 24
+	m.awaitingApproval = true
+	m.approvalTool = "pr_create"
+	m.approvalArgs = `{"base":"main","title":"demo","body":"## Summary\n\n- [ ] run ` + "`go test ./...`" + `\n- [x] docs updated"}`
+
+	plain := stripANSI(renderApprovalModal(m))
+	for _, unwanted := range []string{"## Summary", "- [ ]", "- [x]", "`go test"} {
+		if strings.Contains(plain, unwanted) {
+			t.Errorf("PR approval preview retained raw Markdown %q:\n%s", unwanted, plain)
+		}
+	}
+	for _, wanted := range []string{"Summary", "☐", "☑", "go test ./..."} {
+		if !strings.Contains(plain, wanted) {
+			t.Errorf("PR approval preview missing rendered content %q:\n%s", wanted, plain)
+		}
+	}
+}
+
 func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 60
