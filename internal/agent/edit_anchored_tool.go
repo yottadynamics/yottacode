@@ -243,11 +243,11 @@ func applyAnchoredOps(lines []string, ops []anchoredResolvedOp) ([]string, error
 			if op.Kind == "replace_range" {
 				replacement = strings.Split(op.NewText, "\n")
 				if len(replacement) == 1 && replacement[0] == "" {
-					return nil, fmt.Errorf("replace_range at lines %d-%d is a no-op", op.StartLine, op.EndLine)
+					return nil, fmt.Errorf("operation %d/%d: replace_range at lines %d-%d is a no-op; omit it or provide different replacement text", op.Order+1, len(ops), op.StartLine, op.EndLine)
 				}
 			}
 			if op.Kind == "replace_range" && strings.Join(out[startIdx:endIdx], "\n") == op.NewText {
-				return nil, fmt.Errorf("replace_range at lines %d-%d is a no-op", op.StartLine, op.EndLine)
+				return nil, fmt.Errorf("operation %d/%d: replace_range at lines %d-%d is a no-op; omit it or provide different replacement text", op.Order+1, len(ops), op.StartLine, op.EndLine)
 			}
 			out = append(append(out[:startIdx], replacement...), out[endIdx:]...)
 		case "insert_before", "insert_after":
