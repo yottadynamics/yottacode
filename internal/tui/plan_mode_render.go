@@ -211,6 +211,8 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...
 	if toolName != "" {
 		header += stylePlanApprovalTool.Render(" · " + toolName)
 	}
+	// Keep the approval title and tool name inside the box body so the
+	// border stays visually clean and both labels appear exactly once.
 	bodyLines := []string{labeledBoxIndent + header, ""}
 	for _, line := range hardWrapLabeled(hotkeys, capW) {
 		row := len(bodyLines)
@@ -220,8 +222,8 @@ func renderPlanDecisionCard(title, toolName, hotkeys string, width int, hits ...
 	}
 	bodyLines = append(bodyLines, "")
 
-	leftLabel := " " + stylePlanApprovalTitle.Render(title) + " "
-	rightLabel := " " + stylePlanApprovalTool.Render(toolName) + " "
+	leftLabel := ""
+	rightLabel := ""
 
 	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
 }
