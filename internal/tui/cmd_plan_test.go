@@ -1074,6 +1074,15 @@ func TestExitPlanModeApprovalCard_AdvertisesAllHotkeys(t *testing.T) {
 		ArgsJSON: `{}`,
 	})
 	view := stripANSI(m.View().Content)
+	if got := strings.Count(view, "Approve plan?"); got != 1 {
+		t.Fatalf("approval prompt should appear exactly once inside the box, got %d occurrences in %q", got, view)
+	}
+	if got := strings.Count(view, "exit_plan_mode"); got != 1 {
+		t.Fatalf("tool name should appear exactly once inside the box, got %d occurrences in %q", got, view)
+	}
+	if strings.Contains(view, "┌─ ▸ Approve plan?") {
+		t.Fatalf("approval title should not be rendered in the border: %q", view)
+	}
 	for _, want := range []string{"auto-approval", "manual approval", "later", "keep planning"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("approval card missing hotkey label %q; got %q", want, view)
