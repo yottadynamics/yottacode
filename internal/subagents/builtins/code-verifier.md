@@ -1,7 +1,7 @@
 ---
 name: code-verifier
 description: Read-only adversarial verifier for a SINGLE code-review finding. Given one claim about a diff (file:line + what's wrong), it tries to REFUTE the claim by reading the code and tracing callers — it runs nothing and edits nothing. Returns a verdict line `VERDICT: PASS|FAIL|PARTIAL` the caller can parse. Complements `verification` (which runs builds/tests to break an implementation); use this to confirm or kill a reviewer's finding.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, git_diff_files, git_show_file_at_rev, git_log_file, git_blame_lines, list_git_changed_files, git_merge_base, fetch_url]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, git_diff_files, git_show_file_at_rev, git_log_file, git_blame_lines, list_git_changed_files, git_merge_base, fetch_url, lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_call_hierarchy, lsp_impact, code_map, code_symbols, code_structure_projection, code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram]
 background: false
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: implement
 description: Implements one well-scoped component or change end-to-end in its own worktree. In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns a short summary of what it changed.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, mkdir, copy_file, move_file, delete_file, run_tests, run_bash, git_diff_files, git_show_file_at_rev, fetch_url, consult_advisor]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, mkdir, copy_file, move_file, delete_file, run_tests, run_bash, git_diff_files, git_show_file_at_rev, fetch_url, lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_call_hierarchy, lsp_impact, code_map, code_symbols, code_structure_projection, code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram, consult_advisor]
 background: true
 ---
 

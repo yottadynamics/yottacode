@@ -1343,10 +1343,10 @@ func safeUnattendedReadOnlyTool(name string) bool {
 	return name != ConsultAdvisorToolName
 }
 
-// stripUnattendedProcessTools removes no-approval tools that can still launch
-// non-git external binaries. Unattended workers have no prompt surface, so they
-// must not reach language-server or ffmpeg/ffprobe startup through tools that
-// otherwise look read-only.
+// stripUnattendedProcessTools removes tools that launch external processes or
+// subprocess-backed document/media readers, including LSP servers. Unattended
+// children have no approval surface, so language-server startup must remain a
+// foreground or sandbox-trusted operation.
 func stripUnattendedProcessTools(reg *Registry) {
 	for name := range reg.Names() {
 		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || name == "read_document" || name == "search_document" {
