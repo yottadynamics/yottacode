@@ -228,7 +228,7 @@ func TestRenderInspectPanel_ShowsErrorPreviewAndStopFlag(t *testing.T) {
 		},
 	}
 	got := renderInspectPanel(s)
-	for _, want := range []string{"truncated", "    error: 3 vulnerabilities found"} {
+	for _, want := range []string{"truncated", "turn 1  tools 1 [run_tests] · errors 1 [run_tests] · flags [truncated]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
@@ -250,7 +250,7 @@ func TestRenderInspectPanel_ShowsSessionAndTurns(t *testing.T) {
 		},
 	}
 	got := renderInspectPanel(s)
-	for _, want := range []string{"abcdefgh", "1 turn", "turn 1", "hi", "hello", "read_file", "esc to close"} {
+	for _, want := range []string{"abcdefgh", "1 turn", "turn 1", "usage 100 in", "tools 1 [read_file]", "errors 0"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
@@ -303,8 +303,8 @@ func TestRenderInspectPanel_ShowsCacheDetail(t *testing.T) {
 		},
 	}
 	got := renderInspectPanel(s)
-	if !strings.Contains(got, "cache 144K read") {
-		t.Errorf("expected cache detail in rendered panel:\n%s", got)
+	if !strings.Contains(got, "cache 100% hit") {
+		t.Errorf("expected cache metric in rendered panel:\n%s", got)
 	}
 }
 
@@ -348,6 +348,17 @@ func TestInspectPicker_EnterOpensSelectedSession(t *testing.T) {
 	}
 }
 
+func TestInspectPanel_HomeEndScrollReachesFooter(t *testing.T) {
+	m := newTestModel(t)
+	m.height = 12
+	m.inspectPanel = strings.Join([]string{"summary", "turn 1", "turn 2", "turn 3", "turn 4", "turn 5", "turn 6", "turn 7", "turn 8", "turn 9", "exports live under /sessions · esc to close"}, "\n")
+	m.inspectOpen = true
+	m, _ = m.updateInspectPanel(tea.KeyPressMsg{Code: tea.KeyEnd})
+	shown := m.windowedInspectPanel()
+	if !strings.Contains(shown, "turn 5") {
+		t.Fatalf("End should reveal the inspect footer:\n%s", shown)
+	}
+}
 
 func TestInspectTypedSlashOpensPicker(t *testing.T) {
 	m := newTestModel(t)

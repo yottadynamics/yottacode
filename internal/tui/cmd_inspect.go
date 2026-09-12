@@ -3,6 +3,9 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -197,6 +200,12 @@ func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case tea.KeyPgDown:
 		m.inspectScrollOffset = min(m.inspectMaxScrollOffset(), m.inspectScrollOffset+m.inspectVisibleLines())
 		return m, nil
+	case tea.KeyHome:
+		m.inspectScrollOffset = 0
+		return m, nil
+	case tea.KeyEnd:
+		m.inspectScrollOffset = m.inspectMaxScrollOffset()
+		return m, nil
 	}
 	m.inspectOpen = false
 	m.inspectSession = nil
@@ -204,7 +213,6 @@ func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	m.inspectScrollOffset = 0
 	return m, nil
 }
-
 
 // resolveInspectSession finds the session /inspect should render. No ref
 // targets the live in-memory session (so a running conversation can be
@@ -257,6 +265,7 @@ type inspectToolCallView struct {
 	args         string
 	status       string
 	errorPreview string
+	latencyMS    *int64
 }
 
 // inspectTurnView is one assistant turn: the user message that preceded it
@@ -270,6 +279,8 @@ type inspectTurnView struct {
 	userPreview string
 	usage       *adapter.Usage
 	assistant   string
+	model       string
+	wallTimeMS  *int64
 	toolCalls   []inspectToolCallView
 	lowSignal   bool
 	stopFlag    string
@@ -327,6 +338,8 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 				userPreview: pendingUser,
 				usage:       msg.Usage,
 				assistant:   truncateForRender(msg.Content, inspectTextPreviewChars),
+				model:       msg.Model,
+				wallTimeMS:  msg.WallTimeMS,
 				stopFlag:    inspectStopFlag(msg.StopReason),
 			}
 			pendingUser = ""
@@ -336,9 +349,10 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 			for _, call := range msg.ToolCalls {
 				callIdx := len(t.toolCalls)
 				t.toolCalls = append(t.toolCalls, inspectToolCallView{
-					name:   call.Name,
-					args:   truncateForRender(call.ArgsJSON, inspectArgsPreviewChars),
-					status: "ok",
+					name:      call.Name,
+					args:      truncateForRender(call.ArgsJSON, inspectArgsPreviewChars),
+					status:    call.Status,
+					latencyMS: call.LatencyMS,
 				})
 				if call.ID != "" {
 					loc[call.ID] = callLoc{turn: len(turns), call: callIdx}
@@ -360,13 +374,80 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 				}
 				turns[at.turn].toolCalls[at.call].errorPreview = truncateForRender(strings.TrimSpace(content), inspectTextPreviewChars)
 			}
-			turns[at.turn].toolCalls[at.call].status = status
+			if turns[at.turn].toolCalls[at.call].status == "" {
+				turns[at.turn].toolCalls[at.call].status = status
+			}
 		}
 	}
 	return turns
 }
 
-// inspectDetailTokens renders the optional cache/reasoning clause appended
+func inspectToolSummary(calls []inspectToolCallView) (string, int, string) {
+	counts := map[string]int{}
+	errors := map[string]int{}
+	order := []string{}
+	errorCount := 0
+	for _, call := range calls {
+		if _, ok := counts[call.name]; !ok {
+			order = append(order, call.name)
+		}
+		counts[call.name]++
+		if strings.HasPrefix(call.status, "error") {
+			errors[call.name]++
+			errorCount++
+		}
+	}
+	parts := make([]string, 0, len(order))
+	for _, name := range order {
+		if counts[name] == 1 {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%s×%d", name, counts[name]))
+		}
+	}
+	errParts := make([]string, 0, len(order))
+	for _, name := range order {
+		if errors[name] == 0 {
+			continue
+		}
+		if errors[name] == 1 {
+			errParts = append(errParts, name)
+		} else {
+			errParts = append(errParts, fmt.Sprintf("%s×%d", name, errors[name]))
+		}
+	}
+	return strings.Join(parts, ", "), errorCount, strings.Join(errParts, ", ")
+}
+
+func inspectTurnMetrics(t inspectTurnView) string {
+	parts := []string{}
+	if t.wallTimeMS != nil {
+		parts = append(parts, fmt.Sprintf("wall %s", formatDuration(time.Duration(*t.wallTimeMS)*time.Millisecond)))
+	}
+	if t.model != "" {
+		parts = append(parts, "model "+t.model)
+	}
+	if t.usage != nil {
+		parts = append(parts, fmt.Sprintf("usage %s in · %s out", formatTokens(int(t.usage.InputTokens)), formatTokens(int(t.usage.OutputTokens))))
+		if hit := cacheHitRate(*t.usage); hit >= 0 {
+			parts = append(parts, fmt.Sprintf("cache %.0f%% hit", hit*100))
+		}
+		if t.usage.CostAvailable {
+			parts = append(parts, "cost "+formatUSD(t.usage.CostUSD)+"e")
+		}
+	}
+	tools, errorCount, errorNames := inspectToolSummary(t.toolCalls)
+	if len(t.toolCalls) > 0 {
+		parts = append(parts, fmt.Sprintf("tools %d [%s]", len(t.toolCalls), tools))
+		if errorCount > 0 {
+			parts = append(parts, fmt.Sprintf("errors %d [%s]", errorCount, errorNames))
+		} else {
+			parts = append(parts, "errors 0")
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // right after a turn's tokens summary. Dropped entirely when the usage
 // carries neither (the common case) so plain turns render exactly as
 // before; a turn that both wrote and read cache in the same call shows
@@ -395,10 +476,60 @@ func inspectDetailTokens(u *adapter.Usage) string {
 	return "  " + strings.Join(parts, " · ")
 }
 
-// renderInspectPanel is the full popup body for /inspect: a header naming
-// the inspected session, then one block per turn. Built entirely from
-// buildInspectTurns; self-describes rather than self-hiding (unlike the
-// /usage sub-sections) since /inspect is only ever invoked explicitly.
+func inspectSessionSummary(s *session.Session, turns []inspectTurnView) string {
+	var elapsed int64
+	elapsedKnown := len(turns) > 0
+	var totalTokens int64
+	var cost float64
+	costKnown := false
+	errors := 0
+	models := map[string]int{}
+	modelOrder := []string{}
+	for _, t := range turns {
+		if t.wallTimeMS == nil {
+			elapsedKnown = false
+		} else {
+			elapsed += *t.wallTimeMS
+		}
+		if t.usage != nil {
+			totalTokens += totalTokensFor(*t.usage)
+			if t.usage.CostAvailable {
+				cost += t.usage.CostUSD
+				costKnown = true
+			}
+		}
+		_, n, _ := inspectToolSummary(t.toolCalls)
+		errors += n
+		if t.model != "" {
+			if _, ok := models[t.model]; !ok {
+				modelOrder = append(modelOrder, t.model)
+			}
+			models[t.model]++
+		}
+	}
+	parts := []string{fmt.Sprintf("%d %s", len(turns), usagePluralize("turn", len(turns)))}
+	if totalTokens > 0 {
+		parts = append(parts, formatTokens(int(totalTokens))+" tokens")
+	}
+	if elapsedKnown {
+		parts = append(parts, formatDuration(time.Duration(elapsed)*time.Millisecond))
+	} else {
+		parts = append(parts, "time unavailable")
+	}
+	if costKnown {
+		parts = append(parts, formatUSD(cost)+" est")
+	} else {
+		parts = append(parts, "cost unavailable")
+	}
+	parts = append(parts, fmt.Sprintf("%d tool %s", errors, usagePluralize("error", errors)))
+	if len(modelOrder) == 1 {
+		parts = append(parts, modelOrder[0])
+	}
+	return strings.Join(parts, " · ")
+}
+
+const inspectPanelFooter = "exports live under /sessions · ↑↓ scroll · PgUp/PgDn · Home/End · Esc close"
+
 func renderInspectPanel(s *session.Session) string {
 	if s == nil {
 		return styleEmpty.Render("session not found")
@@ -409,54 +540,32 @@ func renderInspectPanel(s *session.Session) string {
 		label = label[:8]
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "inspect  session %s · %d %s\n\n", label, len(turns), usagePluralize("turn", len(turns)))
+	fmt.Fprintf(&b, "inspect  session %s · %s\n\n", label, inspectSessionSummary(s, turns))
 	if len(turns) == 0 {
 		b.WriteString(styleEmpty.Render("no turns in this session yet"))
 		b.WriteByte('\n')
 	}
 	for _, t := range turns {
-		tokens := ""
-		detail := ""
-		if t.usage != nil {
-			tokens = fmt.Sprintf("  %s tokens (in %s · out %s)",
-				formatTokens(int(totalTokensFor(*t.usage))), formatTokens(int(t.usage.InputTokens)), formatTokens(int(t.usage.OutputTokens)))
-			detail = inspectDetailTokens(t.usage)
-		}
-		var flagParts []string
-		if t.stopFlag != "" {
-			flagParts = append(flagParts, styleNoticeWarn.Render(t.stopFlag))
-		}
-		if t.lowSignal {
-			flagParts = append(flagParts, styleNoticeWarn.Render("low-signal"))
+		metrics := inspectTurnMetrics(t)
+		if metrics == "" {
+			metrics = "metrics unavailable"
 		}
 		flag := ""
-		if len(flagParts) > 0 {
-			flag = "  " + strings.Join(flagParts, "  ")
-		}
-		fmt.Fprintf(&b, "turn %d%s%s%s\n", t.n, tokens, detail, flag)
-		if t.userPreview != "" {
-			fmt.Fprintf(&b, "  you        %s\n", t.userPreview)
-		}
-		if t.assistant != "" {
-			fmt.Fprintf(&b, "  assistant  %s\n", t.assistant)
-		}
-		for _, c := range t.toolCalls {
-			fmt.Fprintf(&b, "  %s(%s)\n", c.name, c.args)
-			if c.status == "ok" {
-				continue
+		if t.stopFlag != "" || t.lowSignal {
+			flags := []string{}
+			if t.stopFlag != "" {
+				flags = append(flags, t.stopFlag)
 			}
-			errDetail := c.errorPreview
-			if errDetail == "" {
-				errDetail = c.status
-			} else if c.status == "error — guidance fired" {
-				errDetail += "  — guidance fired"
+			if t.lowSignal {
+				flags = append(flags, fmt.Sprintf("low output (in >%s, out <%s)", formatTokens(lowSignalInputTokens), formatTokens(lowSignalOutputTokens)))
 			}
-			b.WriteString(styleNoticeWarn.Render("    " + errDetail))
-			b.WriteByte('\n')
+			flag = " · flags [" + strings.Join(flags, ", ") + "]"
 		}
+		fmt.Fprintf(&b, "turn %d  %s%s\n", t.n, metrics, flag)
 		b.WriteByte('\n')
 	}
-	b.WriteString(styleHint.Render("exports live under /sessions · esc to close"))
+	// Footer is added by windowedInspectPanel so its row is included in the
+	// popup's height calculation rather than being clipped after scrolling.
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -468,16 +577,42 @@ const inspectScrollReserve = 1
 // usageFullFitLines: the popup has no height clamp of its own, so a long
 // turn history needs to window rather than overflow the terminal.
 func (m Model) inspectVisibleLines() int {
-	return max(m.height-2-inspectScrollReserve, 1)
+	// Leave room for the body footer, navigation hint, and popup borders.
+	return max(m.height-4, 1)
 }
 
 func (m Model) inspectFullFitLines() int {
-	return max(m.height-2, 1)
+	// The popup frame contributes two border rows; the scroll hint is added only after slicing.
+	return max(m.height-3, 1)
 }
 
-// inspectMaxScrollOffset mirrors usageMaxScrollOffset.
+func (m Model) inspectVisualLines() []string {
+	logical := strings.Split(m.inspectPanel, "\n")
+	width := max(m.popupWidth()-2, 1)
+	var rows []string
+	for _, line := range logical {
+		wrapped := ansi.Wrap(line, width, "")
+		rows = append(rows, strings.Split(wrapped, "\n")...)
+	}
+	return rows
+}
+
+func (m Model) inspectContentRows() (rows, footer []string) {
+	return m.inspectVisualLines(), []string{inspectPanelFooter}
+}
+
+func (m Model) inspectFooterVisible() bool {
+	return m.inspectScrollOffset >= m.inspectMaxScrollOffset()
+}
+
+func (m Model) inspectScrollableRows() []string {
+	content, footer := m.inspectContentRows()
+	return append(append([]string(nil), content...), footer...)
+}
+
 func (m Model) inspectMaxScrollOffset() int {
-	lines := strings.Count(m.inspectPanel, "\n") + 1
+	rows := m.inspectScrollableRows()
+	lines := len(rows)
 	if lines <= m.inspectFullFitLines() {
 		return 0
 	}
@@ -489,16 +624,20 @@ func (m Model) windowedInspectPanel() string {
 	if m.inspectPanel == "" {
 		return m.inspectPanel
 	}
-	allLines := strings.Split(m.inspectPanel, "\n")
-	total := len(allLines)
+	rows := m.inspectScrollableRows()
+	total := len(rows)
 	if total <= m.inspectFullFitLines() {
-		return m.inspectPanel
+		return strings.Join(rows, "\n")
 	}
-	visible := m.inspectVisibleLines()
-	offset := min(max(m.inspectScrollOffset, 0), total-visible)
+	visible := max(m.inspectVisibleLines(), 1)
+	maxOffset := max(total-visible, 0)
+	offset := min(max(m.inspectScrollOffset, 0), maxOffset)
 	end := min(total, offset+visible)
-	shown := strings.Join(allLines[offset:end], "\n")
-	hint := fmt.Sprintf("── %d-%d of %d lines · wheel/click ↑↓ · PgUp/PgDn ──", offset+1, end, total)
+	shown := strings.Join(rows[offset:end], "\n")
+	hint := fmt.Sprintf("── %d-%d/%d · ↑↓ · PgUp/PgDn · Home/End · Esc ──", offset+1, end, total)
+	if maxOffset > 0 && offset == maxOffset {
+		return shown + "\n" + styleHint.Render(inspectPanelFooter)
+	}
 	return shown + "\n" + styleHint.Render(hint)
 }
 
