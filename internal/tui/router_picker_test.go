@@ -174,8 +174,7 @@ func TestUpdateRouterPicker_EscClosesMenu(t *testing.T) {
 }
 
 // TestRouterPicker_ToggleOnWithoutModels: enabling before models are set
-// stays in the picker, flips the working mode to auto (pending), and
-// prompts to pick models — it does not exit or persist auto.
+// stays off, keeps the picker open, and shows a neutral prompt to select both models.
 func TestRouterPicker_ToggleOnWithoutModels(t *testing.T) {
 	m := Model{
 		routerPickerOpen: true,
@@ -186,14 +185,26 @@ func TestRouterPicker_ToggleOnWithoutModels(t *testing.T) {
 	if !m.routerPickerOpen {
 		t.Error("toggling on without models should keep the picker open")
 	}
-	if m.routerPicker.mode != config.RouterModeAuto {
-		t.Errorf("working mode should be auto (pending), got %q", m.routerPicker.mode)
+	if m.routerPicker.mode != config.RouterModeOff {
+		t.Errorf("working mode should remain off, got %q", m.routerPicker.mode)
 	}
 	if m.routerPicker.note == "" {
 		t.Error("expected a note prompting to set models first")
 	}
 	if m.routerMode == config.RouterModeAuto {
 		t.Error("routing must not actually be live until models are set")
+	}
+}
+
+// TestRouterPicker_EnableAfterEscapeWithOneModel keeps routing disabled when
+// the user selects only one role model and leaves the picker.
+func TestRouterPicker_EnableAfterEscapeWithOneModel(t *testing.T) {
+	m := Model{routerMode: config.RouterModeOff, routerPicker: &routerPickerState{
+		mode:      config.RouterModeOff,
+		fastChain: []string{"anthropic:claude-haiku-4-5"},
+	}}
+	if m.routerMode != config.RouterModeOff || routerModeOrOff(m.routerPicker.mode) != config.RouterModeOff {
+		t.Fatal("routing should remain off with only one configured role model")
 	}
 }
 
@@ -206,12 +217,9 @@ func TestRouterPicker_EnableThenPickModels(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 	seed := config.Default()
 	seed.Providers = []config.Provider{{
-		Name:         "anthropic",
-		Kind:         "anthropic",
-		BaseURL:      "https://api.anthropic.com",
-		APIKeyEnv:    "ANTHROPIC_API_KEY",
-		DefaultModel: "claude-opus-4-6",
-		Models:       []config.Model{{Name: "claude-opus-4-6", Tier: "expensive"}},
+		Name: "anthropic", Kind: "anthropic", BaseURL: "https://api.anthropic.com",
+		APIKeyEnv: "ANTHROPIC_API_KEY", DefaultModel: "claude-opus-4-6",
+		Models: []config.Model{{Name: "claude-opus-4-6", Tier: "expensive"}},
 	}}
 	if err := config.Save(seed, ""); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -249,14 +257,12 @@ func TestRouterPicker_EnableThenPickModels(t *testing.T) {
 	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // open smart sub-list
 	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyDown})  // to models[1] = opus
 	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter}) // select
+	if m.routerMode == config.RouterModeAuto {
+		t.Fatal("selecting both models should not enable routing before explicit toggle")
+	}
+	m.routerPicker.cursor = rowRouting
+	m, _ = m.updateRouterPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if !m.routerPickerOpen {
-		t.Error("picker should stay open throughout enable + model selection")
-	}
-	if m.routerMode != config.RouterModeAuto {
-		t.Fatalf("routing should be live once both models are set; mode=%q transcript=%q",
-			m.routerMode, m.transcript.String())
-	}
 	if !m.subagentTool.RouteAuto {
 		t.Error("completing the pair should wire RouteAuto")
 	}

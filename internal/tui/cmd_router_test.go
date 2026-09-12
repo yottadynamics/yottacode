@@ -203,36 +203,25 @@ func TestCmdRouter_BareOpensPicker(t *testing.T) {
 	}
 }
 
-// TestStatusBar_RendersRoutingChip: an active auto router makes the
-// routing pair the PRIMARY segment — `<smart>:<fast>` (smart first, fast
-// second), short-tagged, with no provider tag and no active-model
-// duplicate — while the active model matches the smart slot (the normal
-// state: configuring smart switches the active model on picker close).
-// The diverged case is covered by
-// TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart below.
-func TestStatusBar_RendersRoutingChip(t *testing.T) {
+// TestStatusBar_RendersAdvisorIndicator keeps the active model primary and
+// reports enabled advisor routing with an explicit indicator.
+func TestStatusBar_RendersAdvisorIndicator(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 200, Height: 24})
 	m.routerMode = config.RouterModeAuto
 	m.router = &cli.RouterAdapters{FastModel: "anthropic/claude-haiku-4-5", SmartModel: "nvidia/claude-opus-4-6"}
-	m.modelName = m.router.SmartModel // active == smart: the pair is primary
+	m.modelName = m.router.SmartModel
 	plain := stripANSI(m.renderStatus())
-	if !strings.Contains(plain, "claude-opus-4-6") || !strings.Contains(plain, "auto") {
-		t.Errorf("status bar should show active model and separate auto mode: %q", plain)
+	if !strings.Contains(plain, "claude-opus-4-6") || !strings.Contains(plain, "advisor: on") {
+		t.Errorf("status bar should show active model and advisor indicator: %q", plain)
 	}
-	if strings.Contains(plain, "claude-opus-4-6 auto") {
-		t.Errorf("status bar should not append auto inline to active model: %q", plain)
+	if strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") || strings.Contains(plain, "routing: auto") {
+		t.Errorf("status bar should not show an advisor/implementer pair: %q", plain)
 	}
-	if strings.Contains(plain, "claude-opus-4-6:claude-haiku-4-5") {
-		t.Errorf("status bar should not show advisor:implementer pair: %q", plain)
-	}
-	// Old labeled form must be gone.
-	if strings.Contains(plain, "smart:") || strings.Contains(plain, "fast:") || strings.Contains(plain, "routing: auto") {
-		t.Errorf("status bar should not use labeled routing forms or a separate routing chip: %q", plain)
-	}
-	// Vendor prefixes are stripped from the displayed active model.
-	if strings.Contains(plain, "nvidia/") || strings.Contains(plain, "anthropic/") {
-		t.Errorf("active model should be short-tagged (no vendor prefix): %q", plain)
+	m.routerMode = config.RouterModeOff
+	plain = stripANSI(m.renderStatus())
+	if strings.Contains(plain, "advisor:") {
+		t.Errorf("disabled advisor routing should not show an advisor indicator: %q", plain)
 	}
 }
 
@@ -261,43 +250,30 @@ func TestStatusBar_NoRoutingChipWhenOff(t *testing.T) {
 	}
 }
 
-// In auto mode the status bar shows the smart:fast pair as the primary
-// segment ONLY while the active model still matches the smart slot.
-// After a /model switch the pair display would claim interactive turns
-// run on the smart model when they don't — the bar must show the real
-// active model, with the pair demoted to a dim routing note.
-func TestRenderStatus_AutoPairOnlyWhileActiveMatchesSmart(t *testing.T) {
+// In auto mode the status bar shows the actual active model and an explicit
+// advisor indicator. It never renders the configured advisor/implementer pair;
+// after a role switch the model name must track the live adapter.
+// TestRenderStatus_AutoShowsActualActiveRole verifies that the status bar
+// follows the live role model rather than displaying the configured pair.
+func TestRenderStatus_AutoShowsActualActiveRole(t *testing.T) {
 	ra := testRouterAdapters(t)
+	m := Model{router: ra, routerMode: config.RouterModeAuto, modelName: ra.AdvisorModel}
 
-	m := Model{
-		router:     ra,
-		routerMode: config.RouterModeAuto,
-		modelName:  ra.SmartModel, // active == smart: pair is the primary segment
-	}
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "auto") {
-		t.Errorf("active==smart: status bar should show the active model and separate auto mode; got %q", bar)
+	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "advisor: on") {
+		t.Fatalf("advisor state should show advisor model: %q", bar)
 	}
-	if strings.Contains(bar, "claude-opus-4-6 auto") {
-		t.Errorf("active==smart: status bar should not append auto inline to the model; got %q", bar)
-	}
-	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
-		t.Errorf("active==smart: status bar must not show advisor:implementer pair; got %q", bar)
+	if strings.Contains(bar, "claude-haiku-4-5") {
+		t.Fatalf("advisor state should not show implementer model: %q", bar)
 	}
 
-	m.modelName = "some-other-model" // user ran /model after configuring the router
+	m.modelName = ra.ImplementerModel
 	bar = stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "some-other-model") || !strings.Contains(bar, "auto") {
-		t.Errorf("diverged: status bar must show the real active model and separate auto mode; got %q", bar)
+	if !strings.Contains(bar, "claude-haiku-4-5") || !strings.Contains(bar, "advisor: on") {
+		t.Fatalf("implementer state should show implementer model: %q", bar)
 	}
-	if strings.Contains(bar, "some-other-model auto") {
-		t.Errorf("diverged: status bar should not append auto inline to the model; got %q", bar)
-	}
-	if strings.Contains(bar, "routing: auto") {
-		t.Errorf("diverged: status bar should not render a separate routing chip; got %q", bar)
-	}
-	if strings.Contains(bar, "claude-opus-4-6:claude-haiku-4-5") {
-		t.Errorf("diverged: the pair must not remain the primary segment; got %q", bar)
+	if strings.Contains(bar, "claude-opus-4-6") {
+		t.Fatalf("implementer state should not show advisor model: %q", bar)
 	}
 }
 
@@ -313,7 +289,7 @@ func TestRenderStatus_PlanModeShowsActiveAdvisorNotPair(t *testing.T) {
 	}
 
 	bar := stripANSI(m.renderStatus())
-	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "auto") {
+	if !strings.Contains(bar, "claude-opus-4-6") || !strings.Contains(bar, "advisor: on") {
 		t.Errorf("plan mode status should show active advisor model and separate auto mode; got %q", bar)
 	}
 	if strings.Contains(bar, "claude-opus-4-6 auto") {
