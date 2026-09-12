@@ -167,8 +167,10 @@ func (t *EnterWorktreeTool) Execute(ctx context.Context, argsJSON string) (strin
 		}
 	}
 
-	args := []string{"worktree", "add", "-b", branch, wtDir, baseRef}
-	if _, err := gitOutput(ctx, repoRoot, args...); err != nil {
+	// Do not inherit an upstream from the remote-tracking base ref. The
+	// newly-created worktree branch must establish its own upstream on its
+	// first push instead of accidentally targeting origin/main.
+	if _, err := gitOutput(ctx, repoRoot, "worktree", "add", "--no-track", "-b", branch, wtDir, baseRef); err != nil {
 		return "", fmt.Errorf("enter_worktree: %w", err)
 	}
 
