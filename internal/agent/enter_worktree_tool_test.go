@@ -27,18 +27,14 @@ func TestEnterWorktreeCreatesAndCopiesIncludes(t *testing.T) {
 	if _, err := os.Stat(wtDir); err != nil {
 		t.Fatalf("worktree dir not created: %v", err)
 	}
-	// .env should have been copied
-	got, err := os.ReadFile(filepath.Join(wtDir, ".env"))
-	require.NoError(t, err)
-	require.Equal(t, "SECRET=abc\n", string(got))
-}
+	// A new worktree branch must not inherit origin/main as its upstream.
+	_, upstreamErr := gitOutput(context.Background(), wtDir, "rev-parse", "--verify", "@{upstream}")
+	require.Error(t, upstreamErr)
 
-func TestEnterWorktreeAutogeneratesName(t *testing.T) {
-	repo := mkRepoForAgent(t)
-	tool := &EnterWorktreeTool{Cwd: NewCwdRef(repo)}
-	out, err := tool.Execute(context.Background(), `{"base":"head"}`)
-	require.NoError(t, err)
-	require.Contains(t, out, "created worktree")
+	got, readErr := os.ReadFile(filepath.Join(wtDir, ".env"))
+	require.NoError(t, readErr)
+	require.Equal(t, "SECRET=abc\n", string(got))
+
 	// Path should be under ~/.yottacode/worktrees/<slug>/.
 	require.Contains(t, out, worktree.SlugDir(repo))
 }

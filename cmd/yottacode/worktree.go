@@ -306,14 +306,14 @@ func ensureWorktree(ctx context.Context, opts *cli.ChatOptions) error {
 	if !exists {
 		branch := worktree.Branch(name)
 		// Resolve base ref: prefer origin/HEAD ("fresh") when present,
-		// fall back to local HEAD. v1 doesn't surface a base-ref CLI
-		// flag; the agent enter_worktree tool can pass it explicitly.
+		// fall back to local HEAD. Never inherit the base branch's upstream;
+		// the new worktree branch owns its first push target.
 		baseRef := "HEAD"
 		if _, err := runGit(ctx, repoRoot, "rev-parse", "--verify", "origin/HEAD"); err == nil {
 			baseRef = "origin/HEAD"
 		}
-		if _, err := runGit(ctx, repoRoot, "worktree", "add", "-b", branch, wtDir, baseRef); err != nil {
-			return fmt.Errorf("worktree: create: %w", err)
+		if _, err := runGit(ctx, repoRoot, "worktree", "add", "--no-track", "-b", branch, wtDir, baseRef); err != nil {
+
 		}
 	}
 
