@@ -1250,23 +1250,39 @@ approved:
 	// parent loop is blocked on its return, so neither channel has a
 	// competing reader/writer.
 	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
+	// cwd stability: enter_worktree/exit_worktree mutate the session's
+	// shared *CwdRef, which every mutating tool resolves its relative path
+	// against — once below (mutPaths, via cfg.Cwd.Get()) and again
+	// independently inside its own Execute. A swap landing between those
+	// two reads could make them disagree about which file is actually
+	// being touched. Acquire this BEFORE the first cfg.Cwd.Get() read so
+	// the whole span through Execute sees a stable cwd. Ordinary mutations
+	// take the shared read side (many run concurrently, unaffected by each
+	// other); enter_worktree/exit_worktree take the exclusive write side,
+	// which waits for in-flight mutations and blocks new ones until the
+	// swap completes. See MutationLockRegistry's doc comment for why this
+	// is a separate RWMutex rather than routed through Acquire's per-path
+	// claims — a shared sentinel path there would serialize every
+	// mutation against every other one, not just against a cwd swap.
+	isWorktreeSwap := tool.Name() == "enter_worktree" || tool.Name() == "exit_worktree"
+	if isWorktreeSwap {
+		release := cfg.MutationLocks.LockCwdStability()
+		defer release()
+	} else {
+		release := cfg.MutationLocks.RLockCwdStability()
+		defer release()
+	}
 	// Computing this parses argsJSON (each Mutator's own PathsToSnapshot),
 	// so skip it entirely when neither consumer is configured — the common
 	// case for oneshot runs and most tests.
 	var mutPaths []string
-	var lockPaths []string
 	if cfg.Checkpoints != nil || cfg.MutationLocks != nil {
-		cwd := cfg.Cwd.Get()
-		mutPaths = ToolPathsToSnapshot(tool, cwd, argsJSON)
-		lockPaths = append([]string(nil), mutPaths...)
-		if tool.Name() == "enter_worktree" || tool.Name() == "exit_worktree" || len(lockPaths) > 0 {
-			lockPaths = append(lockPaths, mutationCwdLockPath)
-		}
+		mutPaths = ToolPathsToSnapshot(tool, cfg.Cwd.Get(), argsJSON)
 	}
 	// Claim every path this call will touch before checkpointing or executing,
 	// so the checkpoint captures the state before this mutation and a sibling
 	// cannot snapshot or mutate the same path concurrently.
-	release, conflictPath, conflictOwner, acquired := cfg.MutationLocks.Acquire(tool.Name(), lockPaths)
+	release, conflictPath, conflictOwner, acquired := cfg.MutationLocks.Acquire(tool.Name(), mutPaths)
 	if !acquired {
 		msg := fmt.Sprintf("error: %s is currently being edited by another tool call (%s) in this session — wait for it to finish, then re-read the file before retrying", conflictPath, conflictOwner)
 		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})

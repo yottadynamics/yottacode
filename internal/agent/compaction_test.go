@@ -194,6 +194,46 @@ func TestMaybeCompact_NoOpWhenDisabledOrUnderThreshold(t *testing.T) {
 	}
 }
 
+// TestMaybeCompact_ThresholdAtOrAboveOneIsFullyDisabled pins the fix for a
+// regression the absolute-margin trigger (CompactionTriggerTokens)
+// introduced: Threshold >= 1.0 is meant to mean "disabled" (deriveCompactionThreshold
+// / DeriveCompactionThreshold return exactly 1.0 for that), but
+// CompactionTriggerTokens(1.0, window) computes window-compactionAbsoluteMargin,
+// not "never" — a real, finite, active trigger. Without the explicit >= 1.0
+// guard in compact(), a session with auto_threshold=1.0 (an explicit opt-out
+// of both auto-summarize and this derived safety net) would still get
+// preemptively compacted anyway. History that already exceeds even that
+// absolute-margin-derived point must still stay untouched with Threshold=1.0.
+func TestMaybeCompact_ThresholdAtOrAboveOneIsFullyDisabled(t *testing.T) {
+	history := subagentHistory(8, 800)
+	window := 2000 // small enough that history's tokens exceed window-compactionAbsoluteMargin trivially
+	h := history
+	cfg := LoopConfig{Compaction: &CompactionConfig{Window: window, Threshold: 1.0}}
+	if err := maybeCompact(context.Background(), cfg, &h, make(chan Event, 1)); err != nil {
+		t.Fatalf("maybeCompact: %v", err)
+	}
+	if len(h) != len(history) {
+		t.Errorf("Threshold=1.0 should fully disable preemptive compaction, but history changed: %d != %d", len(h), len(history))
+	}
+
+	// force=true (provider-overflow recovery) must still bypass this and be
+	// able to compact even with Threshold=1.0.
+	h2 := history
+	forceCfg := LoopConfig{Compaction: &CompactionConfig{
+		Window: window, Threshold: 1.0,
+		Summarizer: &scriptedStreamer{turns: [][]adapter.StreamEvent{{
+			{Kind: adapter.EventTokenDelta, Token: "summary"},
+			{Kind: adapter.EventDone, Final: &adapter.Message{}},
+		}}},
+	}}
+	if _, err := compact(context.Background(), forceCfg, &h2, make(chan Event, 1), true); err != nil {
+		t.Fatalf("compact(force=true): %v", err)
+	}
+	if len(h2) == len(history) {
+		t.Error("force=true should still compact despite Threshold=1.0")
+	}
+}
+
 func TestMaybeCompact_SkipsWhenAnchorsExceedBudget(t *testing.T) {
 	// A task anchor larger than threshold*window plus a tail that fills the
 	// retain budget: dropping the (non-empty) middle still can't get the

@@ -123,3 +123,108 @@ func TestExecuteToolCallsParallel_MutationLockRejectsSameFile(t *testing.T) {
 		t.Fatalf("got oks=%d conflicts=%d, want exactly one of each", oks, conflicts)
 	}
 }
+
+// TestExecuteToolCallsParallel_UnrelatedFilesRunConcurrently pins the fix
+// for a regression: a shared cwd-lock sentinel path used to be appended to
+// EVERY mutating call's lock-path set, which meant two edits to completely
+// unrelated files (a.go, b.go) contended for the same key and one would be
+// rejected as "conflicting" even though their real paths never overlapped.
+// Cwd stability is now a separate RWMutex (see MutationLockRegistry), so
+// unrelated mutations must both reach Execute concurrently.
+func TestExecuteToolCallsParallel_UnrelatedFilesRunConcurrently(t *testing.T) {
+	startedA := make(chan struct{})
+	startedB := make(chan struct{})
+	release := make(chan struct{})
+
+	reg := NewRegistry()
+	reg.Register(&blockingMutatorTool{name: "a", paths: []string{"/repo/a.go"}, startedCh: startedA, releaseCh: release})
+	reg.Register(&blockingMutatorTool{name: "b", paths: []string{"/repo/b.go"}, startedCh: startedB, releaseCh: release})
+
+	calls := []adapter.ToolCall{
+		{ID: "1", Name: "a", ArgsJSON: "{}"},
+		{ID: "2", Name: "b", ArgsJSON: "{}"},
+	}
+	cfg := LoopConfig{Registry: reg, Cwd: NewCwdRef("/repo"), MutationLocks: &MutationLockRegistry{}}
+	events := make(chan Event, 64)
+	decisions := make(chan Decision)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = executeToolCallsParallel(context.Background(), cfg, calls, events, decisions)
+		close(done)
+	}()
+
+	for _, ch := range []chan struct{}{startedA, startedB} {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("both unrelated-file edits should reach Execute concurrently, but one never started")
+		}
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executeToolCallsParallel did not return after releasing both")
+	}
+}
+
+// TestExecuteToolCallsParallel_WorktreeSwapExcludesConcurrentMutation pins
+// the cwd-stability half of the fix: enter_worktree/exit_worktree must
+// still exclude a concurrent ordinary mutation (the hazard the old shared
+// sentinel existed to prevent — a swap landing between a mutation's
+// lock-path read and its own Execute's independent cwd read), even though
+// unrelated mutations no longer exclude each other.
+func TestExecuteToolCallsParallel_WorktreeSwapExcludesConcurrentMutation(t *testing.T) {
+	startedSwap := make(chan struct{})
+	startedEdit := make(chan struct{})
+	release := make(chan struct{})
+
+	reg := NewRegistry()
+	reg.Register(&blockingMutatorTool{name: "enter_worktree", startedCh: startedSwap, releaseCh: release})
+	reg.Register(&blockingMutatorTool{name: "edit", paths: []string{"/repo/a.go"}, startedCh: startedEdit, releaseCh: release})
+
+	calls := []adapter.ToolCall{
+		{ID: "1", Name: "enter_worktree", ArgsJSON: "{}"},
+		{ID: "2", Name: "edit", ArgsJSON: "{}"},
+	}
+	cfg := LoopConfig{Registry: reg, Cwd: NewCwdRef("/repo"), MutationLocks: &MutationLockRegistry{}}
+	events := make(chan Event, 64)
+	decisions := make(chan Decision)
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = executeToolCallsParallel(context.Background(), cfg, calls, events, decisions)
+		close(done)
+	}()
+
+	// Exactly one of the two should start; the other must wait behind the
+	// exclusive/shared-vs-exclusive relationship, regardless of which wins
+	// the race to go first.
+	var loserStarted chan struct{}
+	select {
+	case <-startedSwap:
+		loserStarted = startedEdit
+	case <-startedEdit:
+		loserStarted = startedSwap
+	case <-time.After(2 * time.Second):
+		t.Fatal("neither call started")
+	}
+	select {
+	case <-loserStarted:
+		t.Fatal("enter_worktree and a concurrent mutation both reached Execute at once — cwd stability not enforced")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-loserStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second call never started after the first released")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("executeToolCallsParallel did not return")
+	}
+}

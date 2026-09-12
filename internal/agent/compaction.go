@@ -173,7 +173,13 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 // make progress.
 func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, events chan<- Event, force bool) (bool, error) {
 	cc := cfg.Compaction
-	if cc == nil || cc.Window <= 0 || (!force && cc.Threshold <= 0) {
+	// Threshold <= 0 or >= 1.0 both mean "preemptive compaction disabled"
+	// (deriveCompactionThreshold/DeriveCompactionThreshold return 1.0
+	// exactly for that). Without the >= 1.0 half, CompactionTriggerTokens'
+	// absolute-margin cap below turns "disabled" into "fires at
+	// window-50,000" instead of never — force still bypasses this so
+	// provider-overflow recovery can force one attempt regardless.
+	if cc == nil || cc.Window <= 0 || (!force && (cc.Threshold <= 0 || cc.Threshold >= 1.0)) {
 		return false, nil
 	}
 	h := snapshotHistory(cfg, history)
