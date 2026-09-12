@@ -567,6 +567,13 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	rt.SubagentTasks = subagentTasks
 
+	// Shared across the parent's own tool calls (cfg.MutationLocks below)
+	// and every subagent it spawns (agentTool.MutationLocks -> runChild):
+	// one instance per session so a foreground subagent racing the parent,
+	// or a sibling subagent, on the same file fails fast instead of
+	// silently corrupting it. See MutationLockRegistry's doc comment.
+	mutationLocks := &agent.MutationLockRegistry{}
+
 	agentTool := &agent.AgentTool{
 		Configs:            subRes.Configs,
 		Tasks:              subagentTasks,
@@ -596,6 +603,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		MaxSessionTokens:       fileCfg.SubagentSessionTokenBudget(),
 		MaxConcurrentSubagents: fileCfg.SubagentMaxConcurrent(),
 		AllowBackground:        spec.SupportsBackgroundDispatch,
+		MutationLocks:          mutationLocks,
 	}
 	reg.Register(agentTool)
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
@@ -666,6 +674,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		AutoMode:      autoMode,
 		YoloMode:      yoloMode,
 		LoopControl:   loopControl,
+		MutationLocks: mutationLocks,
 		// Restores wiring the pre-extraction oneshot.go set directly
 		// (`BypassPermissions: opts.BypassPermissions`) — Build's own
 		// construction never carried it over, silently breaking
@@ -682,7 +691,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	if compactionWindow > 0 {
 		cfg.Compaction = &agent.CompactionConfig{
 			Window:           compactionWindow,
-			Threshold:        fileCfg.Context.CompactionThreshold,
+			Threshold:        agent.DeriveCompactionThreshold(fileCfg.Context.AutoThreshold),
 			TargetRatio:      compactionTargetRatio(fileCfg.Context.CompactionTargetRatio),
 			Summarizer:       routerImplementer(routerAdapters),
 			SummarizerWindow: summarizerWindow,

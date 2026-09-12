@@ -292,15 +292,18 @@ func TestContext_CustomCommandsStayOnDemand(t *testing.T) {
 
 func TestContextDiagnosticsExplainCompactionState(t *testing.T) {
 	m := newTestModel(t)
-	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: 0.9}
-	m.fileCfg.Context.CompactionThreshold = 0.9
+	m.fileCfg.Context.AutoThreshold = 0.85
+	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: deriveCompactionThreshold(m.fileCfg.Context.AutoThreshold), TargetRatio: 0.35}
 	m.lastContextSummary = "auto summarized 9K → 2K"
 	m.lastContextCompaction = "force-compacted 12K → 8K"
 
 	report := ansi.Strip(renderContextReport(&m))
 	for _, want := range []string{
 		"Diagnostics",
-		"compaction 90%",
+		// deriveCompactionThreshold(0.85) = 0.70 (the default fraction —
+		// 0.85 leaves enough room below it that the margin-below-auto rule
+		// doesn't need to lower it further). See deriveCompactionThreshold.
+		"compaction 70%",
 		"Tool schema overhead:",
 		"Largest bucket:",
 		"Compaction:",
@@ -315,8 +318,8 @@ func TestContextDiagnosticsExplainCompactionState(t *testing.T) {
 
 func TestContextDiagnosticsPreemptiveCompactionOff(t *testing.T) {
 	m := newTestModel(t)
-	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: 1.0}
-	m.fileCfg.Context.CompactionThreshold = 1.0
+	m.fileCfg.Context.AutoThreshold = 1.0 // disables auto-summarize AND the derived in-loop threshold
+	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: deriveCompactionThreshold(m.fileCfg.Context.AutoThreshold), TargetRatio: 0.35}
 
 	report := ansi.Strip(renderContextReport(&m))
 	if !strings.Contains(report, "compaction off") {

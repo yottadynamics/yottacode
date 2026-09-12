@@ -658,8 +658,20 @@ type MemoryConfig struct {
 
 // ContextConfig governs context-window watermark behavior.
 type ContextConfig struct {
-	WarnThreshold         float64 `toml:"warn_threshold"`
-	AutoThreshold         float64 `toml:"auto_threshold"`
+	WarnThreshold float64 `toml:"warn_threshold"`
+	AutoThreshold float64 `toml:"auto_threshold"`
+
+	// CompactionThreshold is unused: the in-loop compaction trigger is now
+	// derived automatically (see tui.deriveCompactionThreshold) from
+	// AutoThreshold, with a fixed absolute-token safety margin enforced in
+	// agent.compact regardless of the derived fraction. Neither is
+	// something a user can reliably hand-pick, because the right value
+	// depends on how accurate the model's resolved context window is (some
+	// backends enforce well under their advertised limit — see
+	// catalog.ResolveWindowForProvider) and on tool-schema overhead, which
+	// varies with the registered toolset, not the model. The field stays
+	// here, still parsed, purely so an existing config.toml with this key
+	// set doesn't hard-fail on load; its value is never read.
 	CompactionThreshold   float64 `toml:"compaction_threshold"`
 	CompactionTargetRatio float64 `toml:"compaction_target_ratio"`
 	DefaultWindow         int     `toml:"default_window"`
@@ -896,7 +908,6 @@ func Default() Config {
 		Context: ContextConfig{
 			WarnThreshold:         0.65,
 			AutoThreshold:         0.85,
-			CompactionThreshold:   0.70,
 			CompactionTargetRatio: 0.35,
 			DefaultWindow:         128000,
 		},
@@ -1096,9 +1107,6 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Context.AutoThreshold < 0 || cfg.Context.AutoThreshold > 1 {
 		return fmt.Errorf("context.auto_threshold = %.3f out of range (0.0–1.0)", cfg.Context.AutoThreshold)
-	}
-	if cfg.Context.CompactionThreshold < 0 || cfg.Context.CompactionThreshold > 1 {
-		return fmt.Errorf("context.compaction_threshold = %.3f out of range (0.0–1.0)", cfg.Context.CompactionThreshold)
 	}
 	if cfg.Context.CompactionTargetRatio < 0.10 || cfg.Context.CompactionTargetRatio > 0.80 {
 		return fmt.Errorf("context.compaction_target_ratio = %.3f out of range (0.10–0.80)", cfg.Context.CompactionTargetRatio)
@@ -1793,15 +1801,18 @@ disabled = false
 warn_threshold = 0.65
 
 # Auto-summarization fires before the next turn at this fraction. Must
-# be >= warn_threshold when enabled. Set to 1.0 to disable auto-summarization.
+# be >= warn_threshold when enabled. Set to 1.0 to disable auto-summarization
+# AND the derived mid-turn compaction safety net below.
 auto_threshold = 0.85
 
-# Mid-turn in-loop compaction fires at this fraction while a single long turn is
-# still running. It is intentionally earlier than auto_threshold: auto-summary
-# remains the richer turn-boundary path, while busy-turn compaction keeps long
-# tool loops away from provider hard limits. Set to 1.0 to disable preemptive
-# mid-turn compaction; provider-overflow recovery can still force one attempt.
-compaction_threshold = 0.70
+# Mid-turn in-loop compaction, which keeps long tool loops away from provider
+# hard limits while a single long turn is still running, is not independently
+# configurable: its trigger fraction is derived automatically from
+# auto_threshold (kept a fixed margin below it, so it always fires first),
+# with a hard absolute-token floor underneath regardless of the derived
+# fraction. This is deliberate — the right value depends on how accurate the
+# model's resolved context window is and on tool-schema overhead, neither of
+# which a user can see or reliably hand-pick.
 
 # Share of the active context window kept verbatim as the recent tail after
 # mid-turn compaction. The rest of the budget covers the system prompt, original

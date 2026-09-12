@@ -91,17 +91,55 @@ func TestSummaryDoneDiscardedWhenCompactionSeqMoved(t *testing.T) {
 	}
 }
 
+// TestRefreshTurnCompactionConfigDisablesWhenFloorTooHigh pins the last-resort
+// case: fixed overhead (system prompt + tool schemas) alone is large enough
+// relative to the window that even the minimum retained-tail ratio
+// (minCompactionTargetRatio) leaves no room. Below that, refreshTurnCompactionConfig
+// gives up rather than degrade further — there's genuinely nothing compaction
+// could do for this turn. This is independent of the derived Threshold value
+// (see TestRefreshTurnCompactionConfigShrinksTargetRatioWhenTight for the
+// case where shrinking the ratio is enough).
 func TestRefreshTurnCompactionConfigDisablesWhenFloorTooHigh(t *testing.T) {
 	m := newTestModel(t)
 	m.fileCfg = config.Config{Context: config.ContextConfig{
-		DefaultWindow:       1000,
-		CompactionThreshold: 0.90,
+		DefaultWindow: 1000,
+		AutoThreshold: 0.85,
 	}}
-	m.cfg.Compaction = &agent.CompactionConfig{Window: 1000, Threshold: 0.90}
+	m.cfg.Compaction = &agent.CompactionConfig{}
 	m.sess.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: strings.Repeat("s", 900*4)}}
 
 	m.refreshTurnCompactionConfig()
 	if m.cfg.Compaction.Window != 0 {
 		t.Fatalf("compaction window = %d, want disabled", m.cfg.Compaction.Window)
+	}
+}
+
+// TestRefreshTurnCompactionConfigShrinksTargetRatioWhenTight pins the
+// graceful-degradation path: when the configured retain ratio doesn't leave
+// room once fixed overhead is subtracted, the ratio shrinks in steps rather
+// than disabling compaction outright — a smaller compaction pass beats none.
+func TestRefreshTurnCompactionConfigShrinksTargetRatioWhenTight(t *testing.T) {
+	m := newTestModel(t)
+	m.fileCfg = config.Config{Context: config.ContextConfig{
+		DefaultWindow:         10_000,
+		AutoThreshold:         0.85,
+		CompactionTargetRatio: 0.35,
+	}}
+	m.cfg.Compaction = &agent.CompactionConfig{}
+	// System prompt ~6K tokens (24K chars / 4) against a 10K window: the
+	// default 0.35 ratio (3.5K) would push 6000+3500=9500 close to the
+	// window but still positive at 0.35 — use a bigger system prompt to
+	// force the shrink path without tripping the full-disable one.
+	m.sess.Messages = []adapter.Message{{Role: adapter.RoleSystem, Content: strings.Repeat("s", 7000*4)}}
+
+	m.refreshTurnCompactionConfig()
+	if m.cfg.Compaction.Window == 0 {
+		t.Fatal("compaction should stay enabled by shrinking the ratio, not disable entirely")
+	}
+	if m.cfg.Compaction.TargetRatio >= 0.35 {
+		t.Fatalf("TargetRatio = %.2f, want shrunk below the configured 0.35", m.cfg.Compaction.TargetRatio)
+	}
+	if m.cfg.Compaction.TargetRatio < minCompactionTargetRatio {
+		t.Fatalf("TargetRatio = %.2f, want >= floor %.2f", m.cfg.Compaction.TargetRatio, minCompactionTargetRatio)
 	}
 }

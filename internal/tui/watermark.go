@@ -33,6 +33,48 @@ func (m *Model) refreshContextTokens() {
 	m.contextTokens = m.estimatedContextTokens(m.lockedMessages())
 }
 
+// compactionThresholdBelowAuto keeps in-loop compaction (which runs
+// mid-turn, at clean loop boundaries) strictly ahead of the TUI's
+// turn-boundary auto-summarize, regardless of what the user sets
+// auto_threshold to — see deriveCompactionThreshold.
+const compactionThresholdBelowAuto = 0.10
+
+// compactionThresholdDefault is the in-loop trigger fraction used when
+// auto_threshold leaves room for it (the common case).
+const compactionThresholdDefault = 0.70
+
+// compactionThresholdMin is an absolute floor so a very low auto_threshold
+// can't derive a fraction that fires on nearly every iteration. In the
+// extreme case of an auto_threshold below ~0.20 this can end up at or
+// above auto_threshold itself, losing the "compaction fires first"
+// ordering — an accepted tradeoff for a config value nobody sane sets;
+// both mechanisms still fire early and safely, just not in the intended
+// order.
+const compactionThresholdMin = 0.10
+
+// minCompactionTargetRatio is the lowest the retained-tail ratio will
+// shrink to before giving up on compaction for a turn (see
+// refreshTurnCompactionConfig). Matches config.go's validated floor for
+// context.compaction_target_ratio, so the derived value never goes lower
+// than a user could have configured directly.
+const minCompactionTargetRatio = 0.10
+
+// deriveCompactionThreshold computes the in-loop compaction trigger
+// fraction from auto_threshold instead of exposing it as its own config
+// knob: the right absolute value depends on how accurate the model's
+// resolved context window is (some backends enforce well under their
+// advertised limit) and on tool-schema overhead (scales with the
+// registered toolset, not the model) — neither visible to a user. The
+// RELATIONSHIP to auto_threshold, though, is something the system can
+// always get right on its own: in-loop compaction exists specifically to
+// preempt the turn-boundary auto-summarize, so it must trigger first.
+// autoThreshold >= 1.0 means the user explicitly disabled auto-summarize;
+// disable this derived safety net too rather than silently keep compacting
+// behind their back.
+func deriveCompactionThreshold(autoThreshold float64) float64 {
+	return agent.DeriveCompactionThreshold(autoThreshold)
+}
+
 func (m *Model) refreshTurnCompactionConfig() {
 	if m.cfg.Compaction == nil {
 		return
@@ -43,21 +85,43 @@ func (m *Model) refreshTurnCompactionConfig() {
 		return
 	}
 	m.cfg.Compaction.Window = window
-	m.cfg.Compaction.Threshold = m.fileCfg.Context.CompactionThreshold
-	m.cfg.Compaction.TargetRatio = contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)
+	m.cfg.Compaction.Threshold = deriveCompactionThreshold(m.fileCfg.Context.AutoThreshold)
 	if m.cfg.Compaction.Threshold >= 1.0 {
-		// Threshold 1.0 disables preemptive compaction but keeps the
-		// Window populated so provider-overflow recovery can still force a
-		// single compaction attempt.
+		// Disabled (auto_threshold >= 1.0): keep Window populated so
+		// provider-overflow recovery can still force a single attempt.
+		m.cfg.Compaction.TargetRatio = contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)
 		return
 	}
 	msgs := m.lockedMessages()
 	systemTokens, _ := contextwindow.SplitMessages(msgs)
 	schemaTokens := registrySchemaTokens(m.cfg.Registry)
-	retainBudget := int(contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio) * float64(window))
-	if window-systemTokens-schemaTokens-retainBudget <= 0 {
-		m.cfg.Compaction.Window = 0
+	fixedOverhead := systemTokens + schemaTokens
+	// If the configured retain ratio doesn't leave room once fixed
+	// overhead is accounted for, shrink the retained tail in 5% steps
+	// down to minCompactionTargetRatio instead of disabling compaction
+	// outright — a smaller compaction pass that actually runs beats no
+	// safety net at all for the rest of a long turn. Each step is computed
+	// fresh from the configured ratio (not by repeatedly subtracting from
+	// itself) so float64 error can't accumulate across iterations and
+	// undershoot the floor; the epsilon on the loop guard and the hard
+	// clamp after it both exist for the same reason — belt and suspenders
+	// against float noise landing ratio a hair on either side of the floor.
+	configuredRatio := contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)
+	ratio := configuredRatio
+	for steps := 1; window-fixedOverhead-int(ratio*float64(window)) <= 0 && ratio > minCompactionTargetRatio+1e-9; steps++ {
+		ratio = configuredRatio - float64(steps)*0.05
 	}
+	if ratio < minCompactionTargetRatio {
+		ratio = minCompactionTargetRatio
+	}
+	if window-fixedOverhead-int(ratio*float64(window)) <= 0 {
+		// Even the minimum retain ratio leaves no room: fixed overhead
+		// alone (system prompt + tool schemas) already consumes the
+		// window, so compaction has nothing to work with this turn.
+		m.cfg.Compaction.Window = 0
+		return
+	}
+	m.cfg.Compaction.TargetRatio = ratio
 }
 
 func contextCompactionTargetRatio(configured float64) float64 {

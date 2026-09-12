@@ -12,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2/compat"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
@@ -232,7 +233,7 @@ func renderContextDiagnostics(m *Model, buckets []contextBucket, used, window, s
 
 	warn := thresholdStatus("warn", m.fileCfg.Context.WarnThreshold)
 	auto := thresholdStatus("auto", m.fileCfg.Context.AutoThreshold)
-	compact := thresholdStatus("compaction", m.fileCfg.Context.CompactionThreshold)
+	compact := thresholdStatus("compaction", deriveCompactionThreshold(m.fileCfg.Context.AutoThreshold))
 	fmt.Fprintf(&out, "  Window: %s · %s\n", formatTokens(window), contextWindowSource(m))
 	fmt.Fprintf(&out, "  Thresholds: %s · %s · %s\n", warn, auto, compact)
 	fmt.Fprintf(&out, "  Tool schema overhead: %s tokens\n", formatTokens(toolTokens))
@@ -291,17 +292,18 @@ func contextCompactionStatus(m *Model, used, window, systemTokens, toolTokens, m
 	if window <= 0 || cc.Window <= 0 {
 		return "disabled (window unavailable or irreducible floor too high)"
 	}
-	threshold := m.fileCfg.Context.CompactionThreshold
+	threshold := deriveCompactionThreshold(m.fileCfg.Context.AutoThreshold)
 	if threshold >= 1.0 || threshold <= 0 {
 		return "preemptive off; provider-overflow recovery can force one attempt"
 	}
-	parts := []string{fmt.Sprintf("fires at %.0f%% (%s)", threshold*100, formatTokens(int(threshold*float64(window))))}
-	if used >= int(threshold*float64(window)) {
+	trigger := agent.CompactionTriggerTokens(threshold, window)
+	parts := []string{fmt.Sprintf("fires at %.0f%% (%s)", threshold*100, formatTokens(trigger))}
+	if used >= trigger {
 		parts = append(parts, "currently eligible")
 	} else {
-		parts = append(parts, fmt.Sprintf("%s until trigger", formatTokens(max(int(threshold*float64(window))-used, 0))))
+		parts = append(parts, fmt.Sprintf("%s until trigger", formatTokens(max(trigger-used, 0))))
 	}
-	floor := systemTokens + toolTokens + int(contextCompactionTargetRatio(m.fileCfg.Context.CompactionTargetRatio)*float64(window))
+	floor := systemTokens + toolTokens + int(cc.TargetRatio*float64(window))
 	parts = append(parts, fmt.Sprintf("floor≈%s + messages %s", formatTokens(floor), formatTokens(messageTokens)))
 	return strings.Join(parts, "; ")
 }

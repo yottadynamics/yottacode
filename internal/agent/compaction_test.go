@@ -68,6 +68,50 @@ func drainEvents(ch chan Event) []Event {
 	}
 }
 
+// TestCompactionTriggerTokens_AbsoluteMarginCapsLargeWindows pins the
+// defense-in-depth safety net: a percentage-based trigger alone assumes the
+// resolved window is trustworthy, which isn't always true (some backends
+// enforce well under their advertised limit). For a large enough window,
+// the absolute margin — not the fraction — must be the binding constraint,
+// so a "safe" percentage of an over-estimated window still leaves a real,
+// bounded amount of headroom.
+func TestCompactionTriggerTokens_AbsoluteMarginCapsLargeWindows(t *testing.T) {
+	// threshold*window (0.90 * 1,000,000 = 900,000) would leave only
+	// 100,000 tokens of headroom; the margin (window-50,000 = 950,000) is
+	// larger, so the FRACTION should still be the tighter, binding limit
+	// here — showing the margin doesn't kick in needlessly when the
+	// fraction is already conservative enough.
+	if got := CompactionTriggerTokens(0.90, 1_000_000); got != 900_000 {
+		t.Errorf("got %d, want 900000 (fraction should bind)", got)
+	}
+	// Now push the fraction close to 1.0 — the fraction alone would leave
+	// almost no headroom (990,000 of 1,000,000). The absolute margin must
+	// cap it well below that.
+	got := CompactionTriggerTokens(0.99, 1_000_000)
+	if got != 950_000 {
+		t.Errorf("got %d, want 950000 (compactionAbsoluteMargin should bind)", got)
+	}
+}
+
+// TestCompactionTriggerTokens_NeverBelowHalfWindow ensures the absolute
+// margin can't squeeze a small or already-conservative window into firing
+// almost immediately — it's a backstop against an over-estimated window,
+// not a way to make compaction more aggressive for a window that's already
+// modest in absolute terms.
+func TestCompactionTriggerTokens_NeverBelowHalfWindow(t *testing.T) {
+	// window=60,000: margin alone (60,000-50,000=10,000) would be far
+	// below half the window (30,000) — the half-window floor must win.
+	if got := CompactionTriggerTokens(0.99, 60_000); got != 30_000 {
+		t.Errorf("got %d, want 30000 (half-window floor should bind)", got)
+	}
+}
+
+func TestCompactionTriggerTokens_ZeroWindow(t *testing.T) {
+	if got := CompactionTriggerTokens(0.7, 0); got != 0 {
+		t.Errorf("got %d, want 0", got)
+	}
+}
+
 func TestMaybeCompact_ShrinksAndPreservesAnchorsAndPairing(t *testing.T) {
 	history := subagentHistory(8, 800) // ~1.6K tokens of tool output
 	cfg := LoopConfig{

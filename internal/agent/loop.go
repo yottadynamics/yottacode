@@ -127,6 +127,15 @@ type LoopConfig struct {
 	// calls within a turn.
 	Checkpoints CheckpointWriter
 
+	// MutationLocks, when non-nil, serializes Mutator tool calls that
+	// target the same file across this session and every subagent it
+	// spawns (the parent and its children share one pointer — see
+	// runChild). nil (oneshot without subagents; tests) disables the
+	// guard: there is only ever one tool call in flight, so nothing to
+	// serialize against. See MutationLockRegistry's doc comment for why
+	// this exists.
+	MutationLocks *MutationLockRegistry
+
 	// UserMessages, when non-nil, is checked (non-blocking) after
 	// each tool round completes. If a message is pending, it's
 	// appended to history as a RoleUser message using the original
@@ -1241,12 +1250,35 @@ approved:
 	// parent loop is blocked on its return, so neither channel has a
 	// competing reader/writer.
 	toolCtx := WithParentDecisions(WithParentEvents(ctx, events), decisions)
+	// Computing this parses argsJSON (each Mutator's own PathsToSnapshot),
+	// so skip it entirely when neither consumer is configured — the common
+	// case for oneshot runs and most tests.
+	var mutPaths []string
+	var lockPaths []string
+	if cfg.Checkpoints != nil || cfg.MutationLocks != nil {
+		cwd := cfg.Cwd.Get()
+		mutPaths = ToolPathsToSnapshot(tool, cwd, argsJSON)
+		lockPaths = append([]string(nil), mutPaths...)
+		if tool.Name() == "enter_worktree" || tool.Name() == "exit_worktree" || len(lockPaths) > 0 {
+			lockPaths = append(lockPaths, mutationCwdLockPath)
+		}
+	}
+	// Claim every path this call will touch before checkpointing or executing,
+	// so the checkpoint captures the state before this mutation and a sibling
+	// cannot snapshot or mutate the same path concurrently.
+	release, conflictPath, conflictOwner, acquired := cfg.MutationLocks.Acquire(tool.Name(), lockPaths)
+	if !acquired {
+		msg := fmt.Sprintf("error: %s is currently being edited by another tool call (%s) in this session — wait for it to finish, then re-read the file before retrying", conflictPath, conflictOwner)
+		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
+		return msg, nil, false, approvalSource, nil
+	}
+	defer release()
 	// Snapshot pre-images for Mutator tools before they run. Soft-fail:
 	// a snapshot error must not block the user's tool call — surface it
 	// as a scrollback event but let the tool proceed.
 	if cfg.Checkpoints != nil {
 		if sessionID, cpID := CheckpointFromContext(ctx); cpID != "" {
-			for _, p := range ToolPathsToSnapshot(tool, cfg.Cwd.Get(), argsJSON) {
+			for _, p := range mutPaths {
 				if err := cfg.Checkpoints.SnapshotPath(sessionID, cpID, p); err != nil {
 					_ = send(ctx, events, CheckpointInfo{Message: fmt.Sprintf("snapshot %s: %v", p, err)})
 				}

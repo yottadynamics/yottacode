@@ -96,6 +96,8 @@ type Mutator interface {
 	PathsToSnapshot(cwd, argsJSON string) []string
 }
 
+const mutationCwdLockPath = "\x00session-cwd"
+
 // ToolPathsToSnapshot exposes the Mutator capability to callers in
 // other packages (e.g. the agent loop's checkpoint hook) without
 // forcing them to import nothing-vs-something interface assertions.

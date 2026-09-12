@@ -318,9 +318,6 @@ warn_threshold = 0.65
 auto_threshold = 0.85
                          # turn-boundary auto-summarize; 1.0 disables
 
-compaction_threshold = 0.70
-                         # mid-turn busy-loop compaction safety net; 1.0 disables
-
 compaction_target_ratio = 0.35
                          # recent-tail share retained after mid-turn compaction
 
@@ -328,11 +325,11 @@ default_window = 128000
                          # fallback tokens for unknown models
 ```
 
-`auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. `compaction_threshold` runs inside a long busy turn at clean loop boundaries, after tool results have landed and before the next model request. It intentionally defaults below `auto_threshold` so long-running tool loops compact before provider hard limits rather than waiting for post-turn recovery. If a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
+`auto_threshold` runs between turns and writes a pre-summary snapshot before replacing old conversation with a summary. A second, earlier safety net runs *inside* a long busy turn, at clean loop boundaries after tool results have landed and before the next model request, so long-running tool loops compact before hitting a provider hard limit rather than waiting for post-turn recovery. Unlike every other value in this block, its trigger fraction is **not configurable** — it's derived automatically from `auto_threshold` (kept a fixed margin below it, so it always fires first) with a hard absolute-token floor enforced underneath regardless of the derived fraction. This is deliberate: the right fraction depends on how accurate the model's resolved context window actually is — some backends enforce well under their advertised limit — and on tool-schema overhead, which scales with the registered toolset, not the model. Neither is something a user can see or reliably hand-pick, so it isn't exposed as a knob. Setting `auto_threshold = 1.0` disables both the turn-boundary summarizer and this derived in-loop safety net. If a provider still rejects a request for context length before any assistant content streams, yottacode force-compacts once and retries. Interactive mid-turn compaction also writes a `~/.yottacode/sessions/<id>-pre-summary-*.json` snapshot before rewriting history.
 
-Use `/context` in the TUI to inspect the active state: resolved model window, configured thresholds, tool-schema overhead, largest context buckets, compaction enabled/disabled reason, and the latest summarize/compaction outcome.
+Use `/context` in the TUI to inspect the active state: resolved model window, effective thresholds, tool-schema overhead, largest context buckets, compaction enabled/disabled reason, and the latest summarize/compaction outcome.
 
-Set a threshold to `1.0` to disable that preemptive behavior. `compaction_target_ratio` controls how much of the active window is kept verbatim as the recent tail after mid-turn compaction; the rest is reserved for the system prompt, original task, compacted progress note, tool schemas, and the next model response. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
+`compaction_target_ratio` controls how much of the active window is kept verbatim as the recent tail after mid-turn compaction; the rest is reserved for the system prompt, original task, compacted progress note, tool schemas, and the next model response. When the configured ratio would leave no room once that fixed overhead is accounted for, it's shrunk automatically (down to a floor) rather than disabling compaction outright. `/recall` indexes the compacted session slice, not compacted-away messages; the pre-summary snapshot is the recovery record for full history.
 
 ### Checkpoints retention
 
