@@ -161,27 +161,29 @@ You don't have to edit the file by hand. **`/advisor`** opens a picker
 with rows — Routing, Advisor model, Implementer, Fallback — that
 all act in place (the picker stays open). Toggle the Routing row on/off,
 and open the model rows to pick from your configured models (the embedded
-catalog plus any `providers.models`). You can enable routing first and
-choose the models below — routing turns on once both are set — or pick
-the models and then toggle on. Selections persist to `config.toml` and
-apply live; picking a catalog model also records it in that provider's
-`providers.models` so the write validates. `/advisor on` and `/advisor off`
-are quick shortcuts for the toggle.
+	catalog plus any `providers.models`). Select both the advisor and implementer
+	models before enabling routing; choosing only one leaves routing off. Selections
+	persist to `config.toml` and apply live; picking a catalog model also records it
+	in that provider's `providers.models` so the write validates. `/advisor on`
+	enables routing only when both role models are configured, while `/advisor off`
+	disables it and clears the configured advisor/implementer model pair. The status
+	bar shows `advisor: on` only while routing is enabled; it does not show an
+	advisor field when routing is off. These are quick shortcuts for the toggle.
 
-**Configuring the advisor model also switches your active model.** When
-you set (or change) the **Advisor model** and close the picker, your main
+	bar shows `advisor: on` only while routing is enabled; it does not show an
+	advisor field when routing is off. These are quick shortcuts for the toggle.
+
 conversation switches to that model — the advisor model is your primary
 reasoning model, so this keeps the two in sync (the same as running
 `/model <advisor>`). Closing without changing the advisor model leaves
 your active model untouched.
 
 While routing is active, the status bar keeps the **active model** as the
-primary label and shows routing mode as the next status segment (`auto` when
-auto routing is active). It does **not** show a separate `routing:` chip or an
-advisor:implementer pair in the main status display. Configuring the advisor
-model still switches your active model to it (see above), so advisor-led
-interactive turns remain aligned with the configured advisor while the mode
-segment makes routing state visible without crowding the model/provider label.
+primary label: planning shows the advisor model, while auto-mode work shows the
+implementer model. It also shows `advisor: on`; it never renders the configured
+advisor/implementer pair as a combined value. When routing is off, no advisor
+field is shown.
+
 
 Plan mode is the exception only in that it still shows the actual advisor
 model as the active model; routing state remains visible through the same

@@ -218,16 +218,16 @@ func (m Model) activateRouterMenuRow() (Model, tea.Cmd) {
 			p.note = ""
 			return commitRouterMode(m, config.RouterModeOff)
 		}
-		// Turn on. Flip the working state now so the user can pick the
-		// models; routing persists + applies once both primaries are set
-		// (here, or via completePendingEnable after a pick).
-		p.mode = config.RouterModeAuto
+		// Do not enter an enabled or pending state until both role models
+		// exist. The user can select them from the rows below first.
 		if chainPrimary(p.fastChain) == "" || chainPrimary(p.smartChain) == "" {
-			p.note = "select an advisor and an implementer model below to finish enabling"
+			p.note = "select an advisor and an implementer model below before enabling"
 			return m, nil
 		}
+		p.mode = config.RouterModeAuto
 		p.note = ""
 		return commitRouterMode(m, config.RouterModeAuto)
+
 	case rowFastPrimary:
 		p.openModelList("fast")
 	case rowSmartPrimary:
@@ -373,10 +373,22 @@ func (p *routerPickerState) clampWindow() {
 }
 
 // commitRouterMode persists [router].mode and applies it live. Shared by
-// the /router on|off shortcuts and the picker's Routing toggle.
+// the /router on|off shortcuts and the picker's Routing toggle. Disabling
+// advisor routing also removes the configured role pair so the next enable
+// starts from an explicit model selection instead of stale configuration.
 func commitRouterMode(m Model, mode string) (Model, tea.Cmd) {
 	cfg := loadConfigForCommand(m)
 	cfg.Router.Mode = mode
+	if mode == config.RouterModeOff {
+		cfg.Router.AdvisorModel = ""
+		cfg.Router.ImplementerModel = ""
+		cfg.Router.AdvisorModels = nil
+		cfg.Router.ImplementerModels = nil
+		cfg.Router.SmartModel = ""
+		cfg.Router.FastModel = ""
+		cfg.Router.SmartModels = nil
+		cfg.Router.FastModels = nil
+	}
 	if err := config.Validate(cfg); err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "advisor", "validation", err.Error())))
 		return m, nil
@@ -395,7 +407,8 @@ func commitRouterMode(m Model, mode string) (Model, tea.Cmd) {
 		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "advisor", "enabled", advisor+" advisor", implementer+" implementer", "persisted")))
 	} else {
 		applyRoutingOff(&m)
-		m.appendLine(styleAuto.Render(SysMsg(SysState, "advisor", "disabled", "subagents and summarization use active model", "persisted")))
+		m.router = nil
+		m.appendLine(styleAuto.Render(SysMsg(SysState, "advisor", "disabled", "subagents and summarization use active model", "pair cleared", "persisted")))
 	}
 	return m, nil
 }
@@ -410,6 +423,7 @@ func commitRouterChain(m Model, slot string, chain []string) (Model, tea.Cmd) {
 	for _, ref := range chain {
 		ensureProviderModel(&cfg, ref)
 	}
+
 	setRouterChain(&cfg, slot, chain)
 	if err := config.Validate(cfg); err != nil {
 		m.appendLine(styleError.Render(SysMsg(SysFailure, "advisor", "validation", err.Error())))
@@ -465,18 +479,18 @@ func setRouterChain(cfg *config.Config, slot string, chain []string) {
 	}
 }
 
-// completePendingEnable turns routing on when the picker's working mode is
-// auto (the user toggled On first) and both slots now have a primary but
-// routing isn't live yet — so "enable, then pick models" finishes as soon
-// as the pair is complete.
+// completePendingEnable turns routing on when the picker has both primary
+// models configured and the user has requested auto routing. It never enables
+// routing with only one side of the role pair present.
 func (m Model) completePendingEnable() (Model, tea.Cmd) {
 	p := m.routerPicker
-	if p == nil {
+	if p == nil || routerModeOrOff(p.mode) != config.RouterModeAuto {
 		return m, nil
 	}
-	if routerModeOrOff(p.mode) == config.RouterModeAuto &&
-		chainPrimary(p.fastChain) != "" && chainPrimary(p.smartChain) != "" &&
-		routerModeOrOff(m.routerMode) != config.RouterModeAuto {
+	if chainPrimary(p.fastChain) == "" || chainPrimary(p.smartChain) == "" {
+		return m, nil
+	}
+	if routerModeOrOff(m.routerMode) != config.RouterModeAuto {
 		p.note = ""
 		return commitRouterMode(m, config.RouterModeAuto)
 	}
@@ -718,12 +732,11 @@ func renderRouterPicker(p *routerPickerState, width int, hits ...*pickerHits) st
 		"↵ set a model (or toggle Routing) · d clears a fallback · persists to config.toml", width)))
 	if p.note != "" {
 		b.WriteString("\n")
-		b.WriteString(styleError.Render(wrapPlain(p.note, width)))
+		b.WriteString(styleEmpty.Render(wrapPlain(p.note, width)))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// fallbackValue renders a slot's fallback row: the first fallback, "(none)"
 // when there is none, plus "(+N more)" when config.toml sets a longer chain.
 func fallbackValue(chain []string) string {
 	fb := chainFallback(chain)

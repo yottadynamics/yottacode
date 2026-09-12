@@ -4663,28 +4663,13 @@ func (m Model) renderStatus() string {
 	if m.cfg.YoloMode.IsActive() {
 		modeLabels = append(modeLabels, "yolo")
 	}
-	if m.router != nil {
-		smart, fast := shortModelTag(m.router.SmartModel), shortModelTag(m.router.FastModel)
-		switch routerModeOrOff(m.routerMode) {
-		case config.RouterModeAuto:
-			if len(modeLabels) == 0 {
-				modeLabels = append(modeLabels, "auto")
-			}
-			// Plan mode already carries its own prominent banner; show the real
-			// advisor model here so the implementer half of the pair is not mistaken for the active planner.
-			if !m.cfg.PlanMode.IsActive() && smart != "" && fast != "" && (m.modelName == m.router.SmartModel || m.modelName == smart) {
-				modelName = smart
-				routingNote = "auto"
-			} else {
-				routingNote = "auto"
-			}
-		case config.RouterModeManual:
-			// Manual routing is only meaningful inside the advisor/implementer
-			// UI itself; when the advisor isn't actively in play, showing a
-			// `manual` suffix in the main status bar is just noise.
-			routingNote = "manual"
-		}
+	if m.router != nil && routerModeOrOff(m.routerMode) != config.RouterModeOff {
+		// Routing is intentionally reported independently from permission auto mode.
+		// The active model remains the primary model signal; this chip only says
+		// that advisor/implementer routing is enabled.
+		routingNote = "advisor: on"
 	}
+
 	model := renderModelName(modelName)
 	tag := m.providerLabel
 	if tag == "" {
