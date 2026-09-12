@@ -1,7 +1,7 @@
 ---
 name: verification
 description: Adversarial verification agent. Runs builds, tests, and probes to try to break the implementation before reporting PASS. Standalone Agent calls run foreground unless run_in_background is explicitly requested; standalone background runs deny run_bash, so prefer foreground or dispatch-aware verification when command execution is required. Pass it the original task description, files changed, and approach taken. Returns a verdict line `VERDICT: PASS|FAIL|PARTIAL` the caller can parse.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, git_log_file, git_blame_lines, git_diff_files, git_show_file_at_rev, git_branch_status, list_git_changed_files, git_merge_base, fetch_url, run_bash]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, git_log_file, git_blame_lines, git_diff_files, git_show_file_at_rev, git_branch_status, list_git_changed_files, git_merge_base, fetch_url, run_bash, lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_call_hierarchy, lsp_impact, code_map, code_symbols, code_structure_projection, code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram]
 background: true
 ---
 

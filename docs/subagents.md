@@ -18,15 +18,15 @@ Nine agent types ship with the binary:
 
 | Name | Tools | Purpose |
 | --- | --- | --- |
-| `general-purpose` | all parent tools (except `Agent` itself) | Answer open-ended questions. Falls back to writing if the task demands it. |
+| `general-purpose` | inherited parent tools, excluding delegation and plan-boundary tools | Answer open-ended questions. It cannot delegate further; write access depends on the inherited runtime policy. |
 | `Explore` | read-only file/git tools + LSP; Code Map when enabled | Fast semantic/indexed code navigation with targeted text search as fallback. |
 | `Plan` | Explore's tools + `todo_write` | Investigate semantically, then produce a written implementation plan ending with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Runs foreground by default in standalone `Agent` calls because it needs `run_bash`; use foreground when command execution is required. |
-| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree with owned-file enforcement, but `run_tests`/`run_bash` are disabled because no human can approve command execution. |
-| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; in background `dispatch` fan-out it runs in an isolated worktree, but `run_tests`/`run_bash` are disabled and the worker must report the verification gap. |
+| `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in a sandboxed background `dispatch` worker it runs in an isolated worktree with owned-file enforcement and may run shell/tests inside the worker sandbox; host-executing workers deny those commands. |
+| `test` | read + write + `run_tests` + `run_bash` | Write/update and run tests for a component, owning the test files only. Write-capable; sandboxed background `dispatch` workers may run shell/tests inside the worker sandbox, while host-executing workers deny them and must report the verification gap. |
 | `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
-| `code-verifier` | read-only (`review`'s set plus `git_merge_base`) | Read-only adversarial check of a **single** review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. The read-only counterpart to `verification` (which runs builds/tests). Foreground; used by `/code-review`'s verification pass. |
+| `code-verifier` | read-only code/navigation, git-read, LSP, and Code Map tools listed in its definition | Read-only adversarial check of exactly one review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. It does not re-review the whole diff. Foreground; used by `/code-review`'s verification pass. |
 
 The `implement` / `test` / `docs` / `review` roster rounds out the
 **parallel-implementation** story behind `dispatch`: a typical fan-out is
@@ -35,6 +35,84 @@ The `implement` / `test` / `docs` / `review` roster rounds out the
 
 The built-in definitions live in `internal/subagents/builtins/*.md`
 and are embedded in the binary — they ship without any setup.
+
+## Capability and permission matrix
+
+Tool access has two layers: the agent definition's `tools:` allowlist and the
+runtime registry/policy. A tool must be present in both layers to execute.
+Children always inherit the parent's working directory and permission rules,
+but the `Agent`, `dispatch`, `integrate`, and plan-boundary tools are removed so
+a child cannot recursively delegate or independently leave plan mode.
+
+| Capability | Foreground | Standalone background | Dispatch worker |
+| --- | --- | --- | --- |
+| Read files, search, repository structure | Allowed when listed | Allowed when listed | Allowed when listed |
+| LSP navigation and diagnostics | Allowed when listed | Removed unless a future sandbox-trusted LSP path is enabled | Removed from background dispatch workers; allowed only for foreground workers when listed |
+| Code Map queries | Allowed when listed and enabled | Allowed when listed and enabled | Allowed when listed and enabled |
+| Workspace/file writes | Approval-gated or inherited auto mode | Denied; use `dispatch` for unattended writes | Allowed only in the isolated worktree and declared owned files |
+| `run_bash` / `run_tests` | Approval-gated; verification uses foreground by default | Denied | Allowed only for sandboxed workers; denied on host fallback |
+| LSP WorkspaceEdit application | Approval-gated in foreground | Denied by the read-only policy | Denied; use a foreground child for cross-file edits |
+| Media and subprocess-backed document tools | Allowed when listed | Removed before execution | Not part of the safe read-only path |
+| Network, git mutation, commits, push | Approval-gated when exposed | Denied by the unattended policy | Denied; dispatch performs its own controlled commit/integration flow |
+
+### Read-only semantic navigation
+
+`Explore`, `Plan`, `review`, and `code-verifier` should use Code Map and LSP
+before broad text search when running in the foreground. Background variants
+must use Code Map, syntax/indexed tools, and targeted file search because LSP
+startup is intentionally unavailable without a trusted sandbox.
+
+### Foreground and background behavior
+
+Foreground execution blocks the parent until the child returns its final answer.
+It is the correct mode when the parent needs a result immediately or when a
+child must run an approval-requiring command. Approval requests are forwarded to
+the parent's modal with a `[subagent:<type>]` label.
+
+Background execution detaches the child and returns a task ID. The TUI can show
+progress and later deliver the result through `get_subagent_result` or
+`notify_on_done`. Background children cannot show a modal: approval-requiring
+calls are deterministically denied. Ordinary read-only tools remain available,
+but LSP, media, document subprocesses, shell/test execution, network, and
+mutation paths are removed or denied because they can start unapproved external
+processes or require user decisions.
+
+### Built-in system prompts and roles
+
+Each built-in markdown file contains YAML frontmatter plus the child system
+prompt. The frontmatter defines the public name, description, allowlist,
+optional model, and background preference. The body defines the role contract:
+what the child should investigate, whether it may write, how it must report, and
+any required output trailer.
+
+- **Explore**: fast semantic/indexed location and code navigation; return the minimum viable answer quickly, never delegate, never write, and cite file/line evidence.
+- **Plan**: investigates architecture and produces a step-by-step plan with a
+  `### Critical Files for Implementation` trailer; trivial lookups are answered
+  directly, and `todo_write` is the only permitted plan-tracking mutation.
+- **general-purpose**: broad research or multi-step work using inherited tools;
+  cannot delegate further, and write access remains subject to runtime policy.
+- **review**: severity-ranked diff review; prioritize correctness, security, then
+  clarity/maintenance; every finding includes `file:line`, a concrete failure
+  scenario, and severity; never edits.
+- **code-verifier**: verifies exactly one supplied review finding by trying to
+  refute it; it does not re-review the whole diff and ends with
+  `VERDICT: PASS|FAIL|PARTIAL`.
+- **verification**: runs builds, tests, and adversarial probes; reports exact
+  commands and observed output in `### Check:` blocks, must run an adversarial
+  probe before PASS, and ends with a parseable verdict. Project files remain
+  read-only, but temporary scripts under `/tmp` are allowed.
+- **implement**: owns one implementation slice and its declared files; cannot
+  delegate, may edit only assigned files, and should add tests when appropriate.
+- **test**: owns test files, writes regression coverage, and runs tests when
+  foreground execution permits it; cannot edit implementation files.
+- **docs**: owns documentation/comment files, cannot delegate, and keeps docs
+  aligned with the implementation without changing code or tests.
+
+A custom agent uses the same format under `.yottacode/agents/` (project scope) or
+`~/.yottacode/agents/` (user scope). Project definitions override user
+ definitions, which override built-ins. An omitted `tools:` field means inherit
+all parent tools except the delegation and plan-boundary tools; an explicit list
+narrows access. Unknown tool names are warned about and dropped.
 
 ### `verification` in depth
 
@@ -105,8 +183,17 @@ Fields:
 - `name` (required) — letters/digits/underscore/hyphen, max 64 chars. Used directly as `subagent_type` in tool calls.
 - `description` (required) — one line shown to the parent model in the `Agent` tool schema.
 - `tools` (optional) — allowlist of tool names. Defaults to "inherit all parent tools (minus `Agent` itself)". Use `*` or `["*"]` to be explicit.
-- `model` (optional) — adapter model override for this agent. Honored when [cache-safe task routing](models.md#cache-safe-task-routing) is enabled (`[router].mode` = `manual` or `auto`); it always wins over the auto heuristic. With routing `off` the field is parsed but inert. Useful for pinning a search-heavy agent to a cheaper model, or a high-stakes agent to a stronger one.
-- `background` (optional) — when `true`, dispatches default to background unless the caller explicitly passes `run_in_background:false`. Falls back to foreground in sessions where background isn't available (oneshot). Use this for slow off-turn checks the parent shouldn't block on (e.g. the `verification` builtin).
+- `model` (optional) — adapter model override for this agent. Honored when
+  cache-safe task routing is enabled (`[router].mode` = `manual` or `auto`) and
+  the model name resolves successfully. An unknown or unconfigured name falls
+  through to normal auto-routing or parent-model inheritance. With routing
+  `off`, the field is parsed but inert.
+- `background` (optional) — when `true`, standalone `Agent` calls automatically
+  use background only for read-only definitions when background execution is
+  available; write-capable definitions remain foreground unless the caller
+  explicitly requests otherwise. Dispatch may use the preference for fan-out.
+  In oneshot/noninteractive sessions, `run_in_background:true` is rejected;
+  retry without it to run foreground.
 - Body — the agent's system prompt. Be specific about what the parent should expect back.
 
 Unknown tool names in `tools:` emit a startup warning and are silently
@@ -125,9 +212,9 @@ The `Agent` tool accepts `run_in_background: true`:
   the call returns immediately with a task id. The child runs to
   completion in a detached goroutine. The TUI surfaces completion
   via a `SubagentBackgroundDone` card on the next render cycle;
-  `oneshot` rejects background calls because it has no long-running
-  session to host them. Use when the parent can keep working
-  without the answer.
+  `oneshot` rejects `run_in_background:true` with an error because it has no
+  long-running session to host the task; retry without the flag to run it in
+  foreground. Use background when the parent can keep working without the answer.
 
   Background subagents stream the **same live progress card** as
   foreground ones — a start header followed by `├` activity ticks —
@@ -144,9 +231,9 @@ The `Agent` tool accepts `run_in_background: true`:
   interactive TUI. `run_in_background:true` dispatches a
   fire-and-forget child the parent can collect later via
   `get_subagent_result`. (Oneshot / noninteractive sessions reject
-  detached runs — there is no long-lived UI to host the task — and
-  fall back to foreground.) Foreground delegation is still the
-  stable surface when the parent needs the answer in the same turn.
+  `run_in_background:true` with an error — retry without the flag to run
+  foreground.) Foreground delegation is still the stable surface when the
+  parent needs the answer in the same turn.
 
 ### `notify_on_done` — async re-entry
 
@@ -441,9 +528,11 @@ the shared adapter. Per-subagent token counts are surfaced in the
 `SubagentDone` event and stored in the task registry.
 
 With [cache-safe role routing](models.md#cache-safe-task-routing)
-enabled (`auto`), every delegated subagent runs on `implementer_model`, and any
-agent with an explicit `model:` runs on whatever it names — all in an
-isolated context that never shared the main thread's prompt cache. The
+enabled (`auto`), every delegated subagent runs on `implementer_model`. A
+resolvable explicit `model:` on an agent definition overrides this; an unknown
+or unconfigured model name falls through to auto routing or parent-model
+inheritance. All routing occurs in an isolated child context and never changes
+the main thread's prompt cache. The
 advisor model is available to implementer-style children through the
 `consult_advisor` tool for bounded design/debugging help; it is not a
 recursive subagent dispatch. The model each subagent ran on shows in the
@@ -461,10 +550,11 @@ ownership so the merge stays clean by construction.
 
 Write/implementation batches run in the **background** by default
 (non-blocking — returns a batch handle immediately, workers auto-approve
-owned-file writes but deny shell/tests because those execute code, you
-`integrate` when done); all-read/research batches run in the **foreground**
-(blocking) and return every subtask's findings together for the main agent to
-assemble right away.
+owned-file writes). In a sandboxed worker, `run_bash` and `run_tests` are allowed
+inside that worker's container; on a host-executing worker they are denied because
+those commands execute code. Use `integrate` when done; all-read/research batches
+run in the **foreground** (blocking) and return every subtask's findings together
+for the main agent to assemble right away.
 
 Full guide: [dispatch.md](dispatch.md). Dispatch/integrate remains experimental;
 enable it with `--experimental dispatch`.

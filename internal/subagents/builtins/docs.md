@@ -1,7 +1,7 @@
 ---
 name: docs
 description: Updates documentation and code comments for a change. Owns the doc files it's given — clean file partition alongside implement/test in a dispatch fan-out. In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns a summary of the doc edits.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, git_diff_files, fetch_url]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, git_diff_files, fetch_url, lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_call_hierarchy, lsp_impact, code_map, code_symbols, code_structure_projection, code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram]
 background: true
 ---
 

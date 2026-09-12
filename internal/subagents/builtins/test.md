@@ -1,7 +1,7 @@
 ---
 name: test
 description: Writes or updates tests for a given component and runs them. Owns the test files only — pairs cleanly with an implement task on the same component (different files). In dispatch fan-out, write tasks run in isolated background worktrees; standalone Agent calls run foreground unless run_in_background is explicitly requested. Returns what it covered and the pass/fail result.
-tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, run_tests, run_bash, git_diff_files, fetch_url, consult_advisor]
+tools: [read_file, read_many_files, grep, glob, list_dir, list_project_structure, write_file, edit_file, apply_hashline, apply_diff, run_tests, run_bash, git_diff_files, fetch_url, lsp_status, lsp_symbols, lsp_document_symbols, lsp_document_highlights, lsp_selection_ranges, lsp_definition, lsp_type_definition, lsp_implementation, lsp_references, lsp_hover, lsp_signature_help, lsp_diagnostics, lsp_changed_files_diagnostics, lsp_call_hierarchy, lsp_impact, code_map, code_symbols, code_structure_projection, code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram, consult_advisor]
 background: true
 ---
 
