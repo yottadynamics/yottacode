@@ -100,7 +100,7 @@ func newOAuthHandler(serverName, serverURL string, opts OAuthOptions, discoveryC
 	handlerCfg := &sdkauth.AuthorizationCodeHandlerConfig{
 		PreregisteredClient:      creds,
 		RedirectURL:              oauthRedirectURI,
-		AuthorizationCodeFetcher: oauthAuthorizationCodeFetcher(serverName, onAuthURL),
+		AuthorizationCodeFetcher: oauthAuthorizationCodeFetcher(serverName, onAuthURL, openBrowserFunc),
 		RequestRefreshToken:      true,
 		Client:                   discoveryClient,
 		NewTokenSource: func(ctx context.Context, oa2 *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
@@ -275,7 +275,7 @@ func (p *persistingTokenSource) Token() (*oauth2.Token, error) {
 // auth URL (via onAuthURL, if set), best-effort open the browser, bind a
 // fresh loopback listener on the fixed redirect address, and wait for the
 // single redirect hit or ctx cancellation.
-func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string)) sdkauth.AuthorizationCodeFetcher {
+func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string), browserFunc func(string) error) sdkauth.AuthorizationCodeFetcher {
 	return func(ctx context.Context, args *sdkauth.AuthorizationArgs) (*sdkauth.AuthorizationResult, error) {
 		authURL := googleOfflineAccessURL(args.URL)
 
@@ -294,6 +294,7 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string)) sd
 			err              error
 		}
 		resultCh := make(chan callbackResult, 1)
+		callbackDone := make(chan struct{}, 1)
 		mux := http.NewServeMux()
 		mux.HandleFunc(oauthLoopbackPath, func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
@@ -314,6 +315,10 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string)) sd
 			case resultCh <- res:
 			default:
 			}
+			// Let net/http finish writing the callback response before the
+			// fetcher closes the listener after receiving resultCh. Closing
+			// the server immediately can make the browser/test client see EOF.
+			callbackDone <- struct{}{}
 		})
 		srv := &http.Server{Handler: mux}
 		go func() { _ = srv.Serve(listener) }()
@@ -322,10 +327,11 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string)) sd
 		if onAuthURL != nil {
 			onAuthURL(authURL)
 		}
-		_ = openBrowserFunc(authURL)
+		_ = browserFunc(authURL)
 
 		select {
 		case res := <-resultCh:
+			<-callbackDone
 			if res.err != nil {
 				return nil, res.err
 			}

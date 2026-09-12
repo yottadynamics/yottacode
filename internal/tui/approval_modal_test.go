@@ -46,8 +46,17 @@ func TestRenderApprovalModal_DoesNotDuplicateTitleInBody(t *testing.T) {
 	if count := strings.Count(got, "Approval needed"); count != 1 {
 		t.Fatalf("approval title rendered %d times, want 1:\n%s", count, got)
 	}
-	if !strings.Contains(strings.SplitN(got, "\n", 2)[0], "run_tests") {
-		t.Fatalf("approval modal top border should retain tool label, got %q", strings.SplitN(got, "\n", 2)[0])
+	if !strings.Contains(got, "run_tests") {
+		t.Fatalf("approval modal should show tool metadata inside the card, got %q", got)
+	}
+	lines := strings.Split(got, "\n")
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) == "" || strings.Contains(line, "┌") || strings.Contains(line, "└") {
+			continue
+		}
+		if !strings.HasPrefix(line, "│  ") {
+			t.Fatalf("modal content is not aligned to the shared gutter: %q", line)
+		}
 	}
 }
 
@@ -103,8 +112,8 @@ func TestRenderApprovalModal_HasNoPopupCloseGlyph(t *testing.T) {
 	if strings.Contains(first, "×") {
 		t.Fatalf("approval modal top border should not include a mouse-only close glyph, got %q", first)
 	}
-	if !strings.Contains(first, "Approval needed") || !strings.Contains(first, "move_file") {
-		t.Fatalf("approval modal top border should retain its labels, got %q", first)
+	if !strings.Contains(got, "Approval needed") || !strings.Contains(got, "move_file") {
+		t.Fatalf("approval modal should retain its labels inside the card, got %q", got)
 	}
 }
 
@@ -135,7 +144,7 @@ func TestRenderApprovalModal_UsesComfortableWidthWithoutOverflow(t *testing.T) {
 	}
 }
 
-func TestRenderApprovalModal_CompactPreviewDoesNotAddBlankSpacerRows(t *testing.T) {
+func TestRenderApprovalModal_CompactPreviewHasDecisionSpacer(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
 	m.awaitingApproval = true
@@ -144,14 +153,15 @@ func TestRenderApprovalModal_CompactPreviewDoesNotAddBlankSpacerRows(t *testing.
 	m.approvalArgs = `{"ref":"329","title":"refresh OAuth","body":"## Summary\n- Keep existing Markdown"}`
 
 	lines := strings.Split(stripANSI(renderApprovalModal(m)), "\n")
-	blankRows := 0
-	for _, line := range lines {
-		if strings.TrimSpace(ansi.Strip(line)) == "" {
-			blankRows++
+	choice := -1
+	for i, line := range lines {
+		if strings.Contains(line, "[Y]") {
+			choice = i
+			break
 		}
 	}
-	if blankRows > 0 {
-		t.Fatalf("approval modal has unexpected blank rows in compact preview: %d\n%s", blankRows, strings.Join(lines, "\n"))
+	if choice < 2 || strings.TrimSpace(strings.Trim(lines[choice-1], "│")) != "" {
+		t.Fatalf("expected one blank row before choices, choice=%d:\n%s", choice, strings.Join(lines, "\n"))
 	}
 	if got := ansi.StringWidth(lines[0]); got < 30 {
 		t.Errorf("approval modal too narrow on an 80-col terminal: width=%d", got)
