@@ -235,68 +235,47 @@ auto_threshold = 0.7`
 	}
 }
 
-func TestLoad_ContextCompactionThreshold(t *testing.T) {
-	cases := []struct {
-		name    string
-		src     string
-		wantErr bool
-	}{
-		{
-			name: "below auto accepted for busy-turn compaction",
-			src: `[context]
+// TestLoad_CompactionThresholdIsParsedButUnvalidated pins the deliberate
+// backward-compat shape of ContextConfig.CompactionThreshold: the in-loop
+// compaction trigger is now derived automatically from auto_threshold (see
+// tui.deriveCompactionThreshold) rather than exposed as its own knob — the
+// right absolute value depends on per-model window accuracy and per-session
+// tool-schema overhead, neither visible to a user. The key stays parseable,
+// including values the old range check would have rejected (e.g. 1.2), so
+// an existing config.toml that still sets it doesn't hard-fail on load;
+// nothing reads the parsed value.
+func TestLoad_CompactionThresholdIsParsedButUnvalidated(t *testing.T) {
+	for _, src := range []string{
+		`[context]
 warn_threshold = 0.5
 auto_threshold = 0.85
 compaction_threshold = 0.70`,
-		},
-		{
-			name: "equal auto accepted",
-			src: `[context]
+		`[context]
 warn_threshold = 0.5
 auto_threshold = 0.85
-compaction_threshold = 0.85`,
-		},
-		{
-			name: "auto disabled with compaction enabled accepted",
-			src: `[context]
-warn_threshold = 0.5
-auto_threshold = 1.0
 compaction_threshold = 0.90`,
-		},
-		{
-			name: "compaction disabled accepted",
-			src: `[context]
-warn_threshold = 0.5
-auto_threshold = 0.85
-compaction_threshold = 1.0`,
-		},
-		{
-			name: "out of range rejected",
-			src: `[context]
+		`[context]
 warn_threshold = 0.5
 auto_threshold = 0.85
 compaction_threshold = 1.2`,
-			wantErr: true,
-		},
-		{
-			name: "target ratio out of range rejected",
-			src: `[context]
+		`[context]
 warn_threshold = 0.5
 auto_threshold = 0.85
-compaction_threshold = 0.70
-compaction_target_ratio = 0.90`,
-			wantErr: true,
-		},
+compaction_threshold = -1`,
+	} {
+		if _, err := Load(writeFile(t, src)); err != nil {
+			t.Errorf("unexpected error for legacy compaction_threshold value: %v\nsrc:\n%s", err, src)
+		}
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			_, err := Load(writeFile(t, c.src))
-			if c.wantErr && err == nil {
-				t.Fatal("expected error")
-			}
-			if !c.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
+}
+
+func TestLoad_RejectsOutOfRangeCompactionTargetRatio(t *testing.T) {
+	src := `[context]
+warn_threshold = 0.5
+auto_threshold = 0.85
+compaction_target_ratio = 0.90`
+	if _, err := Load(writeFile(t, src)); err == nil {
+		t.Fatal("expected error for out-of-range compaction_target_ratio")
 	}
 }
 

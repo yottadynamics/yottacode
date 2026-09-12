@@ -47,18 +47,41 @@ func TestMutators_ReturnExpectedPaths(t *testing.T) {
 			},
 		},
 		{
-			name:     "CopyFileTool_DstOnly",
+			// Src is read-only for copy_file, but the mutation lock still
+			// needs to claim it: Execute reads it for the whole copy, and a
+			// concurrent writer to src could otherwise race a torn read
+			// into dst with no error. See CopyFileTool.PathsToSnapshot.
+			name:     "CopyFileTool_BothEnds",
 			tool:     &CopyFileTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"src":"a.txt","dst":"b.txt"}`,
-			want:     []string{filepath.Join(cwd, "b.txt")},
+			want: []string{
+				filepath.Join(cwd, "a.txt"),
+				filepath.Join(cwd, "b.txt"),
+			},
 		},
 		{
-			name: "ApplyDiffTool_MultiFile",
-			tool: &ApplyDiffTool{Cwd: NewCwdRef(cwd)},
+			name:     "ApplyDiffTool_MultiFile",
+			tool:     &ApplyDiffTool{Cwd: NewCwdRef(cwd)},
 			argsJSON: `{"diff":"diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@\n-old\n+new\ndiff --git a/y.go b/y.go\n--- a/y.go\n+++ b/y.go\n@@\n-old\n+new\n"}`,
 			want: []string{
 				filepath.Join(cwd, "x.go"),
 				filepath.Join(cwd, "y.go"),
+			},
+		},
+		{
+			// Output plus every segment's read-only input path — see
+			// MediaComposeTool.PathsToSnapshot for why inputs are included.
+			name: "MediaComposeTool_OutputAndSegmentInputs",
+			tool: &MediaComposeTool{Cwd: NewCwdRef(cwd)},
+			argsJSON: `{"output":"out.mp4","segments":[
+				{"type":"image","path":"a.png","duration":2},
+				{"type":"title","text":"Intro","duration":1},
+				{"type":"clip","path":"b.mp4"}
+			]}`,
+			want: []string{
+				filepath.Join(cwd, "out.mp4"),
+				filepath.Join(cwd, "a.png"),
+				filepath.Join(cwd, "b.mp4"),
 			},
 		},
 		{

@@ -15,6 +15,47 @@ import (
 // status form keeps the useful numbers and percentage without the old
 // six-cell graph.
 
+// TestDeriveCompactionThreshold pins the replacement for the old
+// user-facing compaction_threshold knob: the in-loop trigger fraction is
+// derived from auto_threshold instead, always staying strictly ahead of it
+// (compactionThresholdBelowAuto) so mid-turn compaction preempts the
+// turn-boundary auto-summarize it exists to avoid, with a fixed default
+// and an absolute floor so a pathological auto_threshold can't derive
+// something absurd.
+func TestDeriveCompactionThreshold(t *testing.T) {
+	cases := []struct {
+		name          string
+		autoThreshold float64
+		want          float64
+	}{
+		{"default auto_threshold uses the default fraction", 0.85, 0.70},
+		{"auto disabled (1.0) disables this too", 1.0, 1.0},
+		{"auto threshold just above default+margin keeps default", 0.81, 0.70},
+		{"tight auto_threshold pulls the fraction down with it", 0.50, 0.40},
+		{"low auto_threshold still clamps to the floor, staying below it", 0.15, 0.10},
+		{"pathologically low auto_threshold: floor exceeds auto (documented tradeoff)", 0.05, 0.10},
+	}
+	for _, c := range cases {
+		if got := deriveCompactionThreshold(c.autoThreshold); got != c.want {
+			t.Errorf("%s: deriveCompactionThreshold(%.2f) = %.2f, want %.2f", c.name, c.autoThreshold, got, c.want)
+		}
+	}
+}
+
+// TestDeriveCompactionThreshold_AlwaysBelowAutoWhenFeasible checks the
+// invariant deriveCompactionThreshold exists to guarantee — in-loop
+// compaction fires before the turn-boundary auto-summarize — holds across
+// the whole reachable auto_threshold range, except the documented
+// pathological-low-value tradeoff (see deriveCompactionThreshold's comment).
+func TestDeriveCompactionThreshold_AlwaysBelowAutoWhenFeasible(t *testing.T) {
+	for auto := 0.20; auto < 1.0; auto += 0.01 {
+		got := deriveCompactionThreshold(auto)
+		if got >= auto {
+			t.Errorf("deriveCompactionThreshold(%.2f) = %.2f, want strictly below auto_threshold", auto, got)
+		}
+	}
+}
+
 func TestSummaryConverged(t *testing.T) {
 	cases := []struct {
 		name      string

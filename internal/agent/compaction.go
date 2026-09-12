@@ -10,7 +10,23 @@ import (
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 )
 
-// defaultCompactionTargetRatio is the share of the context window kept
+// DeriveCompactionThreshold computes the in-loop compaction trigger from
+// auto_threshold. Keeping this in the agent package ensures TUI, oneshot, and
+// ACP runtime construction use the same safety policy.
+func DeriveCompactionThreshold(autoThreshold float64) float64 {
+	if autoThreshold >= 1.0 {
+		return 1.0
+	}
+	t := 0.70
+	if cap := autoThreshold - 0.10; cap < t {
+		t = cap
+	}
+	if t < 0.10 {
+		t = 0.10
+	}
+	return t
+}
+
 // verbatim as the recent tail after a compaction. The rest of the budget
 // covers the system prompt, the original task, the synthetic progress
 // summary, and the next turn's output. 0.35 leaves enough headroom that
@@ -30,6 +46,44 @@ func compactionTargetRatio(cc *CompactionConfig) float64 {
 // auto-summarize default so the summary call itself — which sends the
 // dropped middle as input — still fits comfortably inside the window.
 const subagentCompactionThreshold = 0.75
+
+// compactionAbsoluteMargin is the minimum number of tokens of headroom
+// in-loop compaction must leave before the resolved window, regardless of
+// what Threshold*Window computes to. A purely percentage-based trigger
+// assumes the resolved window is trustworthy; it often isn't — some
+// backends enforce well under their advertised context_window (see
+// catalog.ResolveWindowForProvider's doc comment), so a "safe" fraction of
+// an over-estimated window can still leave too little real room. It's also
+// not just the conversation that counts against the trigger: tool schemas
+// ride on every request (already counted via toolSchemaTokens below) and
+// a single large turn can add tens of thousands of tokens between checks.
+// 50,000 comfortably covers a realistically large registered toolset
+// (measured system-prompt overhead alone on a real session ran ~14K) plus
+// one big turn's growth, independent of how large window is.
+const compactionAbsoluteMargin = 50_000
+
+// CompactionTriggerTokens returns the absolute token count at which
+// in-loop compaction fires for the given fraction and resolved window: the
+// smaller of threshold*window and window-compactionAbsoluteMargin, floored
+// so the margin can never push the trigger below half the window (a small
+// or already-conservative window shouldn't be squeezed into firing
+// immediately). Exported so /context can display the exact number driving
+// the "fires at" line without duplicating the formula.
+func CompactionTriggerTokens(threshold float64, window int) int {
+	if window <= 0 {
+		return 0
+	}
+	byFraction := threshold * float64(window)
+	byMargin := float64(window) - compactionAbsoluteMargin
+	floor := 0.5 * float64(window)
+	if byMargin < floor {
+		byMargin = floor
+	}
+	if byMargin < byFraction {
+		return int(byMargin)
+	}
+	return int(byFraction)
+}
 
 // minCompactionWindow is the smallest context window for which in-loop
 // compaction is worth enabling. Below it, compactionInputBudget (window
@@ -119,7 +173,13 @@ func maybeCompact(ctx context.Context, cfg LoopConfig, history *[]adapter.Messag
 // make progress.
 func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, events chan<- Event, force bool) (bool, error) {
 	cc := cfg.Compaction
-	if cc == nil || cc.Window <= 0 || (!force && cc.Threshold <= 0) {
+	// Threshold <= 0 or >= 1.0 both mean "preemptive compaction disabled"
+	// (deriveCompactionThreshold/DeriveCompactionThreshold return 1.0
+	// exactly for that). Without the >= 1.0 half, CompactionTriggerTokens'
+	// absolute-margin cap below turns "disabled" into "fires at
+	// window-50,000" instead of never — force still bypasses this so
+	// provider-overflow recovery can force one attempt regardless.
+	if cc == nil || cc.Window <= 0 || (!force && (cc.Threshold <= 0 || cc.Threshold >= 1.0)) {
 		return false, nil
 	}
 	h := snapshotHistory(cfg, history)
@@ -130,7 +190,7 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	// a subagent's cloned toolset is easily several thousand tokens — so
 	// compaction fires against the real on-wire size, not an undercount.
 	overhead := toolSchemaTokens(cfg.Registry)
-	threshold := cc.Threshold * float64(cc.Window)
+	threshold := float64(CompactionTriggerTokens(cc.Threshold, cc.Window))
 	if !force && float64(before+overhead) < threshold {
 		return false, nil
 	}

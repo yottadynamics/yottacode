@@ -514,12 +514,27 @@ func (t *MediaComposeTool) PreviewCall(argsJSON string) string {
 	_ = json.Unmarshal([]byte(argsJSON), &a)
 	return fmt.Sprintf("media_compose(%d segments -> %s)", len(a.Segments), a.Output)
 }
+
+// PathsToSnapshot reports Output (for checkpoint restore) plus every
+// segment's input Path, so the session's MutationLockRegistry also claims
+// them: Execute's ffmpeg run reads every segment for the whole composition,
+// and a concurrent writer to one of those inputs could otherwise race a
+// partially-written frame into Output with no error — see
+// MutationLockRegistry's doc comment. Checkpoint snapshots dedup
+// content-addressed blobs, so the extra read-only entries are harmless
+// there.
 func (t *MediaComposeTool) PathsToSnapshot(cwd, argsJSON string) []string {
 	var a mediaComposeArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || strings.TrimSpace(a.Output) == "" {
 		return nil
 	}
-	return []string{resolvePath(cwd, a.Output)}
+	paths := []string{resolvePath(cwd, a.Output)}
+	for _, seg := range a.Segments {
+		if strings.TrimSpace(seg.Path) != "" {
+			paths = append(paths, resolvePath(cwd, seg.Path))
+		}
+	}
+	return paths
 }
 func (t *MediaComposeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a mediaComposeArgs

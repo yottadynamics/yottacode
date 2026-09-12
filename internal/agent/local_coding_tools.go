@@ -242,7 +242,12 @@ func (t *CopyFileTool) Schema() map[string]any {
 }
 func (t *CopyFileTool) RequiresApproval(string) bool { return true }
 
-// PathsToSnapshot reports only the destination — src is read-only here.
+// PathsToSnapshot reports dst (for checkpoint restore — src is read-only
+// and never needs a pre-image) plus src (so the session's MutationLockRegistry
+// also claims it: Execute reads src for the whole copy, and a concurrent
+// writer to that path could otherwise race a torn read into dst with no
+// error — see MutationLockRegistry's doc comment). Checkpoint snapshots
+// dedup content-addressed blobs, so the extra src entry is harmless there.
 func (t *CopyFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
 	var a struct {
 		Src string `json:"src"`
@@ -251,7 +256,11 @@ func (t *CopyFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.Dst == "" {
 		return nil
 	}
-	return []string{resolvePath(cwd, a.Dst)}
+	paths := []string{resolvePath(cwd, a.Dst)}
+	if a.Src != "" {
+		paths = append(paths, resolvePath(cwd, a.Src))
+	}
+	return paths
 }
 
 func (t *CopyFileTool) PreviewCall(argsJSON string) string {

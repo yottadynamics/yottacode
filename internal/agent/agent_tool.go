@@ -203,6 +203,13 @@ type AgentTool struct {
 	// swap (enter_worktree) flows to the spawned subagent.
 	Cwd *CwdRef
 
+	// MutationLocks is the session's shared file-mutation guard, passed
+	// straight through to every child's LoopConfig (see runChild) so a
+	// foreground subagent that shares the parent's cwd can't silently
+	// race the parent — or a sibling subagent — on the same file. nil is
+	// safe (guard disabled, matching a nil LoopConfig.MutationLocks).
+	MutationLocks *MutationLockRegistry
+
 	// TranscriptDir is the directory subagent transcripts get persisted
 	// under, resolved at startup by the caller (TUI or oneshot wiring)
 	// via subagents.TranscriptDirFor. It need NOT exist yet — openTranscript
@@ -859,6 +866,7 @@ func (t *AgentTool) runChild(
 		PlanMode:          childPlanMode,
 		AutoMode:          childAutoMode,
 		YoloMode:          t.YoloMode, // shared (process-wide once entered)
+		MutationLocks:     t.MutationLocks,
 	}
 	if opts.bgPolicy {
 		childCfg.BackgroundApprovalPolicy = dispatchBackgroundApprovalPolicyFor(opts.sandboxed)

@@ -2129,6 +2129,15 @@ Mirrors Claude Code's `Agent` / `Task` tool surface.
 | `description` | string | "" | A 3-5 word label shown to the user while the subagent runs. |
 | `run_in_background` | boolean | `false` | If true (TUI only), return immediately with a task id; the subagent runs to completion in the background. `oneshot` rejects this with a recoverable error so the model can retry without the flag. |
 
+A foreground subagent shares the parent's current working directory and
+files — unlike `dispatch`, it gets no isolated worktree and no file-ownership
+partitioning. `Agent` is parallel-safe, so several `Agent` calls issued in one
+assistant message run concurrently; if two of them (or a subagent and the
+parent) edit the same file, a session-wide mutation lock rejects whichever
+call loses the race with a recoverable error instead of letting both
+read-modify-write cycles interleave. If you need guaranteed non-overlapping
+concurrent writes, use `dispatch` and declare disjoint `files`.
+
 ## dispatch
 
 Fan a batch of independent subtasks out to subagents that run concurrently. Write-capable subtasks each run in their own git worktree + branch and must declare disjoint `files`; read-only subtasks share the current working directory. Write batches default to background in the TUI and return a batch id plus worker branches immediately; all-read batches default to foreground and return the findings together.

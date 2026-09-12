@@ -83,7 +83,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "", fmt.Errorf("edit_file: old_string must not be empty (would match everywhere)")
 	}
 	if a.OldString == a.NewString {
-		return "", fmt.Errorf("edit_file: old_string and new_string are identical — no change to make. If you meant to edit the file, re-read it and provide a new_string that differs from old_string (for example, the corrected line)")
+		return "", fmt.Errorf("edit_file: old_string and new_string are byte-for-byte identical, so this call cannot make progress and resubmitting it unchanged will fail the same way every time. This is not a stale-file problem — no file was even read yet. Call read_file on the target to see its current exact content, then call edit_file again with a new_string that actually differs from old_string")
 	}
 	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
