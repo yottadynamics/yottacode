@@ -274,6 +274,7 @@ type toolExecResult struct {
 	denied         bool
 	approvalSource string
 	err            error
+	latencyMS      int64
 }
 
 const (
@@ -416,6 +417,7 @@ func Turn(
 	decisions <-chan Decision,
 ) error {
 	state := loopState{history: history, toolFailures: map[string]int{}}
+	turnStart := time.Now()
 	// Effective cap: auto mode quadruples the configured limit
 	// because the user explicitly opted into "let this run" — most
 	// plan implementations need 100–200 iterations. Yolo mode goes
@@ -505,6 +507,7 @@ func Turn(
 			// per-turn timeout is added.
 			if isCancelErr(err) {
 				if final != nil {
+					final.WallTimeMS = func() *int64 { v := time.Since(turnStart).Milliseconds(); return &v }()
 					appendHistory(cfg, state.history, *final)
 				}
 				partialContent := ""
@@ -763,6 +766,8 @@ func streamIteration(
 	if fallbackCount > 0 {
 		final.FallbackReason = fallbackReason
 	}
+	wallTime := time.Since(start).Milliseconds()
+	final.WallTimeMS = &wallTime
 	return final, nil
 }
 
@@ -808,6 +813,7 @@ func executeToolCalls(
 			continue
 		}
 		tc := calls[0]
+		start := time.Now()
 		result, images, denied, approvalSource, err := executeToolCall(ctx, cfg, tc, events, decisions)
 		if err != nil {
 			// Same reasoning as the parallel branch above: repair on any
@@ -817,6 +823,12 @@ func executeToolCalls(
 		}
 		result = applyRepeatedToolFailureGuard(tc.Name, result, toolFailures)
 		result = applyRepeatedReadCallGuard(tc.Name, tc.ArgsJSON, result, denied, duplicateReads)
+		status := "ok"
+		if denied || strings.HasPrefix(strings.TrimSpace(result), "error:") {
+			status = "error"
+		}
+		latency := time.Since(start).Milliseconds()
+		annotateToolCall(cfg, history, tc.ID, status, latency)
 		appendHistory(cfg, history, adapter.Message{
 			Role:           adapter.RoleTool,
 			Content:        result,
@@ -832,7 +844,26 @@ func executeToolCalls(
 	return nil
 }
 
-// appendSyntheticInterrupts pairs every tool_call in `calls` with a
+func annotateToolCall(cfg LoopConfig, history *[]adapter.Message, callID, status string, latencyMS int64) {
+	if callID == "" || history == nil {
+		return
+	}
+	withHistoryLock(cfg, func() {
+		for i := len(*history) - 1; i >= 0; i-- {
+			if (*history)[i].Role != adapter.RoleAssistant {
+				continue
+			}
+			for j := range (*history)[i].ToolCalls {
+				if (*history)[i].ToolCalls[j].ID == callID {
+					(*history)[i].ToolCalls[j].Status = status
+					(*history)[i].ToolCalls[j].LatencyMS = &latencyMS
+					return
+				}
+			}
+		}
+	})
+}
+
 // "interrupted by user" tool_result. Idempotent against already-
 // resolved calls is NOT a goal — callers must only pass calls that have
 // not yet had a real result appended (the serial path's
@@ -924,8 +955,9 @@ func executeToolCallsParallel(
 		wg.Add(1)
 		go func(i int, tc adapter.ToolCall) {
 			defer wg.Done()
+			start := time.Now()
 			result, images, denied, approvalSource, err := executeToolCall(gateCtx, cfg, tc, events, decisions)
-			results[i] = toolExecResult{content: result, images: images, denied: denied, approvalSource: approvalSource, err: err}
+			results[i] = toolExecResult{content: result, images: images, denied: denied, approvalSource: approvalSource, err: err, latencyMS: time.Since(start).Milliseconds()}
 			if err != nil {
 				errCh <- err
 			}
@@ -955,6 +987,11 @@ func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapt
 		for i, tc := range calls {
 			content := applyRepeatedToolFailureGuard(tc.Name, results[i].content, toolFailures)
 			content = applyRepeatedReadCallGuard(tc.Name, tc.ArgsJSON, content, results[i].denied, duplicateReads)
+			status := "ok"
+			if results[i].denied || strings.HasPrefix(strings.TrimSpace(content), "error:") {
+				status = "error"
+			}
+			annotateToolCall(cfg, history, tc.ID, status, results[i].latencyMS)
 			*history = append(*history, stampNow(adapter.Message{
 				Role:           adapter.RoleTool,
 				Content:        content,

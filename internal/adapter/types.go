@@ -18,6 +18,10 @@ type ToolCall struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	ArgsJSON string `json:"args_json"`
+	// Status and LatencyMS are populated after dispatch for /inspect diagnostics.
+	// Empty values preserve compatibility with historical session files.
+	Status    string `json:"status,omitempty"`
+	LatencyMS *int64 `json:"latency_ms,omitempty"`
 	// ThoughtSignature is Gemini's opaque reasoning-continuity token.
 	// Thinking models (Gemini 3, and 2.5 with thinking enabled) attach
 	// it to functionCall parts and REQUIRE it to be replayed on those
@@ -105,6 +109,9 @@ type Message struct {
 	// reason, present only when FallbackCount > 0.
 	FallbackCount  int    `json:"fallback_count,omitempty"`
 	FallbackReason string `json:"fallback_reason,omitempty"`
+	// WallTimeMS is the total elapsed time for the interactive turn iteration
+	// that produced this message. It is nil on historical or partial messages.
+	WallTimeMS *int64 `json:"wall_time_ms,omitempty"`
 	// ApprovalSource records how a RoleTool message's call got permission
 	// to run: one of the ApprovalAuto Source strings the agent loop
 	// already sends to the TUI ("yolo-mode", "auto-mode",
