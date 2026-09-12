@@ -66,17 +66,19 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	previewBudget := approvalPreviewBudget(m.height, len(hotkeyLines))
 	previewLines, hint := windowApprovalPreviewLines(previewLines, previewBudget, m.approvalScrollOffset)
 
-	// The border already carries the approval title and tool name. Keep the
-	// modal body focused on the preview so the title is not repeated inside
-	// the decision card.
-
-	// Keep the preview and decision keys adjacent. The preview itself owns
-	// any meaningful blank lines; the modal should not add layout-only rows.
-	bodyLines := append([]string(nil), previewLines...)
+	// Header, preview, hints, and choices all share the same two-column gutter.
+	header := labeledBoxIndent + styleApprovalTitle.Render("Approval needed")
+	if m.approvalTool != "" {
+		header += "  " + styleApprovalTool.Render(m.approvalTool)
+	}
+	bodyLines := []string{header, ""}
+	bodyLines = append(bodyLines, previewLines...)
 	if hint != "" {
 		bodyLines = append(bodyLines, labeledBoxIndent+styleHint.Render(hint))
 	}
 	if len(hotkeyRows) > 0 {
+		// One blank row separates the preview from the decision keys.
+		bodyLines = append(bodyLines, "")
 		for _, line := range hotkeyLines {
 			row := len(bodyLines)
 			bodyLines = append(bodyLines, line)
@@ -84,16 +86,17 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 		}
 	}
 
-	leftLabel := " " + styleApprovalTitle.Render("Approval needed") + " "
-	rightLabel := " " + styleApprovalTool.Render(m.approvalTool) + " "
-
-	return renderLabeledBox(leftLabel, rightLabel, bodyLines, capW, colorWarning)
+	return renderLabeledBox("", "", bodyLines, capW, colorWarning)
 }
 
 func approvalPreviewLines(body string, capW int) []string {
 	wrapped := hardWrapLabeled(body, capW)
 	lines := make([]string, 0, len(wrapped))
 	for _, line := range wrapped {
+		// Approval content uses one shared left gutter. Some specialized
+		// previews already carry Markdown-era leading spaces; remove those
+		// before applying the modal's canonical indentation.
+		line = strings.TrimLeft(line, " ")
 		lines = append(lines, labeledBoxIndent+line)
 	}
 	return lines
@@ -293,11 +296,9 @@ func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {
 	if termHeight <= 0 {
 		return 0
 	}
-	// The approval box has two border rows plus the preview and hotkeys.
-	// Content previews retain their own meaningful single blank separators.
-	// Every approval now keeps the preview and decision keys adjacent;
-	// only the border rows remain fixed layout overhead.
-	budget := termHeight - 2 - hotkeyLineCount - 1
+	// The approval box has two border rows plus the header, the two spacers,
+	// the preview, and hotkeys. Content previews retain meaningful separators.
+	budget := termHeight - 2 - hotkeyLineCount - 4
 
 	if budget < 1 {
 		return 1
