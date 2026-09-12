@@ -60,6 +60,11 @@ const (
 	indexSessionBusyDelay    = 50 * time.Millisecond
 )
 
+// recallWriteMu serializes writers from multiple Index handles in this process.
+// database/sql permits each handle to have its own SQLite connection, so an
+// Index-local mutex alone still lets startup backfill race with session saves.
+var recallWriteMu sync.Mutex
+
 // Index is the writable handle on the FTS5 database. Safe to share across
 // goroutines; writes through one Index are serialized, and transient SQLite
 // writer contention from other handles/processes is retried.
@@ -121,6 +126,8 @@ func (idx *Index) IndexSession(s *session.Session) error {
 	// completion, and background backfill cannot overlap inside one handle. A
 	// separate process or separately-opened handle can still hold SQLite's writer
 	// lock, so the retry loop below handles SQLITE_BUSY from outside this mutex.
+	recallWriteMu.Lock()
+	defer recallWriteMu.Unlock()
 	idx.writeMu.Lock()
 	defer idx.writeMu.Unlock()
 
@@ -388,6 +395,8 @@ func (idx *Index) pruneMissingSessions(live map[string]bool) error {
 		return nil
 	}
 
+	recallWriteMu.Lock()
+	defer recallWriteMu.Unlock()
 	idx.writeMu.Lock()
 	defer idx.writeMu.Unlock()
 	for _, id := range stale {

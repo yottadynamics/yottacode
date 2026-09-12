@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -21,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/lsp"
+	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/sensitive"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -101,10 +103,96 @@ func pluralizeWorkers(n int) string {
 	return fmt.Sprintf("%d dispatch workers", n)
 }
 
+var startupTraceOnce sync.Once
+
+// traceFirstView records the first rendered frame when startup tracing is opted in.
+func traceFirstView() {
+	if os.Getenv("YOTTACODE_STARTUP_TRACE") != "1" {
+		return
+	}
+	startupTraceOnce.Do(func() { fmt.Fprintf(os.Stderr, "[startup] first View %s\n", time.Now().Format(time.RFC3339Nano)) })
+}
+
+type deferredStartupMsg struct {
+	warnings    []string
+	branch      string
+	gitStatus   gitAheadBehindStatus
+	hasGit      bool
+	lspCard     string
+	lspReminder string
+	embedClient *memory.EmbedClient
+}
+
+// beginDeferredStartupMsg is delivered through Bubble Tea's event loop after
+// the initial render. Returning the actual workers from its handler guarantees
+// optional probes cannot contend with the first frame.
+type beginDeferredStartupMsg struct{}
+
+func boundedStartupCmd(ctx context.Context, fn func(context.Context) tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return fn(probeCtx)
+	}
+}
+
+// deferredStartupCmd batches independent probes. Each has its own deadline, so
+// a slow provider or process probe cannot starve unrelated startup metadata.
+func deferredStartupCmd(ctx context.Context, rt *agentruntime.Runtime, cwd string) tea.Cmd {
+	provider := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		return deferredStartupMsg{warnings: rt.RunDeferredProviderCheck(probeCtx)}
+	})
+	embedding := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		warnings, client := rt.RunDeferredEmbeddingCheck(probeCtx)
+		return deferredStartupMsg{warnings: warnings, embedClient: client}
+	})
+	podman := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		rt.RunDeferredPodmanCleanup(probeCtx)
+		return deferredStartupMsg{}
+	})
+	worktrees := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		agent.ReclaimEmptyDispatchWorktrees(probeCtx, rt.SubagentTasks)
+		if repoRoot, err := worktree.ResolveRepoRoot(probeCtx, rt.CwdRef.Get()); err == nil {
+			agent.ReclaimOrphanDispatchWorktrees(probeCtx, repoRoot)
+		}
+		return deferredStartupMsg{}
+	})
+	git := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		return deferredStartupMsg{branch: gitBranch(probeCtx, cwd), gitStatus: gitAheadBehind(probeCtx, cwd), hasGit: true}
+	})
+	lspProbe := boundedStartupCmd(ctx, func(probeCtx context.Context) tea.Msg {
+		msg := deferredStartupMsg{}
+		if langs, err := lsp.DetectWorkspace(probeCtx, cwd, 2000); err == nil {
+			langs = lsp.ApplyOverridesToDetected(langs, rt.FileCfg.LSP.Servers)
+			msg.lspCard = renderLSPAdvisory(langs)
+			msg.lspReminder = lspSetupReminder(langs)
+		}
+		return msg
+	})
+	return tea.Batch(provider, embedding, podman, worktrees, git, lspProbe)
+}
+
+func cleanupRegistryToolsBounded(ctx context.Context, registry *agent.Registry) {
+	done := make(chan struct{})
+	go func() {
+		_ = agent.CleanupRegistryTools(ctx, registry)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
+
 // Run wires up session, permissions, adapter, and tools, then drives
 // the Bubbletea program. The non-interactive sibling is oneshot.Run, which
 // shares the same ChatOptions but emits one turn to stdout and exits.
 func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update.Result) error {
+	startupStarted := time.Now()
+	// Opt-in diagnostics stay on stderr and add no work when disabled.
+	if os.Getenv("YOTTACODE_STARTUP_TRACE") == "1" {
+		fmt.Fprintf(os.Stderr, "[startup] Run begin %s\n", startupStarted.Format(time.RFC3339Nano))
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -143,6 +231,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		PreCompact: func(history []adapter.Message) (string, error) {
 			return writePreSummarySnapshot(sessionID, history)
 		},
+		DeferStartupChecks: true,
 		// TUI starts MCP servers asynchronously via its own Bubbletea
 		// tea.Cmd (cmd_mcp.go) so slow/hanging npx-based servers don't
 		// delay first paint.
@@ -156,10 +245,14 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		return err
 	}
 	sessionID = rt.Session.ID
-	defer rt.LSPManager.CloseAll()
-	if rt.CmdSandbox != nil {
-		defer func() { _ = rt.CmdSandbox.Close() }()
-	}
+	cleanupComplete := false
+	// Keep a cleanup fallback for summarized-resume, sensitivity, and panic
+	// paths. Normal shutdown owns the ordered teardown below.
+	defer func() {
+		if !cleanupComplete {
+			rt.Close(context.Background())
+		}
+	}()
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
 	// transcript with a structured summary injected into the system
@@ -212,25 +305,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
 		sweepCancel()
 	}()
-	// Sweep any empty dispatch worktrees a crashed session leaked — Build
-	// already imported the resumed session's task index (the records it
-	// carries have the worktree + base the reclaim check needs; the
-	// at-exit defer above couldn't run if the previous process was
-	// SIGKILLed or power-lost).
-	{
-		startupSweepCtx, startupSweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		agent.ReclaimEmptyDispatchWorktrees(startupSweepCtx, subagentTasks)
-		// Then the same sweep driven off `git worktree list` rather than the
-		// task index, which catches what the index cannot: worktrees from a
-		// session that died before its records were ever saved, and from any
-		// session other than the one just resumed. Both passes share the same
-		// conservative keep-unless-provably-empty rule, so running them back to
-		// back is safe — the second simply sees a wider set.
-		if repoRoot, err := worktree.ResolveRepoRoot(startupSweepCtx, cwdRef.Get()); err == nil {
-			agent.ReclaimOrphanDispatchWorktrees(startupSweepCtx, repoRoot)
-		}
-		startupSweepCancel()
-	}
 
 	// MCP client setup: the manager exists (Build constructed it) but
 	// hasn't started — Start runs from the Bubble Tea Init cmd so the
@@ -267,15 +341,19 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	// since already-embedded messages are skipped. ctx cancellation (app
 	// exit) stops it promptly.
 	idx := rt.RecallIndex
+	recallWork := newRecallLifecycle(ctx)
+	// Stop recall workers before Runtime.Close can close their shared index on
+	// any early return or panic path. LIFO ordering runs this before rt.Close.
+	defer recallWork.Stop(context.Background())
 	if idx != nil {
 		ec := rt.EmbedClient
 		autoRecall := fileCfg.Retrieval.SessionRecall.Auto
-		go func() {
+		recallWork.Go(func(recallCtx context.Context) {
 			_ = recall.Backfill(idx)
 			if ec != nil && autoRecall {
-				_ = idx.BackfillVectors(ctx, ec, ec.Model)
+				_ = idx.BackfillVectors(recallCtx, ec, ec.Model)
 			}
-		}()
+		})
 	}
 
 	// Resolve the project once, then decide the sensitivity posture from it.
@@ -283,14 +361,19 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	// in, sensitiveRoots bounds what any quarantined project may ever emit.
 	// Sensitivity keys off the repo root — the first entry — because that is
 	// the path the user marks with `yottacode sensitive add`.
-	projectRoots := sessionProjectRoots(ctx, cwd)
+	// Sensitivity is a security boundary, so load it synchronously and fail
+	// closed. Only display metadata and best-effort diagnostics are deferred.
+	projectRoots, err := sessionProjectRoots(ctx, cwd)
+	if err != nil {
+		return err
+	}
 	sensitiveProject, sensitiveRoots, err := sensitivePosture(projectRoots[0])
 	if err != nil {
 		return err
 	}
 
-	branch := gitBranch(ctx, cwd)
-	gitStatus := gitAheadBehind(ctx, cwd)
+	branch := ""
+	gitStatus := gitAheadBehindStatus{}
 
 	model := New(ctx, Config{
 		Cfg:                    cfg,
@@ -300,6 +383,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		SandboxActive:          rt.CmdSandbox != nil,
 		Permissions:            rt.Permissions,
 		Recall:                 idx,
+		recallWork:             recallWork,
 		ModelName:              rt.Model,
 		BaseURL:                opts.BaseURL,
 		APIKey:                 opts.APIKey,
@@ -347,6 +431,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		SummarizerModel:        routerFastModel(rt.RouterAdapters),
 	})
 	model.githubClient = ghClient
+	model.deferredStartup = deferredStartupCmd(ctx, rt, cwd)
 	// Skills onboarding (skills installed but none enabled) is surfaced
 	// inside the welcome card via startupTip() — see welcome.go's
 	// memory > skills > rotating-pool priority. Emitting it as a
@@ -390,13 +475,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	if names := rt.ExperimentalSet.EnabledNames(); len(names) > 0 {
 		model.pendingStartupNotices = append(model.pendingStartupNotices,
 			styleAuto.Render("experimental enabled: "+strings.Join(names, ", ")+" — /experimental for details"))
-	}
-	if langs, err := lsp.DetectWorkspace(ctx, cwd, 2000); err == nil {
-		langs = lsp.ApplyOverridesToDetected(langs, fileCfg.LSP.Servers)
-		if card := renderLSPAdvisory(langs); card != "" {
-			model.pendingStartupNotices = append(model.pendingStartupNotices, card)
-			model.pendingLSPSetupReminder = lspSetupReminder(langs)
-		}
 	}
 
 	// Wire the AgentTool's background-completion callback into the
@@ -496,16 +574,22 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	// teardown registered right after subagentTasks was created, so an
 	// error-return or panic from prog.Run can't skip them.
 
-	// Tear down MCP subprocesses before the index/session close so a
-	// slow shutdown can't leak servers past yottacode's lifetime. The
-	// context here is short-bounded; the SDK's CommandTransport.Close
-	// runs its own SIGTERM/SIGKILL ladder.
+	// Use one wall-clock budget for process/index teardown so independent clients
+	// cannot each add their own full delay. Recall work is canceled before the
+	// index closes; if it ignores cancellation past the deadline, leave the index
+	// to process exit rather than racing an in-flight write.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	recallWork.Stop(shutdownCtx)
+	// Registry-owned resources (notably active debug sessions) participate in
+	// the same wall-clock budget as MCP/LSP teardown.
+	cleanupRegistryToolsBounded(shutdownCtx, rt.Registry)
 	mcpManager.Stop(shutdownCtx)
-	shutdownCancel()
-	if idx != nil {
+	rt.LSPManager.CloseAllContext(shutdownCtx)
+	if idx != nil && shutdownCtx.Err() == nil {
 		_ = idx.Close()
 	}
+	shutdownCancel()
+	cleanupComplete = true
 	// Persist the subagent task index alongside the session so its task-ids
 	// resolve on a later resume. (The deferred teardown's CancelAll runs after
 	// this save, so a task still running at exit persists as "running" and
@@ -866,16 +950,23 @@ func gitCommandOutput(ctx context.Context, cwd string, args ...string) string {
 // The slug embeds a hash of the repo root, so this can't pull in another
 // repo's worktrees.
 //
-// Not a git repo, or git missing, yields just the plain cwd — reproducing the
-// exact-match behaviour recall had before any of this.
-func sessionProjectRoots(ctx context.Context, cwd string) []string {
+// A non-git directory falls back to plain cwd. A managed worktree is
+// different: failing to resolve its originating repository is a security
+// error because sensitivity cannot be evaluated safely.
+func sessionProjectRoots(ctx context.Context, cwd string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	root, err := worktree.ResolveRepoRoot(ctx, cwd)
 	if err != nil || strings.TrimSpace(root) == "" {
-		return []string{cwd}
+		if _, _, managed := worktree.IsAnyWorktreePath(cwd); managed {
+			if err == nil {
+				err = errors.New("repository root is empty")
+			}
+			return nil, fmt.Errorf("resolve managed worktree repository: %w", err)
+		}
+		return []string{cwd}, nil
 	}
-	return []string{root, worktree.SlugDir(root)}
+	return []string{root, worktree.SlugDir(root)}, nil
 }
 
 // sensitivePosture reports whether projectRoot is a sensitive project, and

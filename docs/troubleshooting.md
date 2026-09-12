@@ -1,5 +1,19 @@
 # Troubleshooting
 
+## Slow startup or delayed diagnostics
+
+The TUI paints before optional provider, embedding, Git/LSP, orphan-worktree,
+and maintenance probes run. Their warnings and advisory cards can therefore
+appear shortly after the welcome screen; this is expected and keeps network or
+process discovery off the first-paint path. To timestamp startup milestones:
+
+```bash
+YOTTACODE_STARTUP_TRACE=1 yottacode
+```
+
+Trace output goes to stderr. A cached update notice may also appear immediately;
+a background refresh may add a newer notice but does not retract an already-rendered one.
+
 ## Missing model or base URL
 
 If yottacode exits with a configuration error, set both values:

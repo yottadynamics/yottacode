@@ -170,6 +170,8 @@ func (idx *Index) unvectoredMessages(model, sessionID string) ([]MsgRef, error) 
 // through the write mutex and retried on SQLite writer contention, matching
 // IndexSession.
 func (idx *Index) PutVector(sessionID string, msgIndex int, model, content string, vec []float32) error {
+	recallWriteMu.Lock()
+	defer recallWriteMu.Unlock()
 	idx.writeMu.Lock()
 	defer idx.writeMu.Unlock()
 

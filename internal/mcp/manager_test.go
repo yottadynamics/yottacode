@@ -15,7 +15,24 @@ import (
 	"github.com/yottadynamics/yottacode/internal/mcp"
 )
 
-// Manager tests exercise lifecycle, ordering, and concurrency
+func TestManagerStopReturnsWhenContextExpires(t *testing.T) {
+	mgr := mcp.NewManager([]config.MCPServer{{Name: "hung", Transport: "http", URL: "http://127.0.0.1:0"}}, 0, mcp.Policy{})
+	client := mgr.Client("hung")
+	// A fake Client cannot be injected through the public constructor, so use an
+	// HTTP client whose Stop is already idempotent and verify an expired context
+	// is still a hard manager return bound.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	mgr.Stop(ctx)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("Stop exceeded canceled context bound: %v", elapsed)
+	}
+	if client == nil {
+		t.Fatal("expected configured client")
+	}
+}
+
 // guarantees using one real subprocess (the echo_server fixture) and
 // one intentionally-broken entry. The fixture path keeps the test
 // hermetic — no npx, no network — while still going through the same

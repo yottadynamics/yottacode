@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/recall"
@@ -19,6 +20,41 @@ import (
 // head and its churn never invalidates the prompt cache. Distinct from
 // summaryHeading so the two never collide during extraction.
 const priorConvosHeading = "\n\n## Prior conversations (background — do not narrate)\n"
+
+type recallLifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+func newRecallLifecycle(parent context.Context) *recallLifecycle {
+	ctx, cancel := context.WithCancel(parent)
+	return &recallLifecycle{ctx: ctx, cancel: cancel}
+}
+
+func (l *recallLifecycle) Go(fn func(context.Context)) {
+	if l == nil {
+		return
+	}
+	l.wg.Add(1)
+	go func() {
+		defer l.wg.Done()
+		fn(l.ctx)
+	}()
+}
+
+func (l *recallLifecycle) Stop(ctx context.Context) {
+	if l == nil {
+		return
+	}
+	l.cancel()
+	done := make(chan struct{})
+	go func() { l.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+}
 
 // embedCurrentSessionAsync embeds the current session's new or changed messages
 // in the background, so the conversation just had becomes semantically
@@ -38,9 +74,9 @@ func (m Model) embedCurrentSessionAsync() {
 		return
 	}
 	idx, ec, sessionID := m.recall, m.embedClient, m.sess.ID
-	go func() {
-		_ = idx.BackfillVectorsForSession(context.Background(), ec, ec.Model, sessionID)
-	}()
+	m.recallWork.Go(func(ctx context.Context) {
+		_ = idx.BackfillVectorsForSession(ctx, ec, ec.Model, sessionID)
+	})
 }
 
 // priorConversationsBlock semantically searches past sessions for context

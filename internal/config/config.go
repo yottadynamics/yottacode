@@ -638,13 +638,9 @@ var ValidSessionRecallScopes = []string{"project", "user", "all"}
 // MemoryConfig governs proactive agent-managed memory behavior beyond
 // retrieval (which has its own [retrieval] section).
 type MemoryConfig struct {
-	// FinalTurnOnQuit, when true, runs one last agent turn on a
-	// graceful exit (/quit or Ctrl+D while idle) prompting the model
-	// to persist durable learnings via memory_save before the session
-	// context is gone. The turn renders in the transcript like any
-	// other and is skippable (Ctrl+C / Esc cancels it and quits).
-	// Ctrl+C as the quit gesture always exits immediately without the
-	// final turn. Default true; set false to make every exit immediate.
+	// FinalTurnOnQuit is retained only so strict decoding accepts configs from
+	// releases that offered a final model turn during shutdown. It is ignored
+	// and intentionally excluded from generated/rendered configuration.
 	FinalTurnOnQuit bool `toml:"final_turn_on_quit"`
 
 	// CaptureReminderEveryTurns rides a memory-capture reminder on every
@@ -917,7 +913,6 @@ func Default() Config {
 			},
 		},
 		Memory: MemoryConfig{
-			FinalTurnOnQuit:           true,
 			CaptureReminderEveryTurns: 6,
 		},
 		MCP: MCPConfig{
@@ -1881,19 +1876,9 @@ min_score = 0.6
 max_bytes = 2000
 
 [memory]
-# Run one final agent turn on a graceful exit (/quit or Ctrl+D while
-# idle) prompting the model to persist durable learnings via memory_save
-# before the session context is gone. The turn is visible in the
-# transcript and skippable (Esc or Ctrl+C cancels it and completes the
-# quit); Ctrl+C as the quit gesture itself always exits immediately.
-# A session with no turns started this launch skips it. Set to false for
-# instant exits.
-final_turn_on_quit = true
-
 # Ride a memory-capture reminder on every Nth user message, so sessions
-# that never reach the auto-summarize watermark (and end on Ctrl+C, which
-# never runs the final turn above) still get periodic reinforcement to
-# persist what they learned. It is appended to a message you were sending
+# that never reach the auto-summarize watermark still get periodic reinforcement
+# to persist what they learned. It is appended to a message you were sending
 # anyway — not an extra turn, and not a per-turn nudge. 0 disables.
 capture_reminder_every_turns = 6
 

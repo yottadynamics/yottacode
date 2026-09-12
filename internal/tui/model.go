@@ -72,6 +72,7 @@ type Config struct {
 	Session     *session.Session
 	Permissions *permissions.Permissions
 	Recall      *recall.Index // optional; nil disables /recall
+	recallWork  *recallLifecycle
 	// UpdateCheck carries the optional release-check result from the CLI layer.
 	// The TUI waits on it from Init so slow GitHub/DNS never blocks first paint.
 	UpdateCheck <-chan update.Result
@@ -229,16 +230,20 @@ type Model struct {
 	sensitiveRoots         []string // sensitive roots excluded from every recall search
 	perms                  *permissions.Permissions
 	recall                 *recall.Index
-	// updateCheck receives the startup release-check result. It is consumed from
-	// Init so slow GitHub/DNS never blocks first paint.
-	updateCheck <-chan update.Result
-	version     string
-	commit      string
-	dirty       bool
-	branch      string
-	gitAhead    int
-	gitBehind   int
-	worktree    string // yottacode worktree name when session runs inside one
+	recallWork             *recallLifecycle
+	// updateCheck receives a stream containing a cached release result followed
+	// by an optional refresh. Each message re-arms the wait until closure.
+	updateCheck     <-chan update.Result
+	updateNoticeKey string
+	// deferredStartup contains bounded, nonessential probes scheduled by Init.
+	deferredStartup tea.Cmd
+	version         string
+	commit          string
+	dirty           bool
+	branch          string
+	gitAhead        int
+	gitBehind       int
+	worktree        string // yottacode worktree name when session runs inside one
 	// currentPR is the open pull request number for the current branch.
 	// Zero means no PR has been detected (or GitHub/auth was unavailable).
 	currentPR int
@@ -697,14 +702,9 @@ type Model struct {
 	// text). Cleared when usage drops back below the warn threshold,
 	// alongside the lastWatermarkPct reset.
 	memoryNudgePending bool
-	// exitSavePending marks the in-flight final memory turn started by
-	// maybeStartExitSaveTurn. When the turn ends (or is cancelled), the
-	// turnEndedMsg handler completes the quit instead of idling.
-	exitSavePending bool
 	// userTurnsThisLaunch counts turns started since THIS process
-	// launched — unlike firstMessageSent it ignores user turns carried
-	// in by --resume, so the exit-save activity bar
-	// (exitSaveMinUserTurns) measures fresh interaction only.
+	// launched — unlike firstMessageSent it ignores user turns carried in
+	// by --resume, so periodic reminder cadence measures fresh interaction.
 	userTurnsThisLaunch int
 	// pendingInputAfterTurn captures a user message queued at a turn boundary
 	// when the model finished before it could consume userMsgCh. The
@@ -1246,6 +1246,10 @@ func New(parent context.Context, c Config) Model {
 		livePlanInit = append([]agent.Todo(nil), c.Session.Todos...)
 	}
 
+	recallWork := c.recallWork
+	if recallWork == nil {
+		recallWork = newRecallLifecycle(parent)
+	}
 	return Model{
 		parentCtx:              parent,
 		cfg:                    c.Cfg,
@@ -1269,6 +1273,7 @@ func New(parent context.Context, c Config) Model {
 		cwd:                    c.Cwd,
 		perms:                  c.Permissions,
 		recall:                 c.Recall,
+		recallWork:             recallWork,
 		updateCheck:            c.UpdateCheck,
 		version:                c.Version,
 		commit:                 c.Commit,
@@ -1399,6 +1404,7 @@ func (m Model) Init() tea.Cmd {
 		// always allocates it), so we don't guard.
 		waitForSubagentInbox(m.subagentInbox),
 		startMCPServers(m.parentCtx, m.mcpManager),
+		func() tea.Msg { return beginDeferredStartupMsg{} },
 		resolveCurrentPRCmd(m.parentCtx, m.githubClient, m.cwd),
 		// Warm the local models.dev copy in the background (TTL-gated: a
 		// no-op when the on-disk cache is fresh, a daily refresh otherwise),
@@ -1460,9 +1466,49 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 	}
+	if _, ok := msg.(beginDeferredStartupMsg); ok {
+		return m, m.deferredStartup
+	}
+	if msg, ok := msg.(deferredStartupMsg); ok {
+		if msg.hasGit {
+			m.branch, m.gitAhead, m.gitBehind = msg.branch, msg.gitStatus.ahead, msg.gitStatus.behind
+		}
+		for _, warning := range msg.warnings {
+			m.appendLine(styleAuto.Render(warning))
+		}
+		if msg.embedClient != nil {
+			m.embedClient = msg.embedClient
+			if m.recall != nil && m.fileCfg.Retrieval.SessionRecall.Auto {
+				idx, ec := m.recall, msg.embedClient
+				m.recallWork.Go(func(ctx context.Context) {
+					_ = idx.BackfillVectors(ctx, ec, ec.Model)
+				})
+			}
+			if tool, ok := m.cfg.Registry.Get("memory_save"); ok {
+				if save, ok := tool.(*agent.MemorySaveTool); ok {
+					replacement := *save
+					replacement.Embedder = msg.embedClient
+					m.cfg.Registry.Register(&replacement)
+				}
+			}
+			if tool, ok := m.cfg.Registry.Get("memory_search"); ok {
+				if search, ok := tool.(*agent.MemorySearchTool); ok {
+					replacement := *search
+					replacement.Embedder = msg.embedClient
+					m.cfg.Registry.Register(&replacement)
+				}
+			}
+		}
+		if msg.lspCard != "" {
+			m.appendLine(msg.lspCard)
+			m.pendingLSPSetupReminder = msg.lspReminder
+		}
+		return m, nil
+	}
 	if msg, ok := msg.(updateCheckMsg); ok {
 		m.handleUpdateCheck(msg.result)
-		return m, nil
+		// Re-arm after every cached/refreshed result until the producer closes.
+		return m, waitForUpdateCheck(m.updateCheck)
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
 		// Toggle and re-arm. Unlike the spinner tick, the cursor
@@ -2452,8 +2498,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// overloading this key with a model call.
 			return requestImmediateExit(m)
 		case "ctrl+d":
-			// Deliberate idle exit — same graceful path as /quit (final
-			// memory turn when warranted).
+			// Idle EOF follows /quit and never starts additional model work.
 			return requestGracefulExit(m)
 		case "esc":
 			// A single Esc stops an armed /loop, before the esc-esc chord
@@ -2742,23 +2787,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(loopCmds...)
 
-	case exitSaveTimeoutMsg:
-		// The final memory turn on quit ran past exitSaveTimeout — cancel
-		// it exactly as Esc/Ctrl+C would so the quit it's blocking still
-		// completes. Safe no-op if the turn already ended on its own:
-		// exitSavePending is never cleared back to false (it's only ever
-		// set once, right before this turn starts), but turnCancel is
-		// nil by then — cleared unconditionally at the top of
-		// turnEndedMsg — so the guard below still holds.
-		if m.exitSavePending && m.turnActive && m.turnCancel != nil {
-			// Mark this as an intentional local stop before canceling so the
-			// TurnInterrupted event is rendered as a calm cancellation marker
-			// instead of being suppressed as internal cancellation noise.
-			m.turnCancelRequested = true
-			m.turnCancel()
-		}
-		return m, nil
-
 	case turnEndedMsg:
 		m.turnActive = false
 		// If this turn was a /loop prose iteration and the agent called
@@ -2791,14 +2819,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index failed: %v", err)))
 			}
 			m.embedCurrentSessionAsync()
-		}
-		// The final memory turn on quit just ended (completed or
-		// cancelled via Esc/Ctrl+C — both land here): finish the quit.
-		// Session save + recall indexing above already ran, so the exit
-		// turn itself is persisted; watermark checks and queued-input
-		// resubmission are pointless on the way out.
-		if m.exitSavePending {
-			return m, tea.Quit
 		}
 		// Window-drift shrink: a context-overflow rejection the
 		// estimator didn't see coming means the resolved window is
@@ -3171,6 +3191,8 @@ func (m Model) skillsBusy() bool {
 // attempt, and a non-backgrounded theme falls back to that captured
 // original rather than leaving whatever the last themed pick set.
 func (m Model) View() tea.View {
+	// This is the paint boundary measured by opt-in startup diagnostics.
+	traceFirstView()
 	v := tea.NewView(m.viewString())
 	v.WindowTitle = m.terminalTitle()
 	v.AltScreen = true
@@ -5043,7 +5065,7 @@ func waitForUpdateCheck(ch <-chan update.Result) tea.Cmd {
 	}
 	return func() tea.Msg {
 		res, ok := <-ch
-		if !ok || !res.NewVersion {
+		if !ok {
 			return nil
 		}
 		return updateCheckMsg{result: res}
@@ -5054,6 +5076,12 @@ func (m *Model) handleUpdateCheck(res update.Result) {
 	if !res.NewVersion {
 		return
 	}
+	// Cached and refreshed results commonly agree; suppress the second notice.
+	key := res.Latest + "\x00" + res.URL
+	if key == m.updateNoticeKey {
+		return
+	}
+	m.updateNoticeKey = key
 	parts := []string{
 		fmt.Sprintf("%s available", res.Latest),
 		fmt.Sprintf("current %s", res.Current),
