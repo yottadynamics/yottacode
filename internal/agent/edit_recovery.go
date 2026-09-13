@@ -15,6 +15,7 @@ const (
 	EditFailureInvalidText   EditFailureKind = "invalid_text"
 	EditFailureOverlap       EditFailureKind = "overlap"
 	EditFailureInvalidHash   EditFailureKind = "invalid_hash"
+	EditFailureHashMismatch  EditFailureKind = "hash_mismatch"
 	EditFailureMalformed     EditFailureKind = "malformed"
 	EditFailureRepeated      EditFailureKind = "repeated"
 )
@@ -54,7 +55,7 @@ func ClassifyEditFailure(toolName, output string) EditFailureKind {
 			return EditFailureStale
 		}
 		if strings.Contains(s, "hash_mismatch") || strings.Contains(s, "old bytes do not match anchor hash") {
-			return EditFailureInvalidHash
+			return EditFailureHashMismatch
 		}
 		if strings.Contains(s, "stale_anchor") || strings.Contains(s, "stale anchor") {
 			return EditFailureStale

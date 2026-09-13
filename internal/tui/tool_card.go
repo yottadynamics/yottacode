@@ -1012,6 +1012,8 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			return []string{"overlapping edit operations — re-read the target and submit non-overlapping ranges"}
 		case agent.EditFailureInvalidHash:
 			return []string{"invalid hash — use exactly 16 lowercase hexadecimal characters from a fresh hashline receipt"}
+		case agent.EditFailureHashMismatch:
+			return []string{"old/hash mismatch — old and hash must come from the same read; re-read with anchors=true and copy both together"}
 		case agent.EditFailureMalformed:
 			return []string{"malformed patch — use a valid unified diff with real hunk ranges"}
 		}
@@ -1029,6 +1031,13 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 		if strings.Contains(trimmed, "anchor is required") {
 			return []string{"missing anchor — re-read the target block with anchors=true and retry with the required anchor field"}
 		}
+		if strings.Contains(trimmed, "malformed anchor") {
+			detail := anchoredErrorDetail(trimmed)
+			if detail != "" {
+				return []string{"malformed anchor — copy the exact line#hash token from a read_file(anchors=true) call, not source text", detail}
+			}
+			return []string{"malformed anchor — copy the exact line#hash token from a read_file(anchors=true) call, not source text"}
+		}
 		if strings.Contains(trimmed, "stale anchor") {
 			detail := anchoredErrorDetail(trimmed)
 			if detail != "" {
@@ -1037,6 +1046,9 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			return []string{"stale anchor — re-read the target block with anchors=true and retry with current line#anchor values"}
 		}
 	case "apply_hashline":
+		if strings.Contains(trimmed, "hash_mismatch") {
+			return []string{"old/hash mismatch — old and hash must come from the same read; re-read with anchors=true and copy both together"}
+		}
 		if strings.Contains(trimmed, "stale_anchor") {
 			return []string{"stale hashline anchor — re-read the suggested range with anchors=true and retry"}
 		}
@@ -1075,6 +1087,7 @@ func recoverableToolErrorFooter(toolName, output string) string {
 			agent.EditFailureInvalidText:   "recoverable: invalid edit text",
 			agent.EditFailureOverlap:       "recoverable: overlapping edits",
 			agent.EditFailureInvalidHash:   "recoverable: invalid hash",
+			agent.EditFailureHashMismatch:  "recoverable: old/hash mismatch",
 			agent.EditFailureMalformed:     "recoverable: malformed patch",
 		}
 		if label := labels[kind]; label != "" {
@@ -1090,10 +1103,16 @@ func recoverableToolErrorFooter(toolName, output string) string {
 		if strings.Contains(output, "anchor is required") {
 			return "recoverable: missing anchor"
 		}
+		if strings.Contains(output, "malformed anchor") {
+			return "recoverable: malformed anchor"
+		}
 		if strings.Contains(output, "stale anchor") {
 			return "recoverable: stale anchor"
 		}
 	case "apply_hashline":
+		if strings.Contains(output, "hash_mismatch") {
+			return "recoverable: old/hash mismatch"
+		}
 		if strings.Contains(output, "stale_anchor") {
 			return "recoverable: stale hashline anchor"
 		}

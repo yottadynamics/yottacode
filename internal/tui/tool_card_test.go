@@ -528,6 +528,46 @@ func TestToolCard_EditAnchoredStaleAnchorIsCompact(t *testing.T) {
 	}
 }
 
+func TestToolCard_EditAnchoredMalformedAnchorIsCompact(t *testing.T) {
+	out := `error: edit_anchored: operation 1: malformed anchor "// a raw source comment, not an anchor token" — expected the exact line#hash token printed by read_file(anchors=true) (e.g. "42#a1b2c3d4"), not raw source text`
+	got := stripANSI(renderToolCard(
+		"edit_anchored",
+		"edit_anchored(internal/tui/model.go, 1 ops)",
+		`{"path":"internal/tui/model.go","operations":[{"op":"insert_after","anchor":"// a raw source comment, not an anchor token","new_text":"x"}]}`,
+		out,
+		true,
+		100,
+		"",
+		0,
+	))
+	if !strings.Contains(got, "malformed anchor") {
+		t.Fatalf("card should classify malformed anchors: %q", got)
+	}
+	if strings.Contains(got, "stale anchor") {
+		t.Fatalf("malformed anchor must not be shown as stale: %q", got)
+	}
+	if !strings.Contains(got, "line#hash") {
+		t.Fatalf("card should steer retry toward the real anchor token format: %q", got)
+	}
+	if !strings.Contains(got, "recoverable: malformed anchor") {
+		t.Fatalf("card should use a recoverable footer: %q", got)
+	}
+}
+
+func TestToolCard_ApplyHashlineHashMismatchIsCompact(t *testing.T) {
+	out := `error: apply_hashline: hash_mismatch: hunk 0 old bytes do not match anchor hash — old and hash must come from the same read; recompute the hash from the exact old text, or re-read the file and copy both together (expected_hash=99141d0925b3b980 found_hash=1af2f07ff064fc98); re-read bytes 0:10224 and retry; call read_file(anchors=true) fresh and use the old text and hash from that same read — don't mix values captured at different times`
+	got := stripANSI(renderToolCard("apply_hashline", "Patch(hashline internal/tui/approval_modal.go)", `{"path":"internal/tui/approval_modal.go"}`, out, true, 100, "", 0))
+	if !strings.Contains(got, "old/hash mismatch") {
+		t.Fatalf("card should classify old/hash mismatch: %q", got)
+	}
+	if strings.Contains(got, "stale hashline anchor") {
+		t.Fatalf("hash mismatch must not be shown as stale: %q", got)
+	}
+	if !strings.Contains(got, "recoverable: old/hash mismatch") {
+		t.Fatalf("card should use a recoverable footer: %q", got)
+	}
+}
+
 // edit_file falls back to the generic text-body path when argsJSON is
 // missing or malformed (e.g., a buggy adapter or a test harness emitting
 // the event without args). The card must still render — never panic.
