@@ -129,6 +129,7 @@ func PushBranch(ctx context.Context, cwd string, client github.Interface) (PushR
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
+	hardenGitCmd(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

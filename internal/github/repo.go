@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/execguard"
 )
 
 // Repo detection — figures out (owner, repo) from a working
@@ -48,6 +50,7 @@ func DetectRepo(ctx context.Context, cwd string) (owner, repo string, err error)
 	}
 	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
 	cmd.Dir = cwd
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
 	out, runErr := cmd.Output()
 	if runErr != nil {
 		return "", "", fmt.Errorf("detect repo: read origin remote: %w", runErr)

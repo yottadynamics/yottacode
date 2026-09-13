@@ -311,6 +311,7 @@ func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error, b
 	for i, args := range attempts {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = dir
+		hardenGitCmd(cmd)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -398,6 +399,7 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 	appendLines := func(filterArtifacts bool, args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = t.Cwd.Get()
+		hardenGitCmd(cmd)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(b)))
@@ -431,6 +433,7 @@ func (t *ListGitChangedFilesTool) Execute(ctx context.Context, argsJSON string) 
 		}
 		cmd := exec.CommandContext(ctx, "git", "ls-files", "--others", "--ignored", "--exclude-standard")
 		cmd.Dir = t.Cwd.Get()
+		hardenGitCmd(cmd)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("list_git_changed_files: git ls-files --others --ignored --exclude-standard: %s", strings.TrimSpace(string(b)))
@@ -490,6 +493,7 @@ func (t *GitCheckpointTool) Execute(ctx context.Context, argsJSON string) (strin
 	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", msg}} {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = t.Cwd.Get()
+		hardenGitCmd(cmd)
 		b, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("git_checkpoint: git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(b)))
@@ -497,6 +501,7 @@ func (t *GitCheckpointTool) Execute(ctx context.Context, argsJSON string) (strin
 	}
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = t.Cwd.Get()
+	hardenGitCmd(cmd)
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git_checkpoint: rev-parse HEAD: %s", strings.TrimSpace(string(b)))
@@ -548,6 +553,7 @@ func (t *RollbackTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", target)
 	cmd.Dir = t.Cwd.Get()
+	hardenGitCmd(cmd)
 	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("rollback: %s", strings.TrimSpace(string(b)))

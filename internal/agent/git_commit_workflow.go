@@ -403,6 +403,7 @@ func ApplyCommit(ctx context.Context, cwd, message, trailer string) (CommitResul
 	// preserves a configured trailer exactly as supplied.
 	cmd := exec.CommandContext(ctx, "git", "commit", "--cleanup=verbatim", "-F", "-")
 	cmd.Dir = cwd
+	hardenGitCmd(cmd)
 	cmd.Stdin = strings.NewReader(fullMessage)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {

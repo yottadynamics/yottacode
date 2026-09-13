@@ -173,6 +173,7 @@ func changedSourceFiles(ctx context.Context, cwd string, maxFiles int) ([]string
 	collect := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = repoRoot
+		hardenGitCmd(cmd)
 		out, err := cmd.Output()
 		if err != nil {
 			return err
@@ -212,6 +213,7 @@ func changedSourceFiles(ctx context.Context, cwd string, maxFiles int) ([]string
 func gitTopLevel(ctx context.Context, cwd string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = cwd
+	hardenGitCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

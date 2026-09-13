@@ -445,6 +445,7 @@ func (snap *CodeReviewContext) foldUntracked(ctx context.Context, cwd string) {
 func gitDiffNoIndex(ctx context.Context, cwd, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "diff", "--no-index", "--", os.DevNull, path)
 	cmd.Dir = cwd
+	hardenGitCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
