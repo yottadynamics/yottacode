@@ -191,7 +191,15 @@ func renderPRApprovalPreview(tool, argsJSON string) (string, bool) {
 	} else {
 		label += ")"
 	}
-	lines := []string{"  title: " + args.Title}
+	lines := []string{"  action: " + label}
+	if args.Title != "" {
+		lines = append(lines, "  title: "+args.Title)
+	}
+	if args.Base != "" {
+		lines = append(lines, "  base: "+args.Base)
+	} else if args.Ref != "" {
+		lines = append(lines, "  ref: "+args.Ref)
+	}
 	for _, line := range strings.Split(strings.TrimSpace(args.Body), "\n") {
 		line = strings.TrimSpace(line)
 		switch {

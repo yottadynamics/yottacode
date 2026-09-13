@@ -68,6 +68,14 @@ func renderToolCard(toolName, preview, argsJSON, output string, errored bool, te
 	}
 
 	g := gutterFor(errored)
+	// PR mutations return a machine-oriented envelope whose Markdown body is
+	// useful to the model but too noisy for transcript scrollback. Keep the
+	// user-facing result focused on the mutation and its durable GitHub URL.
+	if toolName == "pr_create" || toolName == "pr_update" {
+		if card, ok := renderPRResultCard(toolName, argsJSON, output, width, dur); ok {
+			return card
+		}
+	}
 	header := renderCardHeader(toolHeader(toolName, argsJSON, preview, width, cwd), g, dur, width)
 	footer := toolFooter(toolName, output, errored, cwd)
 
@@ -518,7 +526,115 @@ func renderCardHeader(preview string, g cardGutter, dur time.Duration, width int
 	return head + styleCardMeta.Render(" · "+tag)
 }
 
-// toolBodyLines extracts the displayable body for a given tool. Returns
+// renderPRResultCard renders a compact receipt for PR mutations.
+// Successful results omit the Markdown body because it was already shown in
+// the approval modal; failures retain a concise actionable status instead of
+// dumping the machine-oriented result envelope into transcript scrollback.
+func renderPRResultCard(toolName, argsJSON, output string, width int, dur time.Duration) (string, bool) {
+	var args struct {
+		Base  string `json:"base"`
+		Ref   string `json:"ref"`
+		Title string `json:"title"`
+	}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil {
+		return "", false
+	}
+
+	created := strings.Contains(output, "created=true")
+	updated := strings.Contains(output, "updated=true")
+	if !created && !updated && !strings.Contains(output, "created=false") && !strings.Contains(output, "updated=false") {
+		return "", false
+	}
+
+	g := gutterFor(!created && !updated)
+	label := "PR created"
+	if toolName == "pr_update" {
+		label = "PR updated"
+	}
+	header := renderCardHeader(label, g, dur, width)
+	rows := []string{}
+	if strings.TrimSpace(args.Title) != "" {
+		rows = append(rows, "Title: "+args.Title)
+	}
+	if target := firstPRArg(args.Base, args.Ref); target != "" {
+		rows = append(rows, "Target: "+target)
+	}
+
+	footerText := "✓ " + label
+	if created || updated {
+		if url := prResultField(output, "url="); url != "" {
+			rows = append(rows, "URL: "+url)
+		}
+		if number := prResultField(output, "number="); number != "" {
+			rows = append(rows, "PR #"+number)
+		}
+	} else {
+		footerText = "✗ " + prFailureSummary(output)
+		if reason := prResultField(output, "reason="); reason != "" {
+			rows = append(rows, "Reason: "+reason)
+		}
+		if errText := prResultField(output, "error="); errText != "" {
+			rows = append(rows, "Error: "+errText)
+		}
+	}
+	if len(rows) == 0 {
+		return "", false
+	}
+
+	gutter := g.side.Render("│ ")
+	bodyWidth := width - ansi.StringWidth(gutter)
+	if bodyWidth < 20 {
+		bodyWidth = 20
+	}
+	body := make([]string, 0, len(rows))
+	for _, row := range rows {
+		for _, wrapped := range strings.Split(ansi.Wrap(styleCardBody.Render(row), bodyWidth, ""), "\n") {
+			body = append(body, gutter+wrapped)
+		}
+	}
+	footerStyle := styleCardOKFooter
+	if !created && !updated {
+		footerStyle = styleCardErrFooter
+	}
+	footer := g.bottom.Render("└ ") + footerStyle.Render(footerText)
+	return strings.Join(append([]string{header}, append(body, footer)...), "\n"), true
+}
+
+func firstPRArg(base, ref string) string {
+	if strings.TrimSpace(base) != "" {
+		return base
+	}
+	return ref
+}
+
+func prResultField(output, key string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, key) {
+			return strings.TrimSpace(strings.TrimPrefix(line, key))
+		}
+	}
+	for _, field := range strings.Fields(output) {
+		if strings.HasPrefix(field, key) {
+			return strings.TrimPrefix(field, key)
+		}
+	}
+	return ""
+}
+
+func prFailureSummary(output string) string {
+	switch {
+	case strings.Contains(output, "reason=validation"):
+		return "validation failed"
+	case strings.Contains(output, "reason=github_unavailable"):
+		return "GitHub unavailable"
+	case strings.Contains(output, "reason=github_error"):
+		return "GitHub request failed"
+	default:
+		return "PR mutation failed"
+	}
+}
+
 // a slice of plain strings (no per-line gutter applied — the caller
 // adds the `│ ` prefix). Each tool gets a tailored shape:
 //

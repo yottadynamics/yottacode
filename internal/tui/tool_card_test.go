@@ -9,12 +9,57 @@ import (
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
 
-// list_project_structure emits "marker\tsize\tmtime\trelpath" lines.
-// The card renders only the relpath (with `/` appended to dirs),
+func TestRenderToolCard_PRCreateUsesCompactReceipt(t *testing.T) {
+	args := `{"base":"main","title":"Harden structured edit and patch workflows","body":"## Summary\n\nThis Markdown must not become transcript chrome."}`
+	out := "created=true url=https://github.com/example/repo/pull/342 number=342\n"
+	got := stripANSI(renderToolCard("pr_create", "pr_create(base=main)", args, out, false, 80, "", 0))
+	for _, want := range []string{"┌ PR created", "Title: Harden structured edit and patch workflows", "Target: main", "PR #342", "URL: https://github.com/example/repo/pull/342", "└ ✓ PR created"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("PR card missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "## Summary") || strings.Contains(got, "transcript chrome") {
+		t.Fatalf("PR card should not dump Markdown body:\n%s", got)
+	}
+}
+
+func TestRenderToolCard_PRCreateFailureUsesCompactError(t *testing.T) {
+	args := `{"base":"main","title":"demo","body":"description"}`
+	out := "created=false reason=github_error\nerror=authentication failed\n"
+	got := stripANSI(renderToolCard("pr_create", "pr_create(base=main)", args, out, false, 80, "", 0))
+	for _, want := range []string{"┌ PR created", "Reason: github_error", "Error: authentication failed", "└ ✗ GitHub request failed"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("PR failure card missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "created=false") {
+		t.Fatalf("PR failure card should not dump the raw envelope:\n%s", got)
+	}
+}
+
+func TestRenderToolCard_PRResultWrapsInsideNarrowCard(t *testing.T) {
+	args := `{"base":"main","title":"A very long pull request title that must wrap inside the card","body":"description"}`
+	out := "created=true url=https://github.com/example/repo/pull/342 number=342\n"
+	got := stripANSI(renderToolCard("pr_create", "pr_create(base=main)", args, out, false, 48, "", 0))
+	lines := strings.Split(got, "\n")
+	maxWidth := 0
+	for _, line := range lines {
+		if width := ansi.StringWidth(line); width > maxWidth {
+			maxWidth = width
+		}
+	}
+	for i, line := range lines {
+		if width := ansi.StringWidth(line); width > maxWidth {
+			t.Fatalf("line %d width = %d, max %d:\n%s", i, width, maxWidth, got)
+		}
+	}
+}
+
 // dropping the size and mtime columns the same way list_dir drops
 // its marker column. Earlier the shaper only knew about list_dir, so
 // list_project_structure output leaked through raw and the card
