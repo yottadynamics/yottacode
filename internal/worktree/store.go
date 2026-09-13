@@ -215,6 +215,16 @@ func IsWorktreePath(repoRoot, path string) (name string, ok bool) {
 		return "", false
 	}
 	root := filepath.Clean(SlugDir(repoRoot))
+	// macOS commonly exposes temporary directories through symlinks (for
+	// example /var -> /private/var), while git reports the canonical path.
+	// Resolve both sides before comparing so cleanup sees the worktrees git
+	// actually registered. Fall back to lexical paths for missing trees.
+	if resolvedRoot, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolvedRoot
+	}
+	if resolvedPath, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+		abs = resolvedPath
+	}
 	rel, err := filepath.Rel(root, filepath.Clean(abs))
 	if err != nil || strings.HasPrefix(rel, "..") || rel == "." {
 		return "", false
