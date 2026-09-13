@@ -421,6 +421,11 @@ type ollamaInstallDoneMsg struct {
 	err error
 }
 
+// ollamaProbeDoneMsg reports the bounded post-install service check.
+type ollamaProbeDoneMsg struct {
+	result OllamaProbeResult
+}
+
 // copilotDeviceCodeMsg is sent once the device code is obtained.
 type copilotDeviceCodeMsg struct {
 	dc  copilotauth.DeviceCode
@@ -747,9 +752,14 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case ollamaInstallDoneMsg:
 		m.ollamaInstallErr = msg.err
-		m.ollamaProbe = ProbeOllama(m.ctx, "")
 		m.installOllama = false
-		if msg.err == nil && !m.ollamaProbe.Reachable {
+		if msg.err != nil {
+			return m, nil
+		}
+		return m, probeOllamaAfterInstallCmd(m.ctx, 5)
+	case ollamaProbeDoneMsg:
+		m.ollamaProbe = msg.result
+		if !m.ollamaProbe.Reachable {
 			m.ollamaInstallErr = errors.New("Ollama installed but its service is not running")
 		}
 		return m, nil
@@ -2018,6 +2028,25 @@ func (m wizardModel) viewConfigure() string {
 // Embedding model sub-step (shown after Ollama provider configuration)
 // ---------------------------------------------------------------------------
 
+func probeOllamaAfterInstallCmd(ctx context.Context, attempts int) tea.Cmd {
+	return func() tea.Msg {
+		if attempts < 1 {
+			attempts = 1
+		}
+		for i := 0; i < attempts; i++ {
+			result := ProbeOllama(ctx, "")
+			if result.Reachable || i == attempts-1 {
+				return ollamaProbeDoneMsg{result: result}
+			}
+			select {
+			case <-ctx.Done():
+				return ollamaProbeDoneMsg{result: result}
+			case <-time.After(750 * time.Millisecond):
+			}
+		}
+		return ollamaProbeDoneMsg{}
+	}
+}
 func (m wizardModel) updateEmbedSubStep(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.installOllama {
 		switch msg.String() {
@@ -2139,7 +2168,6 @@ func (m wizardModel) viewEmbedSubStep() string {
 		b.WriteString("\n  ")
 		b.WriteString(styleHint.Render(truncate("Install Ollama manually, start it with `ollama serve`, and rerun setup. Keyword memory remains available.", w-2)))
 		b.WriteString("\n")
-		return b.String()
 	}
 
 	if m.embedPulling {

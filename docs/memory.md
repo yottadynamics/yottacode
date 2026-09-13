@@ -474,8 +474,6 @@ for you — the rebuild is a manual (but cheap and incremental) step. Until
 you run it, affected entries fall back to BM25 rather than producing wrong
 results.
 
-#### Enabling semantic retrieval
-
 #### Advanced semantic memory setup
 
 The setup wizard detects whether Ollama is reachable. When it is missing or not running, the wizard explains that Ollama enables local semantic memory and offers an explicit install step before the embedding-model choice. After installation it verifies that the Ollama service is reachable; if the service did not start, it tells the user to run `ollama serve` and rerun setup rather than attempting an unreliable automatic service start.
