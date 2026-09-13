@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -38,6 +39,7 @@ on branch worktree-<name>. Launch with: yottacode --worktree <name>.
   list      print every yottacode worktree in this repo
   remove    delete a worktree (and its branch if it follows our naming)
   prune     run git worktree prune
+  cleanup   preview or remove old managed worktrees
   status    report clean / dirty state per worktree
   where     resolve slug → originating repo path (cross-repo)`,
 		Args: cobra.NoArgs,
@@ -46,6 +48,7 @@ on branch worktree-<name>. Launch with: yottacode --worktree <name>.
 		newWorktreeListCmd(),
 		newWorktreeRemoveCmd(),
 		newWorktreePruneCmd(),
+		newWorktreeCleanupCmd(),
 		newWorktreeStatusCmd(),
 		newWorktreeWhereCmd(),
 	)
@@ -195,6 +198,57 @@ func newWorktreePruneCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newWorktreeCleanupCmd() *cobra.Command {
+	var olderThan string
+	var dryRun, force bool
+	cmd := &cobra.Command{Use: "cleanup", Short: "Preview or remove old managed worktrees", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			age, err := worktree.ParseCleanupAge(olderThan)
+			if err != nil {
+				return err
+			}
+			repoRoot, err := repoRootFromCwd(cmd.Context())
+			if err != nil {
+				return err
+			}
+			current, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			items, err := worktree.Cleanup(cmd.Context(), repoRoot, worktree.CleanupOptions{OlderThan: age, DryRun: dryRun, Force: force, Current: current})
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			eligible, skipped, failed := 0, 0, 0
+			for _, item := range items {
+				fmt.Fprintf(out, "%s\t%s\tage=%s\t%s\t%s\n", item.Action, item.Name, item.Age.Round(time.Hour), item.Path, item.Reason)
+				switch item.Action {
+				case "would remove", "removed":
+					eligible++
+				case "error":
+					failed++
+				default:
+					skipped++
+				}
+			}
+			if len(items) == 0 {
+				fmt.Fprintln(out, "(no managed worktrees matched)")
+			} else {
+				fmt.Fprintf(out, "summary: %d eligible, %d skipped, %d errors\n", eligible, skipped, failed)
+			}
+			if failed > 0 {
+				return fmt.Errorf("worktree cleanup: %d worktree(s) failed", failed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&olderThan, "older-than", "", "only consider worktrees older than this duration, such as 30d or 720h")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview cleanup without removing worktrees")
+	cmd.Flags().BoolVar(&force, "force", false, "allow removal of dirty or unpushed worktrees")
+	return cmd
 }
 
 func newWorktreeStatusCmd() *cobra.Command {

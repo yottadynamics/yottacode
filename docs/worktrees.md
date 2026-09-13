@@ -156,6 +156,19 @@ touching the worktree.
 Branches that follow our `worktree-<name>` naming are deleted along
 with the worktree; user-named branches are left alone.
 
+For older materialized trees, use the explicit cleanup command:
+
+```bash
+yottacode worktree cleanup --older-than 30d --dry-run # preview only
+yottacode worktree cleanup --older-than 30d          # remove eligible trees
+```
+
+Cleanup only considers Git-registered managed worktrees. It skips the current
+and locked worktrees and preserves dirty or unpushed work unless `--force` is
+supplied. Age is based on the directory modification time, which approximates
+filesystem activity. This differs from `worktree prune`, which only removes
+stale Git administrative records.
+
 ## Permission-mode interactions
 
 | Action                                | Plan mode   | Auto mode                          | Normal     | `--yolo` |
