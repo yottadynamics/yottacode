@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/execguard"
 	"github.com/yottadynamics/yottacode/internal/trust"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
@@ -402,6 +403,7 @@ func repoRootFromCwd(ctx context.Context) (string, error) {
 func runGit(ctx context.Context, cwd string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))

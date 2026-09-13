@@ -20,6 +20,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/execguard"
 	"github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/recall"
 	"github.com/yottadynamics/yottacode/internal/sensitive"
@@ -791,7 +792,9 @@ func gitBranch(ctx context.Context, cwd string) string {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current").Output()
+	cmd := exec.CommandContext(ctx, "git", "-C", cwd, "branch", "--show-current")
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -842,7 +845,9 @@ func gitAheadBehind(ctx context.Context, cwd string) gitAheadBehindStatus {
 
 func gitCommandOutput(ctx context.Context, cwd string, args ...string) string {
 	cmdArgs := append([]string{"-C", cwd}, args...)
-	out, err := exec.CommandContext(ctx, "git", cmdArgs...).Output()
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

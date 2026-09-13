@@ -28,6 +28,7 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer stop()
+	installGoroutineDumpHandler()
 
 	root := newCLI()
 

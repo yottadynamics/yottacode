@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/execguard"
 )
 
 // HomeSubdir is the user-home subdirectory under which yottacode
@@ -407,6 +409,7 @@ func gitOut(ctx context.Context, cwd string, args ...string) (string, error) {
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(out)))

@@ -1303,10 +1303,16 @@ approved:
 	// mutation against every other one, not just against a cwd swap.
 	isWorktreeSwap := tool.Name() == "enter_worktree" || tool.Name() == "exit_worktree"
 	if isWorktreeSwap {
-		release := cfg.MutationLocks.LockCwdStability()
+		release, err := cfg.MutationLocks.LockCwdStability(ctx)
+		if err != nil {
+			return "", nil, false, approvalSource, err
+		}
 		defer release()
 	} else {
-		release := cfg.MutationLocks.RLockCwdStability()
+		release, err := cfg.MutationLocks.RLockCwdStability(ctx)
+		if err != nil {
+			return "", nil, false, approvalSource, err
+		}
 		defer release()
 	}
 	// Computing this parses argsJSON (each Mutator's own PathsToSnapshot),

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
+	"github.com/yottadynamics/yottacode/internal/execguard"
 )
 
 const codeMapVisibleRows = 28
@@ -85,8 +86,16 @@ func (m Model) codeMapHereFiles(filter string) []string {
 	if strings.TrimSpace(filter) != "" {
 		return []string{filter}
 	}
-	cmd := exec.Command("git", "status", "--porcelain", "-z")
+	// This runs synchronously on the Update loop (opening the picker isn't
+	// its own tea.Cmd), so an unbounded git call here would freeze the whole
+	// TUI, not just this feature — bind it to a short timeout rather than
+	// leaving it uncancelable, and harden it the same way every other
+	// git-invoking call site in the codebase now is (see internal/execguard).
+	ctx, cancel := context.WithTimeout(context.Background(), execguard.DefaultKillTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z")
 	cmd.Dir = m.cwd
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
 	out, err := cmd.Output()
 	if err != nil || len(out) == 0 {
 		return nil

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/execguard"
 )
 
 // Three-tier auth precedence chain mirrored from the v0.5.0
@@ -95,6 +97,7 @@ func tokenFromGh(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	execguard.Harden(cmd, execguard.DefaultKillTimeout)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	// Suppress stderr — gh auth token writes nothing useful on

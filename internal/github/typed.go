@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	gogithub "github.com/google/go-github/v66/github"
+
+	"github.com/yottadynamics/yottacode/internal/execguard"
 )
 
 const defaultLogTailLines = 240
@@ -845,6 +847,7 @@ func parseInt(s string) (int, error) {
 func currentBranch(ctx context.Context, cwd string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = cwd
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

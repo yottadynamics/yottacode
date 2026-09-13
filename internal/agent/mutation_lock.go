@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // MutationLockRegistry serializes Mutator tool calls that target the same
@@ -38,12 +40,42 @@ type MutationLockRegistry struct {
 // callers hold this concurrently — it never serializes mutation against
 // mutation, only mutation against a cwd swap. A nil registry is a safe
 // no-op, matching Acquire.
-func (r *MutationLockRegistry) RLockCwdStability() func() {
+//
+// ctx-aware: sync.RWMutex has no context-aware blocking acquire, so this
+// uses short TryLock polling. That avoids abandoning a blocked acquisition in
+// a background goroutine if the current holder never releases.
+func (r *MutationLockRegistry) RLockCwdStability(ctx context.Context) (func(), error) {
 	if r == nil {
-		return func() {}
+		return func() {}, nil
 	}
-	r.cwdMu.RLock()
-	return r.cwdMu.RUnlock
+	if err := waitForCwdLock(ctx, r.cwdMu.TryRLock); err != nil {
+		return func() {}, err
+	}
+	return r.cwdMu.RUnlock, nil
+}
+
+// waitForCwdLock waits for a cwd lock without creating a goroutine that can
+// outlive a canceled turn. Try-lock polling is deliberate: sync.RWMutex has
+// no context-aware blocking acquire, and abandoning a blocked acquisition in
+// a goroutine leaks that goroutine if the current holder never releases.
+func waitForCwdLock(ctx context.Context, try func() bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if try() {
+			return nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // LockCwdStability is held by enter_worktree/exit_worktree for the
@@ -52,12 +84,16 @@ func (r *MutationLockRegistry) RLockCwdStability() func() {
 // new ones from starting — and from a concurrent worktree-swap tool call
 // too, since a second writer also waits on the same exclusive lock — until
 // the swap completes. A nil registry is a safe no-op, matching Acquire.
-func (r *MutationLockRegistry) LockCwdStability() func() {
+//
+// ctx-aware for the same reason as RLockCwdStability — see its comment.
+func (r *MutationLockRegistry) LockCwdStability(ctx context.Context) (func(), error) {
 	if r == nil {
-		return func() {}
+		return func() {}, nil
 	}
-	r.cwdMu.Lock()
-	return r.cwdMu.Unlock
+	if err := waitForCwdLock(ctx, r.cwdMu.TryLock); err != nil {
+		return func() {}, err
+	}
+	return r.cwdMu.Unlock, nil
 }
 
 type mutationClaim struct {

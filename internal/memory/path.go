@@ -1,12 +1,16 @@
 package memory
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/yottadynamics/yottacode/internal/execguard"
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/ychome"
@@ -164,7 +168,11 @@ func computeProjectSlugFromGit(cwd string) string {
 	if _, err := exec.LookPath("git"); err != nil {
 		return ""
 	}
-	out, err := exec.Command("git", "-C", cwd, "remote", "get-url", "origin").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", cwd, "remote", "get-url", "origin")
+	execguard.HardenGit(cmd, execguard.DefaultKillTimeout)
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

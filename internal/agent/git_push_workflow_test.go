@@ -2,9 +2,14 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/github"
 )
@@ -276,5 +281,85 @@ func TestGitPushTool_RoundsThroughTool(t *testing.T) {
 	}
 	if !strings.Contains(out, "pushed=true") {
 		t.Errorf("expected pushed=true in output:\n%s", out)
+	}
+}
+
+// TestPushBranch_BoundsWaitOnSurvivingSSHOrphan reproduces the actual
+// bug this fix addresses: `git push` over SSH forking a child (the ssh
+// process, hung on a host-key or passphrase prompt with nowhere to
+// answer it) that inherits git's stdout/stderr pipes. Before this fix,
+// PushBranch's `cmd := exec.CommandContext(ctx, "git", args...)` had no
+// hardenGitCmd call, so Cmd.Run() blocked on that orphan indefinitely —
+// immune to Ctrl+C — exactly the hang a live goroutine dump caught in
+// production (a `push` invocation's io.Copy stuck in IO wait for
+// several minutes straight, unmoving between two dumps 15s apart).
+//
+// Reproduced here with a fake `git` on PATH standing in for the real
+// binary: its "push" subcommand backgrounds a long sleep (standing in
+// for the hung ssh) inheriting the fake script's own stdout/stderr,
+// then exits immediately — the direct child is gone, but the pipe
+// stays held open by the orphan. Every other subcommand PushBranch
+// needs (rev-parse, for-each-ref) delegates to the real git via
+// $REAL_GIT so the rest of the flow behaves normally.
+func TestPushBranch_BoundsWaitOnSurvivingSSHOrphan(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed")
+	}
+
+	// hostExecKillTimeout is a var precisely so this test doesn't pay
+	// the real 5s production timeout. Restored via t.Cleanup.
+	orig := hostExecKillTimeout
+	hostExecKillTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { hostExecKillTimeout = orig })
+
+	tmp := gitInit(t)
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	// A configured origin is required for PushBranch to reach the
+	// `git push` invocation at all (no remote is its own early exit).
+	if out, err := exec.Command("git", "-C", tmp, "remote", "add", "origin", "https://example.invalid/orphan-test.git").CombinedOutput(); err != nil {
+		t.Fatalf("remote add: %v: %s", err, out)
+	}
+
+	binDir := t.TempDir()
+	fakeGit := filepath.Join(binDir, "git")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "push" ]; then
+	sleep 999 &
+	exit 0
+fi
+exec %q "$@"
+`, realGit)
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err = PushBranch(ctx, tmp, nil)
+	elapsed := time.Since(start)
+
+	// The load-bearing assertion: bounded time. Before this fix, this
+	// call blocked for as long as the orphan lived (here, ~999s) —
+	// immune to Ctrl+C, since ctx is never even canceled in this test.
+	if elapsed > hostExecKillTimeout+3*time.Second {
+		t.Fatalf("PushBranch took %s — WaitDelay did not bound the wait on the surviving orphan's held pipe (want at most ~%s)", elapsed, hostExecKillTimeout)
+	}
+	// WaitDelay firing (rather than the push completing cleanly) is the
+	// expected shape here: the fake "push" subcommand's own process
+	// already exited 0, but its backgrounded orphan still holds the
+	// pipe, so Cmd.Wait() gives up at the WaitDelay bound and reports
+	// exec.ErrWaitDelay instead of a clean success. That's a real,
+	// pre-existing characteristic of WaitDelay itself (not something
+	// this fix changes) — bounding the hang, not guaranteeing the
+	// result reads as success in this specific edge case. What matters
+	// is that PushBranch returns promptly and with a real error instead
+	// of hanging forever.
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("expected err to wrap exec.ErrWaitDelay (proving WaitDelay is what bounded this, not a coincidental fast failure); got %v", err)
 	}
 }
