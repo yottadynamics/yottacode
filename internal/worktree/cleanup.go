@@ -3,9 +3,12 @@ package worktree
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // State describes the tree state of a worktree as it bears on
@@ -19,6 +22,123 @@ type State struct {
 	HasUncommitted bool
 	HasUntracked   bool
 	HasUnpushed    bool
+}
+
+// ParseCleanupAge accepts Go duration syntax plus day and week shorthand.
+func ParseCleanupAge(value string) (time.Duration, error) {
+	if strings.HasSuffix(value, "d") {
+		n, err := strconv.ParseFloat(strings.TrimSuffix(value, "d"), 64)
+		if err != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, fmt.Errorf("invalid cleanup age %q", value)
+		}
+		d := time.Duration(n * float64(24*time.Hour))
+		if d <= 0 || float64(d) != n*float64(24*time.Hour) {
+			return 0, fmt.Errorf("invalid cleanup age %q", value)
+		}
+		return d, nil
+	}
+	if strings.HasSuffix(value, "w") {
+		n, err := strconv.ParseFloat(strings.TrimSuffix(value, "w"), 64)
+		if err != nil || n <= 0 || math.IsNaN(n) || math.IsInf(n, 0) {
+			return 0, fmt.Errorf("invalid cleanup age %q", value)
+		}
+		d := time.Duration(n * float64(7*24*time.Hour))
+		if d <= 0 || float64(d) != n*float64(7*24*time.Hour) {
+			return 0, fmt.Errorf("invalid cleanup age %q", value)
+		}
+		return d, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("invalid cleanup age %q", value)
+	}
+	return d, nil
+}
+
+// CleanupOptions controls conservative cleanup of old managed worktrees.
+type CleanupOptions struct {
+	OlderThan time.Duration
+	Force     bool
+	DryRun    bool
+	Current   string
+}
+
+// CleanupItem records one cleanup decision for reporting to a caller.
+type CleanupItem struct {
+	Name   string
+	Path   string
+	Age    time.Duration
+	Action string
+	Reason string
+}
+
+// Cleanup removes old, registered yottacode worktrees. It only considers
+// exact managed paths, skips locked/current trees, and protects dirty trees
+// unless Force is explicitly requested.
+func Cleanup(ctx context.Context, repoRoot string, opts CleanupOptions) ([]CleanupItem, error) {
+	if opts.OlderThan <= 0 {
+		return nil, fmt.Errorf("worktree: cleanup age must be positive")
+	}
+	infos, err := List(ctx, repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	items := make([]CleanupItem, 0)
+	for _, info := range infos {
+		name, ok := IsWorktreePath(repoRoot, info.Path)
+		if !ok {
+			continue
+		}
+		path := filepath.Clean(info.Path)
+		item := CleanupItem{Name: name, Path: path}
+		stat, statErr := os.Stat(path)
+		if statErr != nil {
+			item.Action, item.Reason = "skipped", fmt.Sprintf("cannot stat: %v", statErr)
+		} else {
+			item.Age = now.Sub(stat.ModTime())
+			switch {
+			case item.Age < opts.OlderThan:
+				item.Action, item.Reason = "skipped", "not old enough"
+			case info.Locked:
+				item.Action, item.Reason = "skipped", "locked"
+			case isWithinPath(opts.Current, path):
+				item.Action, item.Reason = "skipped", "current worktree"
+			default:
+				state, stateErr := DetectState(ctx, path)
+				switch {
+				case stateErr != nil:
+					item.Action, item.Reason = "skipped", fmt.Sprintf("cannot detect state: %v", stateErr)
+				case !state.Clean() && !opts.Force:
+					item.Action, item.Reason = "skipped", "dirty: "+strings.Join(state.Reasons(), ", ")
+				case opts.DryRun:
+					item.Action, item.Reason = "would remove", "eligible"
+				default:
+					if removeErr := Remove(ctx, repoRoot, path, opts.Force); removeErr != nil {
+						item.Action, item.Reason = "error", removeErr.Error()
+					} else {
+						item.Action, item.Reason = "removed", "eligible"
+					}
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// isWithinPath reports whether current is inside path, including path itself.
+func isWithinPath(current, path string) bool {
+	if current == "" {
+		return false
+	}
+	current, currentErr := filepath.EvalSymlinks(current)
+	path, pathErr := filepath.EvalSymlinks(path)
+	if currentErr != nil || pathErr != nil {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(path), filepath.Clean(current))
+	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))))
 }
 
 // Clean reports whether nothing would be lost by removing the

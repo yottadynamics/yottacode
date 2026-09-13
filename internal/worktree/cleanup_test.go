@@ -5,8 +5,65 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
+func TestParseCleanupAge(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+	}{{"30d", 30 * 24 * time.Hour}, {"2w", 14 * 24 * time.Hour}, {"720h", 720 * time.Hour}} {
+		got, err := ParseCleanupAge(tc.in)
+		if err != nil || got != tc.want {
+			t.Fatalf("ParseCleanupAge(%q) = %v, %v", tc.in, got, err)
+		}
+	}
+	for _, value := range []string{"0d", "NaNd", "Infw", "999999999999999999999999d"} {
+		if _, err := ParseCleanupAge(value); err == nil {
+			t.Fatalf("expected invalid age %q", value)
+		}
+	}
+}
+func TestCleanupSkipsCurrentWorktree(t *testing.T) {
+	repo := mkRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	wt := Dir(repo, "old-clean")
+	mustRun(t, repo, "git", "worktree", "add", "-b", "worktree-old-clean", wt)
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(wt, old, old); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Cleanup(context.Background(), repo, CleanupOptions{OlderThan: 24 * time.Hour, DryRun: true, Current: wt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Action != "skipped" || items[0].Reason != "current worktree" {
+		t.Fatalf("cleanup items = %+v", items)
+	}
+	if err := Remove(context.Background(), repo, wt, false); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestCleanupDryRunReportsEligibleCleanWorktree(t *testing.T) {
+	repo := mkRepo(t)
+	t.Setenv("HOME", t.TempDir())
+	wt := Dir(repo, "old-clean")
+	mustRun(t, repo, "git", "worktree", "add", "-b", "worktree-old-clean", wt)
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(wt, old, old); err != nil {
+		t.Fatal(err)
+	}
+	items, err := Cleanup(context.Background(), repo, CleanupOptions{OlderThan: 24 * time.Hour, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Action != "would remove" {
+		t.Fatalf("cleanup items = %+v", items)
+	}
+	if err := Remove(context.Background(), repo, wt, false); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestDetectStateClean(t *testing.T) {
 	repo := mkRepo(t)
 	ctx := context.Background()
