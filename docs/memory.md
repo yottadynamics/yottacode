@@ -474,9 +474,18 @@ for you — the rebuild is a manual (but cheap and incremental) step. Until
 you run it, affected entries fall back to BM25 rather than producing wrong
 results.
 
-#### Enabling semantic retrieval
+#### Advanced semantic memory setup
 
-To get the full advantage of semantic memory retrieval:
+The setup wizard detects whether Ollama is reachable. When it is missing or not running, the wizard explains that Ollama enables local semantic memory and offers an explicit install step before the embedding-model choice. After installation it verifies that the Ollama service is reachable; if the service did not start, it tells the user to run `ollama serve` and rerun setup rather than attempting an unreliable automatic service start.
+
+On Linux, the wizard offers the official installer:
+
+```sh
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+On macOS it uses `brew install ollama` when Homebrew is available, otherwise it offers the official installer. The exact command is shown before execution. The installer is run with the terminal attached, so `sudo` can prompt the user directly for their password; yottacode never reads, stores, or passes that password. Installation and downloading the memory model are separate approvals. Declining or failing installation leaves keyword/BM25 memory available and the manual Ollama instructions visible.
+
 
 1. Install [Ollama](https://ollama.com) if you haven't already
 2. Pull a small embedding model:

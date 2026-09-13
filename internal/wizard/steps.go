@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -199,6 +200,9 @@ type wizardModel struct {
 	embedPulling     bool
 	embedPullErr     error
 	embedChosenModel string // set on success (auto-detected or pulled)
+	installOllama    bool
+	ollamaInstall    OllamaInstallSpec
+	ollamaInstallErr error
 }
 
 // runInteractive opens the Bubbletea program and translates its
@@ -408,6 +412,18 @@ func pickedCopilot(choices [][2]string) bool {
 type embedPullDoneMsg struct {
 	model string
 	err   error
+}
+
+// ollamaInstallDoneMsg reports the result of the terminal-attached installer.
+// sudo owns stdin, so its password prompt is visible to the user and the
+// password never enters yottacode.
+type ollamaInstallDoneMsg struct {
+	err error
+}
+
+// ollamaProbeDoneMsg reports the bounded post-install service check.
+type ollamaProbeDoneMsg struct {
+	result OllamaProbeResult
 }
 
 // copilotDeviceCodeMsg is sent once the device code is obtained.
@@ -733,6 +749,19 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.providerCursor = m.configIdx
 		m.step = stepProviders
 		m.notice = msg.model + " pulled — semantic search enabled"
+		return m, nil
+	case ollamaInstallDoneMsg:
+		m.ollamaInstallErr = msg.err
+		m.installOllama = false
+		if msg.err != nil {
+			return m, nil
+		}
+		return m, probeOllamaAfterInstallCmd(m.ctx, 5)
+	case ollamaProbeDoneMsg:
+		m.ollamaProbe = msg.result
+		if !m.ollamaProbe.Reachable {
+			m.ollamaInstallErr = errors.New("Ollama installed but its service is not running")
+		}
 		return m, nil
 	case copilotDeviceCodeMsg:
 		if msg.err != nil {
@@ -1639,10 +1668,18 @@ func (m wizardModel) updateConfigure(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				in.baseURL.SetValue(VertexBaseURL(in.vertexFamily, project))
 			}
 			m.inputs[m.configIdx].configured = true
-			if in.entry.Kind == "ollama" && m.ollamaProbe.Reachable {
+			if in.entry.Kind == "ollama" {
 				detected := DetectEmbeddingModels(m.ollamaProbe.Models)
 				if len(detected) > 0 {
 					m.embedChosenModel = detected[0]
+				}
+				if !m.ollamaProbe.Reachable {
+					if spec, err := DetectOllamaInstallCommand(); err == nil {
+						m.ollamaInstall = spec
+						m.installOllama = true
+					} else {
+						m.ollamaInstallErr = err
+					}
 				}
 				m.embedSubStep = true
 				m.embedCursor = 0
@@ -1991,7 +2028,42 @@ func (m wizardModel) viewConfigure() string {
 // Embedding model sub-step (shown after Ollama provider configuration)
 // ---------------------------------------------------------------------------
 
+func probeOllamaAfterInstallCmd(ctx context.Context, attempts int) tea.Cmd {
+	return func() tea.Msg {
+		if attempts < 1 {
+			attempts = 1
+		}
+		for i := 0; i < attempts; i++ {
+			result := ProbeOllama(ctx, "")
+			if result.Reachable || i == attempts-1 {
+				return ollamaProbeDoneMsg{result: result}
+			}
+			select {
+			case <-ctx.Done():
+				return ollamaProbeDoneMsg{result: result}
+			case <-time.After(750 * time.Millisecond):
+			}
+		}
+		return ollamaProbeDoneMsg{}
+	}
+}
 func (m wizardModel) updateEmbedSubStep(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.installOllama {
+		switch msg.String() {
+		case "enter", "y":
+			m.installOllama = false
+			spec := m.ollamaInstall
+			m.ollamaInstallErr = nil
+			return m, tea.ExecProcess(exec.Command(spec.Command, spec.Args...), func(err error) tea.Msg {
+				return ollamaInstallDoneMsg{err: err}
+			})
+		case "n", "esc":
+			m.installOllama = false
+			m.ollamaInstallErr = errors.New("installation skipped")
+			return m, nil
+		}
+		return m, nil
+	}
 	if m.embedPulling {
 		return m, nil
 	}
@@ -2080,6 +2152,23 @@ func (m wizardModel) updateEmbedSubStep(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 func (m wizardModel) viewEmbedSubStep() string {
 	var b strings.Builder
 	w := lineWidthFor(m.width)
+	if m.installOllama {
+		b.WriteString("\n  ")
+		b.WriteString(styleHeading.Render("Advanced semantic memory uses Ollama"))
+		b.WriteString("\n\n  ")
+		b.WriteString(styleHint.Render(truncate("Ollama is not running. Install it now? The installer may ask for your sudo password in this terminal; yottacode never sees or stores that password.", w-2)))
+		b.WriteString("\n\n  Command: " + m.ollamaInstall.Display + "\n\n  ")
+		b.WriteString(styleHint.Render("Enter/y install · n/esc skip"))
+		b.WriteString("\n")
+		return b.String()
+	}
+	if m.ollamaInstallErr != nil {
+		b.WriteString("\n  ")
+		b.WriteString(styleErr.Render(truncate("Ollama setup: "+m.ollamaInstallErr.Error(), w-2)))
+		b.WriteString("\n  ")
+		b.WriteString(styleHint.Render(truncate("Install Ollama manually, start it with `ollama serve`, and rerun setup. Keyword memory remains available.", w-2)))
+		b.WriteString("\n")
+	}
 
 	if m.embedPulling {
 		b.WriteString("\n  ")
