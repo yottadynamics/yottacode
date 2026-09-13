@@ -108,7 +108,7 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 	if string(oldBytes) == string(out) {
 		return "", fmt.Errorf("apply_hashline: no changes produced")
 	}
-	if err := hashline.ApplyFile(p, parsed); err != nil {
+	if err := hashline.ReplaceFileIfUnchanged(p, oldBytes, out); err != nil {
 		return "", formatHashlineApplyError(err)
 	}
 	msg := fmt.Sprintf("applied %d hashline hunk(s) to %s\n", len(parsed), p)
@@ -181,9 +181,15 @@ func formatHashlineApplyError(err error) error {
 	if !errors.As(err, &applyErr) {
 		return fmt.Errorf("apply_hashline: %w", err)
 	}
-	msg := "apply_hashline: " + applyErr.Error()
-	if applyErr.Kind == hashline.ErrStaleAnchor || applyErr.Kind == hashline.ErrAmbiguousAnchor {
-		msg += "; call read_file for the suggested range, copy the current text and hashline receipt, then retry"
+	switch applyErr.Kind {
+	case hashline.ErrStaleAnchor, hashline.ErrAmbiguousAnchor:
+		return fmt.Errorf("apply_hashline: %w; call read_file for the suggested range, copy the current text and hashline receipt, then retry", applyErr)
+	case hashline.ErrHashMismatch:
+		return fmt.Errorf("apply_hashline: %w; call read_file(anchors=true) fresh and use the old text and hash from that same read", applyErr)
+	case hashline.ErrInvalidHash:
+		return fmt.Errorf("apply_hashline: %w; use exactly %d lowercase hexadecimal characters from a fresh hashline receipt", applyErr, hashline.HashHexLength)
+	case hashline.ErrConcurrentWrite:
+		return fmt.Errorf("apply_hashline: %w; the file changed while the edit was being prepared — re-read it and retry", applyErr)
 	}
-	return errors.New(msg)
+	return fmt.Errorf("apply_hashline: %w", applyErr)
 }

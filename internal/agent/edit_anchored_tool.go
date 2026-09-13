@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
@@ -28,7 +29,7 @@ func (t *EditAnchoredTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{"type": "string", "description": "File to edit (absolute or cwd-relative)"},
 			"operations": map[string]any{
-				"type": "array",
+				"type":        "array",
 				"description": "Ordered anchor-based edit operations",
 				"items": map[string]any{
 					"type": "object",
@@ -132,7 +133,7 @@ func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string
 	if out == src {
 		return "", fmt.Errorf("edit_anchored: edit is a no-op")
 	}
-	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+	if err := hashline.ReplaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
 		return "", fmt.Errorf("edit_anchored: write: %w", err)
 	}
 	msg := fmt.Sprintf("edited %s: %d anchored operation(s)", p, len(resolved))

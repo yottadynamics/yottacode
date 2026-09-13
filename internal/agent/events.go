@@ -144,22 +144,22 @@ type PathTrustElevationNeeded struct {
 }
 
 // ToolStart fires immediately before a tool's Execute is called (after any
-// approval flow has resolved). The consumer can render this as a status line.
-// ArgsJSON carries the raw tool-call arguments so consumers can do structured
-// rendering (e.g., the TUI's edit_file diff card) without parsing the
-// human-friendly Preview string.
+// approval flow has resolved). ToolCallID identifies this invocation and is
+// used by consumers to correlate out-of-order parallel results.
 type ToolStart struct {
-	ToolName string
-	Preview  string
-	ArgsJSON string
+	ToolCallID string
+	ToolName   string
+	Preview    string
+	ArgsJSON   string
 }
 
-// ToolResult fires after the tool finishes. Output is the string the model
-// will see; Errored signals whether it was a tool-level error vs. success.
+// ToolResult fires after the tool finishes. ToolCallID matches the originating
+// ToolStart; Errored signals whether it was a tool-level error vs. success.
 type ToolResult struct {
-	ToolName string
-	Output   string
-	Errored  bool
+	ToolCallID string
+	ToolName   string
+	Output     string
+	Errored    bool
 }
 
 // CwdChanged fires when a tool (today: enter_worktree / exit_worktree)

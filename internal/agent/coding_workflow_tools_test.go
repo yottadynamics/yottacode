@@ -369,6 +369,56 @@ func TestClassifyPatchFailure(t *testing.T) {
 	}
 }
 
+func TestApplyDiffTool_ReportsWhitespaceRetry(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "start\n\tcontext\nold\nend\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1,4 +1,4 @@\n start\n     context\n-old\n+new\n end\n"
+	b, _ := json.Marshal(map[string]string{"diff": diff})
+	out, err := tool.Execute(context.Background(), string(b))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "whitespace-ignore retry") {
+		t.Fatalf("result should disclose whitespace retry, got %q", out)
+	}
+}
+
+func TestApplyDiffTool_FailureDiagnosticDoesNotIncludePatch(t *testing.T) {
+	tmp := gitInit(t)
+	writeFile(t, tmp, "a.txt", "current\n")
+	tool := &ApplyDiffTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	payload := strings.Repeat("x", 10000)
+	diff := "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-stale\n+" + payload + "\n"
+	b, _ := json.Marshal(map[string]string{"diff": diff})
+	_, err := tool.Execute(context.Background(), string(b))
+	if err == nil {
+		t.Fatal("expected stale patch to fail")
+	}
+	if strings.Contains(err.Error(), payload) || strings.Contains(err.Error(), "patch=") {
+		t.Fatalf("failure should not include patch body: %v", err)
+	}
+	if len(err.Error()) > 6000 {
+		t.Fatalf("failure diagnostic is not bounded: %d bytes", len(err.Error()))
+	}
+}
+
+func TestValidateUnifiedDiffHunks_AllowsMetadataOnlyEntries(t *testing.T) {
+	for _, diff := range []string{
+		"diff --git a/old.txt b/new.txt\nsimilarity index 100%\nrename from old.txt\nrename to new.txt\n",
+		"diff --git a/file.txt b/file.txt\nold mode 100644\nnew mode 100755\n",
+	} {
+		if err := validateUnifiedDiffHunks(diff, "file.txt"); err != nil {
+			if strings.Contains(diff, "rename") {
+				if err := validateUnifiedDiffHunks(diff, "old.txt"); err != nil {
+					t.Fatalf("rename-only diff rejected: %v", err)
+				}
+			} else {
+				t.Fatalf("mode-only diff rejected: %v", err)
+			}
+		}
+	}
+}
 func TestListGitChangedFilesTool_FindsStagedUnstagedAndUntracked(t *testing.T) {
 	tmp := gitInit(t)
 	writeFile(t, tmp, "tracked.txt", "v1\n")

@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -51,6 +52,12 @@ const (
 	ErrOverlap         ErrorKind = "overlapping_hunks"
 	ErrInvalidText     ErrorKind = "invalid_text"
 	ErrInvalidRange    ErrorKind = "invalid_range"
+	// ErrHashMismatch means the hunk's Old text does not hash to Anchor.Hash.
+	// It is distinct from ErrStaleAnchor, which means the input is internally
+	// consistent but no longer matches the live source file.
+	ErrHashMismatch    ErrorKind = "hash_mismatch"
+	ErrInvalidHash     ErrorKind = "invalid_hash"
+	ErrConcurrentWrite ErrorKind = "concurrent_write"
 )
 
 // ApplyError carries structured context while still formatting as a plain error
@@ -109,11 +116,14 @@ func Apply(src []byte, hunks []Hunk) ([]byte, error) {
 		if !isText(hunk.Old) || !isText(hunk.New) {
 			return nil, &ApplyError{Kind: ErrInvalidText, Message: fmt.Sprintf("hunk %d contains non-text bytes", i)}
 		}
+		if !validHash(hunk.Anchor.Hash) {
+			return nil, &ApplyError{Kind: ErrInvalidHash, Message: fmt.Sprintf("hunk %d hash must be exactly %d lowercase hexadecimal characters", i, HashHexLength), ExpectedHash: hunk.Anchor.Hash}
+		}
 		if hashBytes(hunk.Old) != hunk.Anchor.Hash {
 			rereadStart, rereadEnd := rereadRange(src, hunk.Anchor)
 			return nil, &ApplyError{
-				Kind:         ErrStaleAnchor,
-				Message:      fmt.Sprintf("hunk %d old bytes do not match anchor hash", i),
+				Kind:         ErrHashMismatch,
+				Message:      fmt.Sprintf("hunk %d old bytes do not match anchor hash — old and hash must come from the same read; recompute the hash from the exact old text, or re-read the file and copy both together", i),
 				ExpectedHash: hunk.Anchor.Hash,
 				FoundHash:    hashBytes(hunk.Old),
 				RereadStart:  rereadStart,
@@ -143,6 +153,14 @@ func Apply(src []byte, hunks []Hunk) ([]byte, error) {
 		out = append(out[:hunk.start], append(append([]byte(nil), hunk.new...), out[hunk.end:]...)...)
 	}
 	return out, nil
+}
+
+func validHash(hash string) bool {
+	if len(hash) != HashHexLength || hash != strings.ToLower(hash) {
+		return false
+	}
+	_, err := hex.DecodeString(hash)
+	return err == nil
 }
 
 type resolvedHunk struct {
