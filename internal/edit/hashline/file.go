@@ -1,8 +1,11 @@
 package hashline
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+
+	"golang.org/x/sys/unix"
 )
 
 // ApplyFile reads path, applies hunks, and replaces the file with a same-directory
@@ -21,7 +24,36 @@ func ApplyFile(path string, hunks []Hunk) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(path, out, info.Mode().Perm())
+	return writeAtomicIfUnchanged(path, src, out, info.Mode().Perm())
+}
+
+// ReplaceFileIfUnchanged atomically replaces path only when it still contains expected.
+func ReplaceFileIfUnchanged(path string, expected, content []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return writeAtomicIfUnchanged(path, expected, content, info.Mode().Perm())
+}
+
+func writeAtomicIfUnchanged(path string, expected, content []byte, mode os.FileMode) error {
+	lockFile, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer lockFile.Close()
+	if err := unix.Flock(int(lockFile.Fd()), unix.LOCK_EX); err != nil {
+		return err
+	}
+	defer unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, expected) {
+		return &ApplyError{Kind: ErrConcurrentWrite, Message: "file changed while the edit was being prepared"}
+	}
+	return writeAtomic(path, content, mode)
 }
 
 func writeAtomic(path string, content []byte, mode os.FileMode) error {

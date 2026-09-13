@@ -77,9 +77,37 @@ func parseAnchoredRef(raw string) (anchoredRef, error) {
 		if hash == "" {
 			return anchoredRef{}, fmt.Errorf("invalid anchor %q: missing hash", raw)
 		}
+		if !isAnchorHashShape(hash) {
+			return anchoredRef{}, fmt.Errorf("malformed anchor %q — the text after '#' must be the exact %d-character hex hash printed by read_file(anchors=true) (e.g. \"42#a1b2c3d4\"), not source text", raw, anchoredEditHashHexLen)
+		}
 		return anchoredRef{LineNumber: lineNum, Hash: hash, Raw: raw}, nil
 	}
+	// No "#": treated as a bare hash reference. The dominant mistake here is
+	// a model pasting raw source text (a comment, a line of code) instead of
+	// the anchor token — that would otherwise sail through to resolveAnchoredRef
+	// and surface as a confusing "no current line matches this anchor hash",
+	// which reads like the file changed rather than like a format mistake.
+	if !isAnchorHashShape(raw) {
+		return anchoredRef{}, fmt.Errorf("malformed anchor %q — expected the exact line#hash token printed by read_file(anchors=true) (e.g. \"42#a1b2c3d4\"), not raw source text", raw)
+	}
 	return anchoredRef{Hash: raw, Raw: raw}, nil
+}
+
+// isAnchorHashShape reports whether s has the shape of a hash this package
+// generates (anchorHashForLine): a fixed-length lowercase hex string. It
+// cannot confirm a hash is genuine, but it reliably rejects the common
+// mistake of passing arbitrary text where a hash token belongs.
+func isAnchorHashShape(s string) bool {
+	if len(s) != anchoredEditHashHexLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveAnchoredRef(idx anchoredLineIndex, ref anchoredRef) (anchoredLine, error) {

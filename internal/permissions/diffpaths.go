@@ -1,61 +1,118 @@
 package permissions
 
-import "strings"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
-// ParseDiffPaths extracts the unique set of target file paths a unified
-// diff would touch. Used by apply_diff to (a) populate the permissions
-// descriptor so user-authored Deny/Allow rules match the diff's targets,
-// and (b) drive ValidateWritePath against DefaultDenyPaths so
-// yottacode-managed state can't be patched through the diff surface.
-//
-// Returned paths are repo-relative — the same form `git apply` would
-// resolve against the work tree. The "a/" / "b/" prefixes git emits in
-// `--- a/foo` / `+++ b/foo` are stripped. /dev/null entries (new-file
-// source / deleted-file destination) are skipped; the paired non-null
-// side still produces a path. Renames contribute both source and
-// destination.
+// NormalizeDiffPath decodes one Git diff path token and strips the conventional
+// a/ or b/ prefix. It rejects malformed quoted paths so validation and git apply
+// cannot disagree about the target.
+func NormalizeDiffPath(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if i := strings.IndexByte(raw, '\t'); i >= 0 {
+		raw = raw[:i]
+	}
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		decoded, err := strconv.Unquote(raw)
+		if err != nil {
+			return "", fmt.Errorf("malformed quoted diff path %q: %w", raw, err)
+		}
+		raw = decoded
+	}
+	if strings.HasPrefix(raw, "a/") || strings.HasPrefix(raw, "b/") {
+		raw = raw[2:]
+	}
+	return raw, nil
+}
+
+// would touch. Invalid Git quoting returns no paths (the strict variant gives
+// callers the diagnostic); callers must fail closed before applying a patch.
 func ParseDiffPaths(diff string) []string {
+	paths, err := ParseDiffPathsStrict(diff)
+	if err != nil {
+		return nil
+	}
+	return paths
+}
+
+// ParseDiffPathsStrict decodes Git-quoted paths and rejects ambiguous or
+// malformed encodings rather than validating a different path than git apply.
+func ParseDiffPathsStrict(diff string) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
-	add := func(p string) {
+	add := func(p string) error {
 		p = strings.TrimSpace(p)
-		// git pads `--- ` / `+++ ` lines with a tab + timestamp on some
-		// emitters; drop anything past the first tab.
 		if i := strings.IndexByte(p, '\t'); i >= 0 {
 			p = p[:i]
 		}
 		if p == "" || p == "/dev/null" {
-			return
+			return nil
 		}
-		// git wraps filenames containing special chars in double quotes.
 		if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
-			p = p[1 : len(p)-1]
+			decoded, err := strconv.Unquote(p)
+			if err != nil {
+				return fmt.Errorf("malformed quoted diff path %q: %w", p, err)
+			}
+			p = decoded
 		}
-		// Strip git-style a/ b/ prefix. Real-world relative paths can
-		// also legitimately start with "a/" or "b/", but in a unified
-		// diff header the prefix is conventional and inseparable from
-		// the on-disk path; users who rely on a/ b/-named directories
-		// are already on a path of pain with `git apply`.
 		if strings.HasPrefix(p, "a/") || strings.HasPrefix(p, "b/") {
 			p = p[2:]
 		}
 		if p == "" || seen[p] {
-			return
+			return nil
 		}
 		seen[p] = true
 		out = append(out, p)
+		return nil
+	}
+	parsePair := func(s string) error {
+		s = strings.TrimSpace(s)
+		for i := 0; i < 2; i++ {
+			if s == "" {
+				return fmt.Errorf("diff --git header has fewer than two paths")
+			}
+			end := 0
+			if s[0] == '"' {
+				for end = 1; end < len(s); end++ {
+					if s[end] == '"' && s[end-1] != '\\' {
+						end++
+						break
+					}
+				}
+				if end > len(s) || end == 1 {
+					return fmt.Errorf("malformed diff --git path")
+				}
+			} else if j := strings.IndexByte(s, ' '); j >= 0 {
+				end = j
+			} else {
+				end = len(s)
+			}
+			if err := add(s[:end]); err != nil {
+				return err
+			}
+			s = strings.TrimSpace(s[end:])
+		}
+		return nil
 	}
 	for _, line := range strings.Split(diff, "\n") {
+		var err error
 		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			err = parsePair(strings.TrimPrefix(line, "diff --git "))
 		case strings.HasPrefix(line, "+++ "):
-			add(line[4:])
+			err = add(line[4:])
 		case strings.HasPrefix(line, "--- "):
-			add(line[4:])
+			err = add(line[4:])
 		case strings.HasPrefix(line, "rename to "):
-			add(line[len("rename to "):])
+			err = add(line[len("rename to "):])
 		case strings.HasPrefix(line, "rename from "):
-			add(line[len("rename from "):])
+			err = add(line[len("rename from "):])
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
-	return out
+	return out, nil
 }

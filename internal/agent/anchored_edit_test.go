@@ -34,6 +34,27 @@ func TestParseAnchoredRef(t *testing.T) {
 	}
 }
 
+// A model that pastes raw source text into the anchor field (instead of the
+// line#hash token read_file(anchors=true) prints) must get a distinct,
+// actionable "malformed anchor" error — not the generic "stale anchor" one,
+// which reads as "the file changed" and sends the model down the wrong fix.
+func TestParseAnchoredRefRejectsRawTextAsMalformed(t *testing.T) {
+	_, err := parseAnchoredRef("// renderApprovalModal lays out the approval prompt")
+	if err == nil || !strings.Contains(err.Error(), "malformed anchor") {
+		t.Fatalf("expected malformed anchor error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "stale anchor") {
+		t.Fatalf("malformed anchor must not be reported as stale: %v", err)
+	}
+}
+
+func TestParseAnchoredRefRejectsRawTextAfterHashAsMalformed(t *testing.T) {
+	_, err := parseAnchoredRef("42#not-a-real-hash")
+	if err == nil || !strings.Contains(err.Error(), "malformed anchor") {
+		t.Fatalf("expected malformed anchor error, got %v", err)
+	}
+}
+
 func TestResolveAnchoredRefAmbiguousBareHash(t *testing.T) {
 	idx := buildAnchoredLineIndex([]string{"same", "same"})
 	ambiguous := anchorHashForLine(1, "same")
@@ -66,6 +87,17 @@ func TestEditAnchoredToolReplaceRange(t *testing.T) {
 	got := string(gotBytes)
 	if got != "one\nTWO\nTHREE\n" {
 		t.Fatalf("content = %q", got)
+	}
+}
+
+func TestEditAnchoredToolRejectsMalformedAnchor(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "x.txt", "one\ntwo\n")
+	tool := &EditAnchoredTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+	args := `{"path":"x.txt","operations":[{"op":"insert_after","anchor":"// a raw source comment, not an anchor token","new_text":"x"}]}`
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "malformed anchor") {
+		t.Fatalf("expected malformed anchor error, got %v", err)
 	}
 }
 

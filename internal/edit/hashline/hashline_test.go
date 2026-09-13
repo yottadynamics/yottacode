@@ -112,7 +112,7 @@ func TestApplyRejectsAmbiguousRelocatedAnchorWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestApplyReportsStaleAnchorWithSuggestedReadRange(t *testing.T) {
+func TestApplyReportsHashMismatchWhenOldDoesNotMatchHash(t *testing.T) {
 	src := []byte("alpha\nbeta\ngamma\n")
 	anchor := Anchor{Offset: 6, Length: 4, Hash: "0000000000000000"}
 
@@ -121,14 +121,25 @@ func TestApplyReportsStaleAnchorWithSuggestedReadRange(t *testing.T) {
 	if !errors.As(err, &applyErr) {
 		t.Fatalf("Apply error = %T %[1]v, want *ApplyError", err)
 	}
-	if applyErr.Kind != ErrStaleAnchor {
-		t.Fatalf("error kind = %q, want %q", applyErr.Kind, ErrStaleAnchor)
+	if applyErr.Kind != ErrHashMismatch {
+		t.Fatalf("error kind = %q, want %q", applyErr.Kind, ErrHashMismatch)
 	}
 	if applyErr.ExpectedHash != "0000000000000000" || applyErr.FoundHash == "" {
 		t.Fatalf("hash context = expected %q found %q", applyErr.ExpectedHash, applyErr.FoundHash)
 	}
 	if applyErr.RereadStart >= applyErr.RereadEnd {
 		t.Fatalf("reread range = %d:%d, want non-empty", applyErr.RereadStart, applyErr.RereadEnd)
+	}
+}
+
+func TestApplyReportsStaleAnchorWhenContentIsGoneFromSource(t *testing.T) {
+	original := []byte("alpha\nbeta\ngamma\n")
+	anchor := mustHashSpan(t, original, 6, 4)
+	current := []byte("alpha\nBETA already replaced\ngamma\n")
+
+	_, err := Apply(current, []Hunk{{Anchor: anchor, Old: []byte("beta"), New: []byte("BETA")}})
+	if !errorKindIs(err, ErrStaleAnchor) {
+		t.Fatalf("Apply error = %v, want ErrStaleAnchor", err)
 	}
 }
 

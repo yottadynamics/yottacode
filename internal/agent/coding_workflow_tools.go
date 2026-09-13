@@ -110,7 +110,10 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// cwd / --allow-paths confinement apply here too. Without this,
 	// `git apply` would happily patch ../../etc/whatever as long as the
 	// diff said so, bypassing the rest of the safety story.
-	paths := permissions.ParseDiffPaths(a.Diff)
+	paths, pathErr := permissions.ParseDiffPathsStrict(a.Diff)
+	if pathErr != nil {
+		return "", fmt.Errorf("apply_diff: malformed_patch: %w", pathErr)
+	}
 	if len(paths) == 0 {
 		if strings.Contains(a.Diff, "*** Begin Patch") || strings.Contains(a.Diff, "*** Update File:") {
 			return "", fmt.Errorf("apply_diff: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
@@ -134,16 +137,17 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 			return "", fmt.Errorf("apply_diff: %w", err)
 		}
 	}
+	cwd := t.Cwd.Get()
 	for _, rel := range paths {
 		abs := rel
 		if !filepath.IsAbs(abs) {
-			abs = filepath.Join(t.Cwd.Get(), rel)
+			abs = filepath.Join(cwd, rel)
 		}
 		if err := ValidateWritePath(abs, t.WriteOpts); err != nil {
 			return "", fmt.Errorf("apply_diff: %w", err)
 		}
 	}
-	patch, err := os.CreateTemp(t.Cwd.Get(), "yottacode-apply-*.diff")
+	patch, err := os.CreateTemp(cwd, "yottacode-apply-*.diff")
 	if err != nil {
 		return "", fmt.Errorf("apply_diff: create temp patch: %w", err)
 	}
@@ -156,10 +160,11 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err := patch.Close(); err != nil {
 		return "", fmt.Errorf("apply_diff: close temp patch: %w", err)
 	}
-	if stderr, err := applyGitPatch(ctx, t.Cwd.Get(), patchPath); err != nil {
-		body, _ := os.ReadFile(patchPath)
-		return "", fmt.Errorf("apply_diff: %w; stderr=%q hint=%q patch=%q", err, stderr,
-			applyPatchFailureHint(stderr), string(body))
+	if stderr, err, retriedIgnoringWhitespace := applyGitPatch(ctx, cwd, patchPath); err != nil {
+		return "", fmt.Errorf("apply_diff: %w; stderr=%q hint=%q", err, boundedPatchDiagnostic(stderr),
+			applyPatchFailureHint(stderr))
+	} else if retriedIgnoringWhitespace {
+		return "applied diff (after whitespace-ignore retry)", nil
 	}
 	return "applied diff", nil
 }
@@ -199,6 +204,15 @@ func ClassifyPatchFailure(output string) PatchFailureKind {
 	default:
 		return PatchFailureUnknown
 	}
+}
+
+func boundedPatchDiagnostic(stderr string) string {
+	const maxBytes = 4096
+	stderr = strings.TrimSpace(stderr)
+	if len(stderr) > maxBytes {
+		return "…[diagnostic truncated]" + stderr[len(stderr)-maxBytes:]
+	}
+	return stderr
 }
 
 func applyPatchFailureHint(stderr string) string {
@@ -245,10 +259,20 @@ func validateUnifiedDiffHunks(diff, rel string) error {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			inFile = false
-		case strings.HasPrefix(line, "+++ "):
-			path := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
-			path = strings.TrimPrefix(path, "b/")
+		case strings.HasPrefix(line, "--- "):
+			path, err := permissions.NormalizeDiffPath(strings.TrimPrefix(line, "--- "))
+			if err != nil {
+				return err
+			}
 			inFile = path == rel
+		case strings.HasPrefix(line, "+++ "):
+			path, err := permissions.NormalizeDiffPath(strings.TrimPrefix(line, "+++ "))
+			if err != nil {
+				return err
+			}
+			if path == rel {
+				inFile = true
+			}
 		case inFile && strings.HasPrefix(line, "@@"):
 			seenHeader = true
 			if !unifiedHunkHeaderRE.MatchString(line) {
@@ -257,6 +281,17 @@ func validateUnifiedDiffHunks(diff, rel string) error {
 		}
 	}
 	if !seenHeader {
+		// Git permits metadata-only entries (renames and mode changes) without
+		// ---/+++ headers or a content hunk. Let git apply validate those
+		// entries; requiring a hunk here would reject valid patches.
+		for _, line := range lines {
+			if strings.HasPrefix(line, "old mode ") || strings.HasPrefix(line, "new mode ") ||
+				strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "deleted file mode ") ||
+				strings.HasPrefix(line, "similarity index ") || strings.HasPrefix(line, "rename from ") ||
+				strings.HasPrefix(line, "rename to ") {
+				return nil
+			}
+		}
 		return fmt.Errorf("malformed_patch: diff for %s contains file headers but no hunk header", rel)
 	}
 	return nil
@@ -266,14 +301,14 @@ func validateUnifiedDiffHunks(diff, rel string) error {
 // ladder. The first pass uses --recount to repair model-authored hunk header
 // arithmetic without loosening content matching; the retry only ignores
 // whitespace after exact matching has already failed.
-func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error) {
+func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error, bool) {
 	attempts := [][]string{
 		{"apply", "--whitespace=nowarn", "--recount", patchPath},
 		{"apply", "--whitespace=nowarn", "--recount", "--ignore-whitespace", patchPath},
 	}
 	var firstErr error
 	var firstStderr string
-	for _, args := range attempts {
+	for i, args := range attempts {
 		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = dir
 		var stdout, stderr bytes.Buffer
@@ -286,9 +321,9 @@ func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error) {
 			}
 			continue
 		}
-		return "", nil
+		return "", nil, i > 0
 	}
-	return firstStderr, firstErr
+	return firstStderr, firstErr, false
 }
 
 // repairFullyEscapedDiff repairs a diff that arrived fully JSON-escaped:
@@ -641,27 +676,37 @@ func (t *RunTestsTool) Execute(ctx context.Context, argsJSON string) (string, er
 
 func formatRunTestsEnvironmentFailure(kind ResourceFailureKind, detail, evidence string) string {
 	out := fmt.Sprintf("environment_failure=%s: %s; tests were not retried", kind, detail)
-	if strings.TrimSpace(evidence) != "" { out += "\n--- bounded evidence ---\n" + evidence }
+	if strings.TrimSpace(evidence) != "" {
+		out += "\n--- bounded evidence ---\n" + evidence
+	}
 	return out
 }
 
 const (
-	runTestsMaxStreamBytes = 1 << 20
+	runTestsMaxStreamBytes   = 1 << 20
 	runTestsFailureTailBytes = 16 << 10
 )
 
 func summarizeRunTestsResult(command string, exit int, stdout, stderr string) string {
-	if exit == 0 { return fmt.Sprintf("$ %s\nexit=0", command) }
+	if exit == 0 {
+		return fmt.Sprintf("$ %s\nexit=0", command)
+	}
 	var output strings.Builder
 	output.WriteString(fmt.Sprintf("$ %s\nexit=%d\n", command, exit))
-	if failure := tailRunTestsOutput(stderr, stdout); failure != "" { output.WriteString("--- failure output ---\n" + failure) }
+	if failure := tailRunTestsOutput(stderr, stdout); failure != "" {
+		output.WriteString("--- failure output ---\n" + failure)
+	}
 	return output.String()
 }
 
 func tailRunTestsOutput(stderr, stdout string) string {
 	combined := strings.TrimSpace(strings.Join([]string{strings.TrimSpace(stderr), strings.TrimSpace(stdout)}, "\n"))
-	if combined == "" { return "" }
-	if len(combined) <= runTestsFailureTailBytes { return combined }
+	if combined == "" {
+		return ""
+	}
+	if len(combined) <= runTestsFailureTailBytes {
+		return combined
+	}
 	return "…[failure output truncated]\n" + combined[len(combined)-runTestsFailureTailBytes:]
 }
 

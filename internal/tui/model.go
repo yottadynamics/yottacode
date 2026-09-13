@@ -188,6 +188,13 @@ type Config struct {
 	SummarizerModel string
 }
 
+type pendingTool struct {
+	toolName string
+	preview  string
+	args     string
+	start    time.Time
+}
+
 // Model is the Bubbletea state for the chat TUI. The TUI runs full-screen
 // (alt-screen): the app owns the whole frame, including a scrollable
 // conversation transcript viewport above the live footer. Native terminal
@@ -365,17 +372,16 @@ type Model struct {
 	toolsStarted   int
 
 	// In-flight tool-call buffer. Most tool calls render immediately on
-	// ToolResult; consecutive summary-only reads buffer into
 	// pendingGroupedTools until a non-groupable event flushes one grouped
-	// scrollback card. pendingToolStart is stamped on ToolStart so the
-	// header can show how long a slow call took (see slowDurationTag).
+	// scrollback card. IDs correlate parallel starts and results; the
+	// name-keyed fallback is retained only for legacy events without an ID.
 	pendingToolName     string
 	pendingToolPreview  string
 	pendingToolArgs     string
 	pendingToolStart    time.Time
+	pendingToolStarts   map[string][]pendingTool
 	pendingGroupedTools []groupedToolResult
 
-	// Input history (Up/Down when palette is closed)
 	inputHistory    []string
 	inputHistoryIdx int
 	inputDraft      string
@@ -5897,6 +5903,14 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// (header + body + footer) renders as one block on
 		// ToolResult so it doesn't get split across the scrollback.
 		m.reasoning.Reset()
+		if m.pendingToolStarts == nil {
+			m.pendingToolStarts = make(map[string][]pendingTool)
+		}
+		if e.ToolCallID != "" {
+			m.pendingToolStarts[e.ToolCallID] = []pendingTool{{toolName: e.ToolName, preview: e.Preview, args: e.ArgsJSON, start: time.Now()}}
+		} else {
+			m.pendingToolStarts[e.ToolName] = append(m.pendingToolStarts[e.ToolName], pendingTool{toolName: e.ToolName, preview: e.Preview, args: e.ArgsJSON, start: time.Now()})
+		}
 		m.pendingToolName = e.ToolName
 		m.pendingToolPreview = e.Preview
 		m.pendingToolArgs = e.ArgsJSON
@@ -5905,6 +5919,27 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.toolsStarted++
 		m.turnToolCalls++
 	case agent.ToolResult:
+		var p pendingTool
+		var ok bool
+		if e.ToolCallID != "" {
+			var starts []pendingTool
+			starts, ok = m.pendingToolStarts[e.ToolCallID]
+			if ok && len(starts) > 0 {
+				p = starts[0]
+				delete(m.pendingToolStarts, e.ToolCallID)
+			}
+		} else if starts := m.pendingToolStarts[e.ToolName]; len(starts) > 0 {
+			p, ok = starts[0], true
+			if len(starts) == 1 {
+				delete(m.pendingToolStarts, e.ToolName)
+			} else {
+				m.pendingToolStarts[e.ToolName] = starts[1:]
+			}
+		}
+		if ok {
+			m.pendingToolName, m.pendingToolPreview = e.ToolName, p.preview
+			m.pendingToolArgs, m.pendingToolStart = p.args, p.start
+		}
 		m.sess.AddToolStat(e.ToolName, len(e.Output), e.Errored)
 		if !e.Errored && branchChangingGitTool(e.ToolName, m.pendingToolArgs) {
 			m.branch = gitBranch(m.parentCtx, m.cwd)

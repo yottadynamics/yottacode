@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -1052,6 +1053,9 @@ func executeToolCall(
 	events chan<- Event,
 	decisions <-chan Decision,
 ) (out string, images []adapter.ImageBlock, denied bool, approvalSource string, err error) {
+	if strings.TrimSpace(tc.ID) == "" {
+		tc.ID = toolCallID(tc)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			// Mirror the normal tool-error path (see below): surface the
@@ -1059,14 +1063,22 @@ func executeToolCall(
 			// loop continues, and emit the ToolResult event so the TUI
 			// closes out the tool card instead of leaving it "running".
 			msg := "error: " + panicToError("tool "+tc.Name, r).Error()
-			_ = send(ctx, events, ToolResult{ToolName: tc.Name, Output: msg, Errored: true})
+			_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tc.Name, Output: msg, Errored: true})
 			out, images, denied, approvalSource, err = msg, nil, false, "", nil
 		}
 	}()
 	return executeToolCallImpl(ctx, cfg, tc, events, decisions)
 }
 
-// executeToolCallImpl's fifth return value, approvalSource, records how
+var generatedToolCallSequence atomic.Uint64
+
+func toolCallID(tc adapter.ToolCall) string {
+	if strings.TrimSpace(tc.ID) != "" {
+		return tc.ID
+	}
+	return fmt.Sprintf("generated-%d-%s", generatedToolCallSequence.Add(1), tc.Name)
+}
+
 // this call got permission to run — one of the ApprovalAuto Source
 // strings already sent to the events channel ("yolo-mode", "auto-mode",
 // "auto-mode-safe-bash", "plan-mode-allow", "plan-mode-block",
@@ -1275,7 +1287,8 @@ func executeToolCallImpl(
 	}
 
 approved:
-	if err := send(ctx, events, ToolStart{ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
+	callID := toolCallID(tc)
+	if err := send(ctx, events, ToolStart{ToolCallID: callID, ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, "", err
 	}
 	// Attach the parent's events + decisions channels so tools that
@@ -1322,7 +1335,7 @@ approved:
 	release, conflictPath, conflictOwner, acquired := cfg.MutationLocks.Acquire(tool.Name(), mutPaths)
 	if !acquired {
 		msg := fmt.Sprintf("error: %s is currently being edited by another tool call (%s) in this session — wait for it to finish, then re-read the file before retrying", conflictPath, conflictOwner)
-		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
+		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
 		return msg, nil, false, approvalSource, nil
 	}
 	defer release()
@@ -1396,10 +1409,10 @@ approved:
 			return "", nil, false, approvalSource, ctx.Err()
 		}
 		msg := fmt.Sprintf("error: %v", err)
-		_ = send(ctx, events, ToolResult{ToolName: tool.Name(), Output: msg, Errored: true})
+		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
 		return msg, nil, false, approvalSource, nil
 	}
-	if err := send(ctx, events, ToolResult{ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
+	if err := send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
 		// Tool ran to completion but ctx fired before we could
 		// announce its result — propagate cancel so the caller treats
 		// this slot as orphaned (synthetic result). The real `out` is
