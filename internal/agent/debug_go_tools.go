@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	godap "github.com/google/go-dap"
+
 	"github.com/yottadynamics/yottacode/internal/dap"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const (
@@ -56,7 +57,7 @@ type goDebugSession struct {
 // goDebugManager keeps the v1 debugger scope deliberately small: one approved
 // Delve-backed debug session per yottacode session.
 type goDebugManager struct {
-	mu         sync.Mutex
+	mu         syncutil.Mutex
 	cwd        *CwdRef
 	session    *goDebugSession
 	threadID   int
@@ -367,7 +368,7 @@ func waitForDelveDAPAddress(ctx context.Context, stdout ioReader, stderr fmt.Str
 type ioReader interface{ Read([]byte) (int, error) }
 
 type cappedString struct {
-	mu  sync.Mutex
+	mu  syncutil.Mutex
 	buf strings.Builder
 	max int
 }

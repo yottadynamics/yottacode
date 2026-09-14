@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Manager owns the lifecycle of every configured MCP client across a
@@ -19,7 +20,7 @@ import (
 // Restart can rebuild a fresh client without the caller re-loading
 // config.toml.
 type Manager struct {
-	mu      sync.RWMutex
+	mu      syncutil.RWMutex
 	configs map[string]config.MCPServer // original config keyed by name
 	clients map[string]Client           // live clients keyed by name
 	order   []string                    // stable iteration order (registration order)

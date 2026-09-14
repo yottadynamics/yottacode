@@ -3,8 +3,9 @@ package agent
 import (
 	"context"
 	"path/filepath"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // MutationLockRegistry serializes Mutator tool calls that target the same
@@ -27,11 +28,11 @@ import (
 // swap takes the write side, which waits for every in-flight mutation to
 // finish and blocks new ones from starting until the swap completes.
 type MutationLockRegistry struct {
-	mu   sync.Mutex
+	mu   syncutil.Mutex
 	busy map[string]mutationClaim
 	next uint64
 
-	cwdMu sync.RWMutex
+	cwdMu syncutil.PollingRWMutex
 }
 
 // RLockCwdStability is held by an ordinary mutating tool call for the
@@ -41,9 +42,11 @@ type MutationLockRegistry struct {
 // mutation, only mutation against a cwd swap. A nil registry is a safe
 // no-op, matching Acquire.
 //
-// ctx-aware: sync.RWMutex has no context-aware blocking acquire, so this
-// uses short TryLock polling. That avoids abandoning a blocked acquisition in
-// a background goroutine if the current holder never releases.
+// ctx-aware: PollingRWMutex has no context-aware blocking acquire, so this
+// uses short TryLock polling. The standard-only type is deliberate: the
+// deadlock detector's failed try-lock bookkeeping is unsafe for this pattern.
+// Polling also avoids abandoning a blocked acquisition in a background
+// goroutine if the current holder never releases.
 func (r *MutationLockRegistry) RLockCwdStability(ctx context.Context) (func(), error) {
 	if r == nil {
 		return func() {}, nil
@@ -55,7 +58,7 @@ func (r *MutationLockRegistry) RLockCwdStability(ctx context.Context) (func(), e
 }
 
 // waitForCwdLock waits for a cwd lock without creating a goroutine that can
-// outlive a canceled turn. Try-lock polling is deliberate: sync.RWMutex has
+// outlive a canceled turn. Try-lock polling is deliberate: PollingRWMutex has
 // no context-aware blocking acquire, and abandoning a blocked acquisition in
 // a goroutine leaks that goroutine if the current holder never releases.
 func waitForCwdLock(ctx context.Context, try func() bool) error {

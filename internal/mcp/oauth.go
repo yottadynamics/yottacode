@@ -12,12 +12,13 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
 	"golang.org/x/oauth2"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // OAuth 2.1 authorization-code + PKCE support for auth = "oauth" MCP
@@ -238,7 +239,7 @@ func discoverOAuth2Config(ctx context.Context, serverURL string, creds *oauthex.
 type persistingTokenSource struct {
 	name   string
 	inner  oauth2.TokenSource
-	mu     sync.Mutex
+	mu     syncutil.Mutex
 	lastAT string
 }
 

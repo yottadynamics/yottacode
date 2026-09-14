@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 func TestManagerReusesClientByKey(t *testing.T) {
@@ -133,7 +135,7 @@ func TestManagerConcurrentAcquireClosesDuplicateStart(t *testing.T) {
 	lang := Language{ID: "go", Name: "Go", Command: []string{"gopls"}}
 	startBarrier := make(chan struct{})
 	var starts int
-	var mu sync.Mutex
+	var mu syncutil.Mutex
 	closed := 0
 	mgr.closeClient = func(*Client) error {
 		mu.Lock()

@@ -1,6 +1,6 @@
 package agent
 
-import "sync"
+import "github.com/yottadynamics/yottacode/internal/syncutil"
 
 // TodoStatus is the lifecycle state of a single todo item. The three
 // core values mirror Claude Code's TodoWrite contract so the model has a
@@ -32,7 +32,7 @@ type Todo struct {
 // renders from that event; session save/load copies the slice
 // in/out for cross-session persistence.
 type PlanStore struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	todos []Todo
 }
 

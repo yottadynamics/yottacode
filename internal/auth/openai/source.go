@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TokenSource is a thread-safe accessor for the persisted OAuth
@@ -20,7 +21,7 @@ type TokenSource struct {
 	clientID   string
 	leeway     time.Duration
 
-	mu     sync.Mutex
+	mu     syncutil.Mutex
 	cache  TokenSet
 	loaded bool
 }

@@ -10,6 +10,7 @@ import (
 	coderacp "github.com/coder/acp-go-sdk"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // scriptedStreamer is a duplicate of the one in internal/oneshot (and
@@ -18,7 +19,7 @@ import (
 // internal/oneshot/oneshot_test.go's own comment on the same trade-off).
 type scriptedStreamer struct {
 	turns [][]adapter.StreamEvent
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	next  int
 }
 

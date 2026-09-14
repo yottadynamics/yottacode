@@ -13,11 +13,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	coderacp "github.com/coder/acp-go-sdk"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TestACPSmoke drives a real, compiled `yottacode acp` subprocess over
@@ -301,7 +302,7 @@ func agentTextFromUpdates(updates []coderacp.SessionNotification) string {
 // permission request so a stray approval-gated tool call can't deadlock
 // the run instead of failing it visibly.
 type smokeClient struct {
-	mu      sync.Mutex
+	mu      syncutil.Mutex
 	updates []coderacp.SessionNotification
 }
 

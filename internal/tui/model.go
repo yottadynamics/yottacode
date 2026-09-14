@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -45,6 +44,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/update"
 	"github.com/yottadynamics/yottacode/internal/usercmd"
 	"github.com/yottadynamics/yottacode/internal/worktree"
@@ -501,9 +501,9 @@ type Model struct {
 	// goroutine (live token estimate, /context, system-prompt edits).
 	// Handed to the loop as cfg.HistoryLock and held around this model's
 	// own Messages reads/writes. A pointer so value-copies of Model share
-	// one lock (a sync.Mutex value field would trip copylocks). Allocated
+	// one lock (a syncutil.Mutex value field would trip copylocks). Allocated
 	// in New.
-	histMu *sync.Mutex
+	histMu *syncutil.Mutex
 
 	// recalledCount is how many prior conversations auto-recall injected into
 	// the current turn's system prompt. Written by the turn goroutine during
@@ -1318,7 +1318,7 @@ func New(parent context.Context, c Config) Model {
 		skills:                 c.Skills,
 		skillTool:              c.SkillTool,
 		sess:                   c.Session,
-		histMu:                 &sync.Mutex{},
+		histMu:                 &syncutil.Mutex{},
 		recalledCount:          &atomic.Int32{},
 		textInput:              ti,
 		spinner:                sp,

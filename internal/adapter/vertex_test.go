@@ -9,8 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // --- shared test doubles ---------------------------------------------
@@ -18,7 +19,7 @@ import (
 // stubVertexTokens is a vertexTokenSource that hands back a canned token
 // (or a canned failure) without touching Application Default Credentials.
 type stubVertexTokens struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	token string
 	err   error
 	calls int
@@ -41,7 +42,7 @@ func (s *stubVertexTokens) callCount() int {
 }
 
 type vertexCapture struct {
-	mu     sync.Mutex
+	mu     syncutil.Mutex
 	body   []byte
 	path   string
 	header http.Header

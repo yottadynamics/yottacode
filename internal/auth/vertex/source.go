@@ -11,11 +11,12 @@ package vertex
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Scope is the OAuth scope every Vertex AI call needs. cloud-platform is
@@ -47,7 +48,7 @@ const SetupHint = "run `gcloud auth application-default login`, or point $GOOGLE
 // token caching and refresh happen inside the oauth2 reuse-source, which
 // is itself concurrency-safe.
 type TokenSource struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	find  func(context.Context, ...string) (*google.Credentials, error)
 	creds *google.Credentials
 	ts    oauth2.TokenSource

@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // scriptedStreamer is a duplicate of the one in internal/agent — kept here
@@ -19,7 +19,7 @@ import (
 // shared testutil package once enough call sites exist to justify it.
 type scriptedStreamer struct {
 	turns [][]adapter.StreamEvent
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	next  int
 }
 

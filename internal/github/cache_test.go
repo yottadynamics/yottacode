@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // countingInner is a minimal Interface impl that counts every
@@ -13,7 +15,7 @@ import (
 // flat across duplicate read requests) and write pass-through
 // (call count increments).
 type countingInner struct {
-	mu sync.Mutex
+	mu syncutil.Mutex
 
 	readPRCount      int
 	readPRDiffCount  int

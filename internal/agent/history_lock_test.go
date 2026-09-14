@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TestHistoryLock_ConcurrentAppendAndSnapshot exercises the locked
@@ -14,7 +15,7 @@ import (
 // must be race-free; run with -race. Regression for the release audit's
 // session-history data race (m.sess.Messages shared across goroutines).
 func TestHistoryLock_ConcurrentAppendAndSnapshot(t *testing.T) {
-	var mu sync.Mutex
+	var mu syncutil.Mutex
 	cfg := LoopConfig{HistoryLock: &mu}
 	hist := []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}
 

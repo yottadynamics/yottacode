@@ -60,6 +60,8 @@ import (
 	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // skeleton is the canonical empty permissions file: the full
@@ -122,12 +124,12 @@ type Rule struct {
 // files. Concurrency-safe: the agent goroutine reads via Evaluate while
 // the TUI may write via AddAllow.
 type Permissions struct {
-	mu sync.RWMutex
+	mu syncutil.RWMutex
 	// reloadMu serializes Reload end-to-end. mu only guards the in-memory
 	// swap; without reloadMu two concurrent Reload calls could both read
 	// the same on-disk state and then race on the swap, so a reload that
 	// raced a slightly-later one could win and leave stale rules live.
-	reloadMu sync.Mutex
+	reloadMu syncutil.Mutex
 	cwd      string
 	deny     []Rule
 	allow    []Rule

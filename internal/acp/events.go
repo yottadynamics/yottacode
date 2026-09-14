@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // toolCallTracker correlates agent.ToolStart/agent.ToolResult/
@@ -31,7 +31,7 @@ import (
 // model via the ordinary adapter.Message flow, entirely untouched by
 // this tracker.
 type toolCallTracker struct {
-	mu      sync.Mutex
+	mu      syncutil.Mutex
 	nextID  uint64
 	pending map[string]coderacp.ToolCallId   // keyed by toolName+"\x00"+argsJSON, cleared once ToolStart claims it
 	queued  map[string][]coderacp.ToolCallId // keyed by toolName, FIFO for result()

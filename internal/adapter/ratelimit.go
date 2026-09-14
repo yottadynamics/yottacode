@@ -3,8 +3,9 @@ package adapter
 import (
 	"net/http"
 	"strconv"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // RateLimitSnapshot is the parsed quota state from the most recent
@@ -39,7 +40,7 @@ type RateLimitSnapshot struct {
 }
 
 var (
-	rateLimitsMu sync.RWMutex
+	rateLimitsMu syncutil.RWMutex
 	rateLimits   = map[Provider]*RateLimitSnapshot{}
 )
 

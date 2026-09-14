@@ -2,13 +2,13 @@ package acp
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/promptmacros"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 func TestAvailableCommands_ReturnsAllMacroNamesAndArgHints(t *testing.T) {
@@ -97,7 +97,7 @@ func TestNewSession_EmitsAvailableCommandsUpdateWithAllNineNames(t *testing.T) {
 // a test can assert on what text actually reached the adapter as the
 // turn's user message — the thing slash-macro substitution changes.
 type capturingStreamer struct {
-	mu       sync.Mutex
+	mu       syncutil.Mutex
 	calls    int
 	lastMsgs []adapter.Message
 	turns    [][]adapter.StreamEvent

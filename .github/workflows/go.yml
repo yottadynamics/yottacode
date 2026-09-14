@@ -62,6 +62,18 @@ jobs:
         # -short keeps the demo/visualization tests out, same as above.
         run: go test -short -race ./...
 
+      - name: Test (deadlock detector)
+        # Production and test mutexes use syncutil.Mutex/RWMutex (see
+        # internal/syncutil), which resolves to sasha-s/go-deadlock's
+        # instrumented types under this tag. The syncutil subprocess probe
+        # deliberately re-locks one mutex and proves the detector exits with
+        # both acquisition sites; the ordinary suite then exercises real
+        # lock ordering. TryLock-polling locks use the documented standard-only
+        # PollingRWMutex exception because go-deadlock v0.3.9 cannot safely
+        # track failed cross-goroutine try-lock attempts. -short keeps the
+        # demo/visualization tests out, matching the two steps above.
+        run: go test -short -tags deadlock ./...
+
   acp-smoke:
     # Proves the real, compiled `yottacode acp` binary — not just
     # internal/acp's in-process wire-level tests (which wire a Server

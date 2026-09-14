@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -16,6 +15,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cost"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // AgentToolName is the schema-visible name of the subagent dispatch
@@ -258,7 +258,7 @@ type AgentTool struct {
 
 	// mu protects onBackgroundDone since it can be set after
 	// construction by the TUI wiring path.
-	mu sync.RWMutex
+	mu syncutil.RWMutex
 }
 
 // SetBackgroundDoneCallback installs the session-level handler that

@@ -12,6 +12,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -157,7 +158,7 @@ type LoopConfig struct {
 	// goroutine and needs no locking. The lock is only ever held across
 	// in-memory slice work — never across a network or channel op — so it
 	// cannot stall the turn.
-	HistoryLock *sync.Mutex
+	HistoryLock *syncutil.Mutex
 
 	// Compaction, when non-nil, enables in-loop history compaction:
 	// once the running history approaches Window, the loop summarizes
@@ -859,19 +860,30 @@ func annotateToolCall(cfg LoopConfig, history *[]adapter.Message, callID, status
 		return
 	}
 	withHistoryLock(cfg, func() {
-		for i := len(*history) - 1; i >= 0; i-- {
-			if (*history)[i].Role != adapter.RoleAssistant {
-				continue
-			}
-			for j := range (*history)[i].ToolCalls {
-				if (*history)[i].ToolCalls[j].ID == callID {
-					(*history)[i].ToolCalls[j].Status = status
-					(*history)[i].ToolCalls[j].LatencyMS = &latencyMS
-					return
-				}
+		annotateToolCallLocked(history, callID, status, latencyMS)
+	})
+}
+
+// annotateToolCallLocked is the lock-free core of annotateToolCall, for
+// callers that already hold cfg.HistoryLock (e.g. appendToolResults, which
+// annotates every call in a batch inside a single withHistoryLock closure).
+// cfg.HistoryLock.Lock is not reentrant, so calling annotateToolCall (which
+// locks again) from inside an already-locked closure deadlocks the turn
+// permanently — the goroutine blocks on its own held lock with nothing left
+// to release it.
+func annotateToolCallLocked(history *[]adapter.Message, callID, status string, latencyMS int64) {
+	for i := len(*history) - 1; i >= 0; i-- {
+		if (*history)[i].Role != adapter.RoleAssistant {
+			continue
+		}
+		for j := range (*history)[i].ToolCalls {
+			if (*history)[i].ToolCalls[j].ID == callID {
+				(*history)[i].ToolCalls[j].Status = status
+				(*history)[i].ToolCalls[j].LatencyMS = &latencyMS
+				return
 			}
 		}
-	})
+	}
 }
 
 // "interrupted by user" tool_result. Idempotent against already-
@@ -960,7 +972,7 @@ func executeToolCallsParallel(
 	// approval) acquires it for the duration of that round-trip so two
 	// workers can't interleave on the channel. Workers that never prompt
 	// run fully in parallel — they never touch the gate.
-	gateCtx := WithApprovalGate(ctx, new(sync.Mutex))
+	gateCtx := WithApprovalGate(ctx, new(syncutil.Mutex))
 	for i, tc := range calls {
 		wg.Add(1)
 		go func(i int, tc adapter.ToolCall) {
@@ -1001,7 +1013,7 @@ func appendToolResults(cfg LoopConfig, history *[]adapter.Message, calls []adapt
 			if results[i].denied || strings.HasPrefix(strings.TrimSpace(content), "error:") {
 				status = "error"
 			}
-			annotateToolCall(cfg, history, tc.ID, status, results[i].latencyMS)
+			annotateToolCallLocked(history, tc.ID, status, results[i].latencyMS)
 			*history = append(*history, stampNow(adapter.Message{
 				Role:           adapter.RoleTool,
 				Content:        content,

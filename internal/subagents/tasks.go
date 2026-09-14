@@ -6,10 +6,10 @@ import (
 	"encoding/hex"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TaskStatus is the lifecycle phase of a subagent run. The four
@@ -180,7 +180,7 @@ func (t Task) UsageTokens() int {
 // sent on) so multiple waiters per task work naturally — closing
 // broadcasts to every receiver.
 type Registry struct {
-	mu      sync.RWMutex
+	mu      syncutil.RWMutex
 	tasks   map[string]*Task
 	waiters map[string][]chan struct{}
 }

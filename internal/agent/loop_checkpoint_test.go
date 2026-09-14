@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // mockMutatorTool extends mockTool with a hardcoded PathsToSnapshot
@@ -24,7 +24,7 @@ func (m *mockMutatorTool) PathsToSnapshot(_, _ string) []string {
 // because Turn's tool dispatch is sequential per turn but the test could
 // observe across goroutine boundaries.
 type recordingCheckpointWriter struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	calls []struct{ Session, CP, Path string }
 }
 

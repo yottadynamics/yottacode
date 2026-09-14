@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TestTruncate_RuneSafe is the multi-byte-truncation regression: cutting by
@@ -85,7 +85,7 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 	parentDecisions := make(chan Decision, 1)
 	// Install the approval gate exactly as a parallel batch / foreground
 	// dispatch does — this is what used to trigger the deadlock.
-	ctx := WithApprovalGate(context.Background(), &sync.Mutex{})
+	ctx := WithApprovalGate(context.Background(), &syncutil.Mutex{})
 	ctx = WithParentDecisions(WithParentEvents(ctx, parentEvents), parentDecisions)
 
 	go func() {

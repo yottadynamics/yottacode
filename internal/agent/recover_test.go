@@ -5,10 +5,10 @@ import (
 	"context"
 	"io"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // panickyTool panics inside Execute — standing in for any tool with a
@@ -26,7 +26,7 @@ func (p *panickyTool) Execute(context.Context, string) (string, error) {
 }
 
 type lockedBuffer struct {
-	mu  sync.Mutex
+	mu  syncutil.Mutex
 	buf bytes.Buffer
 }
 

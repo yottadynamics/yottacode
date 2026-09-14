@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const (
@@ -204,7 +206,7 @@ type Client struct {
 	diags         map[string]DiagnosticsSnapshot
 	readMessageFn func() ([]byte, error)
 
-	mu          sync.Mutex
+	mu          syncutil.Mutex
 	nextID      int64
 	waitOnce    sync.Once
 	waitCh      chan error

@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // SyntaxKind is a stable, language-independent structural range kind.
@@ -60,7 +61,7 @@ type SyntaxRangeSource interface {
 type syntaxModeSource interface{ SyntaxMode() string }
 
 var (
-	syntaxSourcesMu sync.RWMutex
+	syntaxSourcesMu syncutil.RWMutex
 	syntaxSources   = map[string]SyntaxSymbolSource{}
 )
 

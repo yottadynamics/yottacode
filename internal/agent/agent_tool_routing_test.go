@@ -2,17 +2,17 @@ package agent
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // countingStreamer wraps a scripted reply and counts ChatStream calls.
 // Used by the cost-regression guard below.
 type countingStreamer struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	calls int
 }
 

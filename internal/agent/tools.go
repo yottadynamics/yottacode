@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Tool is one capability the agent can invoke. Execute receives the raw JSON
@@ -120,7 +120,7 @@ func ToolPathsToSnapshot(t Tool, cwd, argsJSON string) []string {
 // per-turn) that fine-grained locking would only add complexity for
 // no measurable win.
 type Registry struct {
-	mu    sync.RWMutex
+	mu    syncutil.RWMutex
 	tools map[string]Tool
 }
 

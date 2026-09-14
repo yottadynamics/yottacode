@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // BuildRouter returns a multi-provider router as adapter.Client when
@@ -123,7 +123,7 @@ func BuildRouterAdapters(cfg config.Config, opts ChatOptions) (*RouterAdapters, 
 	// concurrent subagent goroutines (parallel foreground batches,
 	// background children). An unguarded map there is a fatal
 	// concurrent-read-write crash, not a recoverable race.
-	var builtMu sync.Mutex
+	var builtMu syncutil.Mutex
 	built := map[string]adapter.Client{}
 	get := func(rc config.ResolvedCandidate) adapter.Client {
 		key := rc.Provider.Name + ":" + rc.Model

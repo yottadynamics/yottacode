@@ -11,6 +11,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TestApprovalGate_SerializesConcurrentRoundTrips is the core guard for
@@ -20,7 +21,7 @@ import (
 // no-op when a gate IS attached) the observed concurrency would exceed
 // 1 and two workers would race on the single decisions channel / modal.
 func TestApprovalGate_SerializesConcurrentRoundTrips(t *testing.T) {
-	gate := new(sync.Mutex)
+	gate := new(syncutil.Mutex)
 	ctx := WithApprovalGate(context.Background(), gate)
 
 	var concurrent, maxConcurrent atomic.Int32

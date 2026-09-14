@@ -6,10 +6,10 @@ import (
 	"os"
 	"runtime/debug"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // withHistoryLock runs fn while holding cfg.HistoryLock, or directly when
@@ -71,7 +71,7 @@ func setHistory(cfg LoopConfig, history *[]adapter.Message, next []adapter.Messa
 // defaults to stderr in production and is swappable in tests so expected
 // recovery cases do not print scary stack traces in normal `go test` output.
 var panicOutput = struct {
-	sync.RWMutex
+	syncutil.RWMutex
 	w io.Writer
 }{w: os.Stderr}
 

@@ -12,13 +12,13 @@ package acp
 
 import (
 	"context"
-	"sync"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Server implements coderacp.Agent (and coderacp.AgentLoader) on behalf
@@ -49,7 +49,7 @@ type Server struct {
 	// needs this session's configured provider kind and base URL.
 	authenticateVertex func(ctx context.Context) error
 
-	mu       sync.RWMutex
+	mu       syncutil.RWMutex
 	sessions map[string]*acpSession
 }
 

@@ -14,13 +14,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/session"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const schema = `
@@ -65,7 +65,7 @@ const (
 // writer contention from other handles/processes is retried.
 type Index struct {
 	db      *sql.DB
-	writeMu sync.Mutex
+	writeMu syncutil.Mutex
 }
 
 // Open returns the index living at ~/.yottacode/index.sqlite, creating the

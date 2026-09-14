@@ -8,10 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // InitializeTimeout is the wall-clock budget for the MCP initialize
@@ -312,7 +313,7 @@ func mergeEnv(base []string, extra map[string]string) []string {
 // lines. It implements io.Writer so exec.Cmd can write directly into
 // it.
 type ringBuffer struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	max   int
 	lines []string
 	buf   bytes.Buffer

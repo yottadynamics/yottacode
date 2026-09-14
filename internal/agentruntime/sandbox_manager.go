@@ -7,11 +7,11 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/sandbox"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // SandboxConstructor is the injectable container factory used by
@@ -39,7 +39,7 @@ type SandboxManager struct {
 	constructor SandboxConstructor
 	reloader    SandboxConfigReloader
 
-	mu        sync.Mutex
+	mu        syncutil.Mutex
 	sandboxes map[agent.SandboxProfile]agent.Sandbox
 	creating  map[agent.SandboxProfile]chan sandboxCreateResult
 	closed    bool

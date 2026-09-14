@@ -4,19 +4,19 @@ import (
 	"context"
 	"os/exec"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 type managerSpySandbox struct {
 	label       string
 	closeCount  int
-	mu          sync.Mutex
+	mu          syncutil.Mutex
 	commandsRun []string
 }
 

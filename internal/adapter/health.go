@@ -1,8 +1,9 @@
 package adapter
 
 import (
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // HealthOptions configures router-level health observation. Zero value
@@ -33,7 +34,7 @@ type HealthOptions struct {
 // TUI may spawn parallel work in future). Internal map access is
 // guarded by mu; reads and writes both lock.
 type healthTracker struct {
-	mu        sync.Mutex
+	mu        syncutil.Mutex
 	failures  map[string][]time.Time
 	window    time.Duration
 	threshold int

@@ -13,10 +13,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // supportedModels reads the per-user model allow-list from the file
@@ -506,7 +506,7 @@ func (r *OpenAIAuthRateLimit) HasWindow() bool {
 }
 
 var (
-	openAIAuthRateLimitMu sync.RWMutex
+	openAIAuthRateLimitMu syncutil.RWMutex
 	openAIAuthRateLimit   *OpenAIAuthRateLimit
 )
 
@@ -561,7 +561,7 @@ type OpenAIAuthAccount struct {
 // short enough that a plan change shows up before the next session
 // restart.
 var (
-	openAIAuthAccountMu     sync.RWMutex
+	openAIAuthAccountMu     syncutil.RWMutex
 	openAIAuthAccount       *OpenAIAuthAccount
 	openAIAuthAccountExpiry time.Time
 )

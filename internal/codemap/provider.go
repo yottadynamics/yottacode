@@ -5,13 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Provider returns the latest code-map snapshot. TUI rebuilds can swap the
@@ -47,7 +47,7 @@ const maxIncrementalChanges = 50
 type CachedProvider struct {
 	Options BuildOptions
 
-	mu          sync.Mutex
+	mu          syncutil.Mutex
 	snapshot    *CodeIndex
 	fingerprint workspaceFingerprint
 	state       *buildState // persistent parsed state once a watch has produced at least one snapshot; nil otherwise
@@ -56,7 +56,7 @@ type CachedProvider struct {
 	dirty        atomic.Bool
 	watchCancel  context.CancelFunc
 
-	pendingMu sync.Mutex
+	pendingMu syncutil.Mutex
 	pending   map[string]bool // absolute paths the watcher has observed changing since the last applied update
 }
 

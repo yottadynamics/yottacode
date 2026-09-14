@@ -78,6 +78,7 @@ Encouraged for changes touching concurrency, providers, or live behavior:
 
 ```bash
 go test -race ./...              # race detector
+go test -tags deadlock ./...     # self-deadlock detector (see below)
 go test -cover ./...             # coverage
 go test -tags=integration ./...  # live-provider integration tests (needs API keys)
 ```
@@ -95,6 +96,16 @@ Standing rules:
 - Docs-only changes do not need Go tests unless they change commands, examples,
   generated docs, or behavior described by tests.
 - A change is not done until the relevant local checks are green.
+- **Mutex declarations use `syncutil.Mutex` / `syncutil.RWMutex`**, not
+  `sync.Mutex` / `sync.RWMutex` directly, in production and test code. The
+  types are standard-library aliases in normal builds; under `go test -tags
+  deadlock ./...` they enable immediate recursive-lock and lock-order reports.
+  The narrow exception is `syncutil.PollingRWMutex` for context-aware loops
+  that repeatedly use `TryLock`/`TryRLock`; go-deadlock v0.3.9 cannot safely
+  track failed cross-goroutine try-lock attempts. If a helper runs a callback
+  while holding a lock (the `withXLock(cfg, func() { ... })` shape), give the
+  lock-free core a `Locked` suffix (for example, `annotateToolCall` /
+  `annotateToolCallLocked`) so already-locked callers do not re-lock.
 
 Testing guidance by change type:
 
@@ -108,8 +119,8 @@ Testing guidance by change type:
 - Documentation changes: verify links, commands, and examples you touched.
 
 CI (`.github/workflows/go.yml`) runs build, vet, vulnerability scanning, tests,
-race tests, LSP smoke tests, shellcheck, and installer smoke tests on pull
-requests; it must pass before a PR can merge.
+race tests, deadlock-detector tests, LSP smoke tests, shellcheck, and installer
+smoke tests on pull requests; it must pass before a PR can merge.
 
 ## Pull request workflow
 

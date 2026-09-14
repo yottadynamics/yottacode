@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/permissions"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // --- test doubles ---------------------------------------------------------
@@ -22,7 +22,7 @@ import (
 // `turns`. Once turns are exhausted, further calls produce an empty stream.
 type scriptedStreamer struct {
 	turns [][]adapter.StreamEvent
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	next  int
 }
 
