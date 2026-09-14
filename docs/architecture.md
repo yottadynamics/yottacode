@@ -120,20 +120,19 @@ Startup flow:
 - Prompt input comes from the CLI argument or stdin.
 - Assistant content is written to stdout.
 - Reasoning, tool status, and errors are written to stderr.
-- Approval-required tool calls fail unless an `allow` rule in
-  `.yottacode/permissions.json` matches them, or
-  `--yolo` is set (DANGEROUS).
+- Approval-required tool calls fail unless an `allow` rule in the system or
+  project permission files matches them, or `--yolo` is set (DANGEROUS).
 
 ## Tools And Safety Layers
 
 The agent exposes twenty-eight structured tools in [`tools.md`](tools.md). Two
 independent safety systems gate every model-emitted call:
 
-- **Permissions** (`internal/permissions/`) — project-local
-  `.yottacode/permissions.json` (committable) and
-  `.yottacode/permissions.local.json` (gitignored) carry
-  pattern-based allow / ask / deny rules per tool. Decision precedence
-  is deny > allow > ask > default.
+- **Permissions** (`internal/permissions/`) — optional machine-wide
+  `/etc/yottacode/permissions.json`, project-shared
+  `.yottacode/permissions.json`, and project-local
+  `.yottacode/permissions.local.json` carry pattern-based allow / ask / deny
+  rules per tool. Decision precedence is deny > ask > allow > default.
 - **Write-path validation** (`internal/agent/writepath.go`) —
   filesystem mutators (write/edit/mkdir/copy/move/delete) are confined
   to cwd, refuse symlinks, and refuse a hardcoded deny list of
@@ -368,7 +367,7 @@ The loop reads all three flags at turn start (effective iteration
 cap) and on every tool dispatch. Approval-chain priority (the internal
 `YoloModeState` Go identifier still uses "yolo" in the precedence label;
 the user-facing banner label is "yolo mode"):
-`Deny > yolo > plan-gate > plan-file-allow > auto-allow > Allow > Ask > tool default`.
+`Deny > yolo > plan-gate > plan-file-allow > auto-allow > Ask > Allow > tool default`.
 See [security-and-allow-lists.md](security-and-allow-lists.md) for
 the full precedence table.
 
