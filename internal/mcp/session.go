@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/version"
 )
 
@@ -24,7 +25,7 @@ const defaultMaxResultBytes = 262144
 // stdio, streamable HTTP, and SSE clients. Transports own connect/stop; this
 // helper owns tools/list, tools/call, schema mapping, and result flattening.
 type sessionOps struct {
-	mu             sync.RWMutex
+	mu             syncutil.RWMutex
 	session        *sdk.ClientSession
 	started        bool
 	starting       bool

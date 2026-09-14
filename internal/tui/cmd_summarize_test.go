@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TestRenderFallbackLine_AgentLabel: a main-thread fallback has no agent
@@ -89,7 +89,7 @@ func TestRunSummarization_CapturesFallback(t *testing.T) {
 // Streamer expectations. Each call to ChatStream pops the next pre-set
 // turn from `turns`. Mirrors stubStreamer in the memory tests.
 type scriptedAdapter struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	turns [][]adapter.StreamEvent
 	next  int
 }

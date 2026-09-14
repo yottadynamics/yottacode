@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/execguard"
-	"sync"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 
 	"github.com/yottadynamics/yottacode/internal/ychome"
 )
@@ -138,7 +138,7 @@ func ProjectSlug(cwd string) string {
 // mid-session won't shift the memory location until restart, which is the
 // desired stability (project memory shouldn't migrate underfoot).
 var (
-	gitSlugCacheMu sync.RWMutex
+	gitSlugCacheMu syncutil.RWMutex
 	gitSlugCache   = map[string]string{}
 )
 

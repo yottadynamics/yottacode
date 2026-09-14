@@ -9,8 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // geminiSSEBody wraps a list of JSON event payloads as a Gemini SSE
@@ -30,7 +31,7 @@ func geminiSSEBody(events ...string) string {
 // geminiCapturingMockServer returns a server that serves `body` for
 // every request and records the request body + path on `captured`.
 type geminiCapture struct {
-	mu     sync.Mutex
+	mu     syncutil.Mutex
 	body   []byte
 	url    string
 	header http.Header

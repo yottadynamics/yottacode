@@ -17,6 +17,8 @@ import (
 	"time"
 
 	godap "github.com/google/go-dap"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const defaultRequestTimeout = 5 * time.Second
@@ -48,13 +50,13 @@ type Client struct {
 
 	requestTimeout time.Duration
 
-	mu      sync.Mutex
+	mu      syncutil.Mutex
 	seq     int
 	pending map[int]chan pendingResult
 	closed  bool
 
-	writeMu       sync.Mutex
-	eventMu       sync.Mutex
+	writeMu       syncutil.Mutex
+	eventMu       syncutil.Mutex
 	events        chan godap.EventMessage
 	eventOverflow bool
 	done          chan error
@@ -599,7 +601,7 @@ func (s *Session) Close(ctx context.Context) error {
 }
 
 type safeString struct {
-	mu  sync.Mutex
+	mu  syncutil.Mutex
 	buf strings.Builder
 }
 

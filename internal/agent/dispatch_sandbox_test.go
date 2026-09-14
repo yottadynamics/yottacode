@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // dispatchBashStreamer is a stateless test adapter: on the first call for a
@@ -152,7 +152,7 @@ func TestDispatchSandbox_CloseCalledOnceOnNormalCompletion(t *testing.T) {
 	repoRoot := dispatchTestRepo(t)
 	d := newDispatchToolE2E(t, repoRoot)
 
-	var mu sync.Mutex
+	var mu syncutil.Mutex
 	var spies []*spySandbox
 	d.SandboxFactory = func(ctx context.Context, wtDir, taskID string) (Sandbox, error) {
 		sb := &spySandbox{label: "[podman]"}

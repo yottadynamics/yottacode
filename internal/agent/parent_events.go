@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"sync"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // parentEventsKey is the context key the loop uses to make the parent's
@@ -84,7 +86,7 @@ type approvalGateKey struct{}
 // decision the user never gives). A nil gate — the serial path, where
 // there is no contention — is left unattached and locking becomes a
 // no-op.
-func WithApprovalGate(ctx context.Context, gate *sync.Mutex) context.Context {
+func WithApprovalGate(ctx context.Context, gate *syncutil.Mutex) context.Context {
 	if gate == nil {
 		return ctx
 	}
@@ -104,7 +106,7 @@ func WithApprovalGate(ctx context.Context, gate *sync.Mutex) context.Context {
 // never across a tool's full Execute — that would serialize the whole
 // parallel batch instead of just its user-interaction points.
 func lockApprovalGate(ctx context.Context) func() {
-	g, _ := ctx.Value(approvalGateKey{}).(*sync.Mutex)
+	g, _ := ctx.Value(approvalGateKey{}).(*syncutil.Mutex)
 	if g == nil {
 		return func() {}
 	}
@@ -128,5 +130,5 @@ func withoutApprovalGate(ctx context.Context) context.Context {
 	if ctx.Value(approvalGateKey{}) == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, approvalGateKey{}, (*sync.Mutex)(nil))
+	return context.WithValue(ctx, approvalGateKey{}, (*syncutil.Mutex)(nil))
 }

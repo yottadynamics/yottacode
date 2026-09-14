@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/skills"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // SkillToolName is the schema-visible name of the skill-invocation
@@ -33,7 +33,7 @@ type SkillTool struct {
 	// (SetEnabled/Enable/SetAll). Without it, a /skills action mid-turn
 	// is a concurrent map read+write → fatal, uncatchable runtime panic
 	// that crashes the CLI and loses the in-flight conversation.
-	mu sync.RWMutex
+	mu syncutil.RWMutex
 
 	// All is the full resolved set loaded at session start (built-in +
 	// user + project). Reassigned only by SetAll (install/uninstall

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // fakeSession implements pageSession without a real Chrome process, so
@@ -16,7 +18,7 @@ import (
 // already serialize every call, so a race here would mean Manager's own
 // locking is broken.
 type fakeSession struct {
-	mu    sync.Mutex
+	mu    syncutil.Mutex
 	calls []string
 	url   string
 

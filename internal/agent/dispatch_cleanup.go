@@ -4,13 +4,13 @@ import (
 	"context"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
-var dispatchReclaimMu sync.Mutex
+var dispatchReclaimMu syncutil.Mutex
 
 // reclaimEmptyWorktree removes a dispatch worker's worktree (and its
 // worktree-* branch, via worktree.Remove) when they hold nothing worth

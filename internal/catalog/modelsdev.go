@@ -10,8 +10,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // models.dev is a community-maintained catalog of ~140 providers and their
@@ -103,7 +104,7 @@ type diskCacheEnvelope struct {
 }
 
 var (
-	modelsDevMu       sync.Mutex
+	modelsDevMu       syncutil.Mutex
 	modelsDevCache    modelsDevCatalog
 	modelsDevCacheAt  time.Time
 	modelsDevTriedNet bool // avoid hammering the network within one process when it's down

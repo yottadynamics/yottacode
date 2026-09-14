@@ -13,6 +13,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // closeSessionDrainTimeout bounds how long CloseSession/Shutdown wait
@@ -46,7 +47,7 @@ type acpSession struct {
 	// actual enforcement: claimTurn/releaseTurn below reject a second
 	// concurrent prompt for this session instead of letting two
 	// goroutines race appends to the same rt.Session.Messages slice.
-	mu         sync.Mutex
+	mu         syncutil.Mutex
 	cancel     context.CancelFunc
 	turnActive bool
 

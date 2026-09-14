@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -462,7 +463,7 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 	} else {
 		// Foreground dispatch fans children out itself, so serialize approval
 		// round-trips on the parent's single decisions channel + modal.
-		gatedCtx = WithApprovalGate(ctx, &sync.Mutex{})
+		gatedCtx = WithApprovalGate(ctx, &syncutil.Mutex{})
 		parentEvents = ParentEvents(ctx)
 		parentDecisions = ParentDecisions(ctx)
 	}

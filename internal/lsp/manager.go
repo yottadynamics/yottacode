@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const (
@@ -37,7 +39,7 @@ func DefaultManagerMaxServers() int { return defaultManagerMaxServers }
 // call while still staying simple: all servers are closed at session teardown
 // and idle/oldest entries are evicted before new starts.
 type Manager struct {
-	mu          sync.Mutex
+	mu          syncutil.Mutex
 	clients     map[string]*managerEntry
 	maxServers  int
 	idleTimeout time.Duration

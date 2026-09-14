@@ -7,8 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // The context-window store is the file-backed fallback table that
@@ -59,7 +60,7 @@ var windowStorePathFn = func() (string, error) {
 }
 
 var (
-	windowStoreMu       sync.RWMutex
+	windowStoreMu       syncutil.RWMutex
 	windowBaselineCache []WindowStoreEntry // embedded, sorted longest-prefix-first
 	windowOverlayCache  []WindowStoreEntry // runtime overlay, sorted longest-prefix-first
 	windowStoreLoaded   bool

@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // ErrGitHubUnreachable signals that the network couldn't reach
@@ -78,7 +79,7 @@ func (s RateLimitSnapshot) WarningText() string {
 // embedded in TypedClient to avoid the pointer-soup of a separate
 // type.
 type rateLimitTracker struct {
-	mu   sync.RWMutex
+	mu   syncutil.RWMutex
 	snap RateLimitSnapshot
 }
 

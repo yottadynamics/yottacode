@@ -37,10 +37,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // FileEntry records one path snapshotted into a checkpoint. ExistedAtCapture
@@ -48,10 +48,10 @@ import (
 // did not exist pre-turn, delete it on restore". Mode preserves the
 // permission bits (& 0o777; setuid/setgid stripped on purpose).
 type FileEntry struct {
-	Path              string      `json:"path"`
-	SHA256            string      `json:"sha256,omitempty"`
-	ExistedAtCapture  bool        `json:"existed"`
-	Mode              os.FileMode `json:"mode"`
+	Path             string      `json:"path"`
+	SHA256           string      `json:"sha256,omitempty"`
+	ExistedAtCapture bool        `json:"existed"`
+	Mode             os.FileMode `json:"mode"`
 }
 
 // Meta is the per-checkpoint metadata file. UserMsgIdx is the index
@@ -94,7 +94,7 @@ type MessagesSnapshot struct {
 type Store struct {
 	root string
 
-	mu        sync.Mutex
+	mu        syncutil.Mutex
 	openMetas map[string]*Meta // checkpointID -> in-memory Meta during a turn
 }
 

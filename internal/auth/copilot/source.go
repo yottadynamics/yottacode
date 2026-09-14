@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // TokenSource is a thread-safe accessor for the Copilot API token. It
@@ -14,14 +15,14 @@ import (
 // as needed. The GitHub token is long-lived; the Copilot token
 // typically expires in ~30 minutes.
 type TokenSource struct {
-	path           string
-	httpClient     *http.Client
-	tokenEndpoint  string
-	leeway         time.Duration
+	path          string
+	httpClient    *http.Client
+	tokenEndpoint string
+	leeway        time.Duration
 
-	mu          sync.Mutex
-	github      TokenSet
-	copilot     CopilotToken
+	mu           syncutil.Mutex
+	github       TokenSet
+	copilot      CopilotToken
 	githubLoaded bool
 }
 

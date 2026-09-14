@@ -15,11 +15,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // newTestHTTPServer builds a real in-process MCP server (one "echo"
@@ -213,7 +214,7 @@ func TestHTTPClient_SendsProtocolVersionHeader(t *testing.T) {
 		})
 	inner := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil)
 
-	var mu sync.Mutex
+	var mu syncutil.Mutex
 	var gotVersion string
 	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if v := r.Header.Get("MCP-Protocol-Version"); v != "" {

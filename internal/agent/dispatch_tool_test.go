@@ -13,6 +13,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -386,7 +387,7 @@ func TestDispatchPanic_DoesNotClobberAlreadyCompletedResult(t *testing.T) {
 	// runDispatchChild's top-level defer (which wraps the whole function
 	// body), so the guard added there is what's under test.
 	var panicOnce sync.Once
-	var mu sync.Mutex
+	var mu syncutil.Mutex
 	fireCounts := map[string]int{}
 	d.Agent.SetBackgroundDoneCallback(func(e SubagentBackgroundDone) {
 		mu.Lock()

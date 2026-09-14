@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // memLocks serializes memory mutations inside this process. There are two
@@ -23,11 +24,11 @@ import (
 // These locks are intentionally in-process only. Cross-process save/forget
 // races remain a documented gap; an OS file lock around the scope directory
 // would close it.
-var memLocks sync.Map // abs lock key -> *sync.Mutex
+var memLocks sync.Map // abs lock key -> *syncutil.Mutex
 
 func lockMemoryKey(key string) func() {
-	mu, _ := memLocks.LoadOrStore(key, &sync.Mutex{})
-	m := mu.(*sync.Mutex)
+	mu, _ := memLocks.LoadOrStore(key, &syncutil.Mutex{})
+	m := mu.(*syncutil.Mutex)
 	m.Lock()
 	return m.Unlock
 }

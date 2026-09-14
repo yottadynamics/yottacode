@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // This file holds the per-turn retrieval caches. The retrieval path runs
@@ -32,7 +34,7 @@ import (
 // concurrent callers (a parallel memory_search and the injection path) is
 // safe.
 var (
-	corpusCacheMu  sync.Mutex
+	corpusCacheMu  syncutil.Mutex
 	corpusCacheFP  string
 	corpusCacheVal *Corpus
 )

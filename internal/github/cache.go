@@ -4,7 +4,8 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"sync"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // CachingClient is a memoizing wrapper around any Interface. Reads
@@ -31,7 +32,7 @@ import (
 type CachingClient struct {
 	Inner Interface
 
-	mu         sync.Mutex
+	mu         syncutil.Mutex
 	prs        map[string]PRDetails
 	prDiffs    map[string]string
 	issues     map[string]IssueDetails

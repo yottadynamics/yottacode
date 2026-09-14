@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sync"
 	"time"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Status is a point-in-time snapshot of the manager's lifecycle state,
@@ -42,7 +43,7 @@ const defaultActionTimeout = 60 * time.Second
 // any subset of calls is independent. This is also what a concurrent
 // `go test -race` exercise over Manager is checking.
 type Manager struct {
-	mu         sync.Mutex
+	mu         syncutil.Mutex
 	sess       pageSession
 	binPath    string
 	profileDir string

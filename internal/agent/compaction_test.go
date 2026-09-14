@@ -4,18 +4,18 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // captureStreamer records the last user-message body it was asked to
 // stream, so a test can assert how the summary INPUT was budgeted. It
 // always replies with a fixed short summary.
 type captureStreamer struct {
-	mu           sync.Mutex
+	mu           syncutil.Mutex
 	lastUserBody string
 	reply        string
 }
