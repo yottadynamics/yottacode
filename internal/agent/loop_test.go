@@ -546,7 +546,7 @@ func permsForTest(t *testing.T, allow, ask, deny []string) (*permissions.Permiss
 	if err := os.WriteFile(filepath.Join(dir, ".yottacode", "permissions.json"), b, 0o644); err != nil {
 		t.Fatalf("write permissions.json: %v", err)
 	}
-	p, err := permissions.Load(dir)
+	p, err := permissions.LoadWithSystemPath(dir, "")
 	if err != nil {
 		t.Fatalf("permissions.Load: %v", err)
 	}

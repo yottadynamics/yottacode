@@ -594,7 +594,7 @@ func TestRenderPermissionsOverlayShowsWarnings(t *testing.T) {
 	if err := m.perms.AddAllow("Github(*)"); err != nil {
 		t.Fatalf("AddAllow Github: %v", err)
 	}
-	perms, err := permissions.Load(m.cwd)
+	perms, err := permissions.LoadWithSystemPath(m.cwd, "")
 	if err != nil {
 		t.Fatalf("Load permissions: %v", err)
 	}

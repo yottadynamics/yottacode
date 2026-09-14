@@ -1039,10 +1039,10 @@ func shouldContinueIncomplete(final *adapter.Message) bool {
 
 // executeToolCall handles one tool invocation. Layered approval flow:
 //
-//  1. Permissions evaluation (Deny > Allow > Ask) — explicit user
-//     rules from .yottacode/permissions{,.local}.json. Deny wins
-//     even under BypassPermissions; Allow skips the prompt; Ask
-//     forces a prompt even if the tool would normally auto-execute.
+//  1. Permissions evaluation (Deny > Ask > Allow) — explicit user
+//     rules from the system policy and project permission files. Deny wins
+//     even under BypassPermissions; Allow skips the prompt; Ask forces a
+//     prompt even if the tool would normally auto-execute.
 //  2. BypassPermissions — auto-approve everything else (announced
 //     in scrollback so audits stay honest).
 //  3. Tool's own RequiresApproval — the pre-existing policy

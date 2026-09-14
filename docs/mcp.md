@@ -149,7 +149,7 @@ Every MCP tool registers as `mcp/<server>/<tool>`. So the GitHub server's `creat
 
 Default policy (`approval_mode = "ask"`): the approval modal fires on every MCP tool call regardless of server-declared annotations. Treat server-declared annotations as suggestions, not contracts — see "Global MCP policy" above for the opt-in `allow-readonly` mode.
 
-Elevate trust (or restrict it) with `MCP(<server>/<tool>)` rules in `.yottacode/permissions.json` or `.yottacode/permissions.local.json`:
+Elevate trust (or restrict it) with `MCP(<server>/<tool>)` rules in the system policy (`/etc/yottacode/permissions.json`), project-shared `.yottacode/permissions.json`, or project-local `.yottacode/permissions.local.json`:
 
 ```json
 {

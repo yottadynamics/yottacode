@@ -57,7 +57,7 @@ func TestEvaluate_TildePatternMatchesAbsoluteValue(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
 		[]string{"Write(~/foo/**)"}, nil, nil)
-	p, _ := Load(cwd)
+	p, _ := LoadWithSystemPath(cwd, "")
 
 	hit := filepath.Join(home, "foo", "bar.txt")
 	got := p.Evaluate("write_file", `{"path":"`+hit+`"}`)

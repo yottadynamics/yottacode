@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yottadynamics/yottacode/internal/permissions"
 )
 
 // newPermissionsCmdHarness builds a `yottacode permissions ...` command
@@ -17,6 +19,11 @@ import (
 // does.
 func newPermissionsCmdHarness(t *testing.T, rulesJSON string) (out *bytes.Buffer, run func(args ...string) error) {
 	t.Helper()
+	previousLoader := loadPermissions
+	loadPermissions = func(cwd string) (*permissions.Permissions, error) {
+		return permissions.LoadWithSystemPath(cwd, "")
+	}
+	t.Cleanup(func() { loadPermissions = previousLoader })
 	dir := t.TempDir()
 	if rulesJSON != "" {
 		if err := os.MkdirAll(filepath.Join(dir, ".yottacode"), 0o755); err != nil {
