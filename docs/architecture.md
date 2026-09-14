@@ -206,6 +206,13 @@ modals also clamp long command previews to the terminal height and keep the
 approval/rejection hotkeys visible; use ↑/↓ or PgUp/PgDn to inspect clipped
 preview content before deciding.
 
+The live reasoning/response preview and prompt textarea keep rendering work
+bounded to the rows that can actually be shown. Long streamed responses no
+longer re-wrap the full accumulated buffer on every token, and large pasted
+prompts wrap a cursor-centered window instead of the entire input on every
+blink. Full response and prompt contents remain intact; only transient
+rendering work is bounded.
+
 Before a queued message is delivered, pressing **Up** on an empty
 mid-turn textarea recalls it into the editor and drains it from the
 queue. Pressing Enter after editing requeues the revised text through the

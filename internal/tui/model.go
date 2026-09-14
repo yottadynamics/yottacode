@@ -588,14 +588,23 @@ type Model struct {
 	// closing ``` fence, then land in scrollback fully syntax-highlighted
 	// in one shot. Live footer shows a "…writing code" notice while
 	// inCodeBlock is true.
-	codeBlockBuf  *strings.Builder
-	codeBlockLang string
-	inCodeBlock   bool
+	codeBlockBuf *strings.Builder
+	// codeBlockBufLines mirrors strings.Count(codeBlockBuf.String(), "\n")
+	// — kept as a running counter, incremented once per completed line
+	// written to codeBlockBuf, so codeBlockNoticeText (called from View()
+	// on every streamed token while a code block is open) doesn't rescan
+	// the whole buffer on every render. Reset alongside codeBlockBuf.
+	codeBlockBufLines int
+	codeBlockLang     string
+	inCodeBlock       bool
 
 	// Table streaming state. Markdown pipe tables buffer until the
 	// first non-table line, then render through glamour in one shot.
 	tableBuf *strings.Builder
-	inTable  bool
+	// tableBufLines mirrors strings.Count(tableBuf.String(), "\n") — see
+	// codeBlockBufLines above; same reasoning, same reset points.
+	tableBufLines int
+	inTable       bool
 
 	// livePlan is the in-flight todo snapshot rendered as a live card
 	// in View() (next to/below the spinner). Updated in place on every
@@ -3683,7 +3692,17 @@ const inputMaxRows = 6
 // so the two can never drift apart: a click is resolved against the
 // exact same row layout the click's own screen position was rendered
 // from.
+//
+// For a large val, boundInputForWrapCost renumbers logical lines relative
+// to a trimmed window around the cursor (see its doc comment) — below its
+// size threshold (the overwhelmingly common case) val passes through
+// untouched and logical numbering matches the real document exactly, so
+// resolveInputClick's contract above holds. Past that threshold, returned
+// inputVRow.logical values are relative to the trimmed window, not the
+// true document; resolveInputClick would need to account for that offset
+// if it's ever wired back up for large inputs.
 func wrapInputRows(val string, wrapW, cursorLogicalRow, cursorLogicalCol int) (rows []inputVRow, cursorVisRow int) {
+	val, cursorLogicalRow, cursorLogicalCol = boundInputForWrapCost(val, wrapW, cursorLogicalRow, cursorLogicalCol)
 	for li, line := range strings.Split(val, "\n") {
 		if line == "" {
 			rows = append(rows, inputVRow{logical: li})
@@ -3707,6 +3726,72 @@ func wrapInputRows(val string, wrapW, cursorLogicalRow, cursorLogicalCol int) (r
 		}
 	}
 	return rows, cursorVisRow
+}
+
+// boundInputForWrapCost trims val to a bounded window of logical lines and
+// runes around the cursor before wrapInputRows does any grapheme-aware
+// wrap work (ansi.Hardwrap). windowInputRows (below) only ever surfaces
+// inputMaxRows rows centered on the cursor, so nothing beyond roughly
+// inputMaxRows logical lines — and inputMaxRows*wrapW runes within the
+// cursor's own line — can ever be displayed.
+//
+// Without this bound, wrapInputRows re-wraps the ENTIRE input-box value on
+// every renderInputBody call, and that runs on every View() — including
+// the perpetual 530ms cursor-blink tick that fires even while completely
+// idle (see the cursorBlinkMsg case in update()). A user who pastes a
+// large blob into the prompt (a log, a diff, an error dump) and then does
+// nothing pays that full-buffer wrap cost forever, not just while typing.
+// Same anti-pattern class as the previewRows bug (tailForPreview), though
+// milder in practice: ansi.Hardwrap/StringWidth measured close to linear
+// in input size here (no per-word call storm), so this is defense in
+// depth against pathologically large pastes rather than a fix for an
+// observed hang.
+//
+// Below the size threshold (the common case — anything up to a few
+// hundred KB) val passes through untouched, so behavior and logical-line
+// numbering are byte-for-byte identical to before this bound existed.
+// Above it, returned line/rune windows are generous (8x margin) relative
+// to what inputMaxRows rows could ever need, and trimming can land
+// mid-word at a window edge — invisible, since that text is outside what
+// windowInputRows will ever show. See wrapInputRows' doc comment for the
+// one caveat this creates: returned logical-row numbers become relative
+// to the trimmed window, not the true document, once trimming kicks in.
+func boundInputForWrapCost(val string, wrapW, cursorLogicalRow, cursorLogicalCol int) (string, int, int) {
+	if len(val) <= inputMaxRows*wrapW*8 {
+		return val, cursorLogicalRow, cursorLogicalCol
+	}
+	lines := strings.Split(val, "\n")
+	lo := max(0, cursorLogicalRow-inputMaxRows)
+	hi := min(len(lines)-1, cursorLogicalRow+inputMaxRows)
+	window := append([]string(nil), lines[lo:hi+1]...)
+	newCursorRow := cursorLogicalRow - lo
+
+	lineCap := wrapW * inputMaxRows
+	if lineCap < 256 {
+		lineCap = 256
+	}
+	for i, line := range window {
+		if len(line) <= lineCap {
+			// Byte length already within budget, so rune count is too
+			// (a rune is never less than one byte) — nothing to trim.
+			continue
+		}
+		runes := []rune(line)
+		if i == newCursorRow {
+			// Center the kept window on the cursor's column — the cursor
+			// can sit anywhere in an arbitrarily long unbroken paste, not
+			// just at its start.
+			start := max(0, cursorLogicalCol-lineCap)
+			end := min(len(runes), cursorLogicalCol+lineCap)
+			window[i] = string(runes[start:end])
+			cursorLogicalCol -= start
+			continue
+		}
+		if len(runes) > lineCap {
+			window[i] = string(runes[:lineCap])
+		}
+	}
+	return strings.Join(window, "\n"), newCursorRow, cursorLogicalCol
 }
 
 // windowInputRows caps rows at maxRows, scrolling the window so
@@ -3914,6 +3999,7 @@ func previewRows(s string, width, maxRows int) []string {
 	if width <= 1 || maxRows <= 0 {
 		return nil
 	}
+	s = tailForPreview(s, width, maxRows)
 	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 	if s == "" {
 		return nil
@@ -3947,6 +4033,37 @@ func previewRows(s string, width, maxRows int) []string {
 		rows[0] = tailWithLeftEllipsis(rows[0], width)
 	}
 	return rows
+}
+
+// tailForPreview bounds s to a tail window before previewRows does any
+// width/wrap work. previewRows only ever returns the last maxRows rows, but
+// its callers (renderActiveTurnPreview, renderReasoningPreview,
+// renderStreamingPreview) pass the FULL live-stream buffer (m.streaming /
+// m.reasoning), which grows without bound for the length of a turn. Without
+// this bound, every streamed token/reasoning chunk re-wraps the entire
+// buffer accumulated so far — O(total streamed bytes) of word-splitting
+// plus grapheme-aware width measurement PER CALL, on EVERY call during the
+// stream (View() runs once per chunk) — i.e. O(n^2) over a long response.
+// A model that reads back a large API payload can peg the CPU and make the
+// whole TUI look hung for as long as it keeps streaming.
+//
+// The 8x budget covers wide/CJK runes (up to width runes for full-width
+// glyphs), words longer than width (each splits into a handful of extra
+// rows via headByDisplayWidth), and 4-byte UTF-8 runes, with headroom to
+// spare — comfortably enough tail to still produce maxRows correct rows.
+// Cutting can land mid-rune or mid-word; ToValidUTF8 drops any partial
+// leading rune, and a partial leading word is harmless — it sits well
+// before the trailing rows previewRows actually keeps, and this is
+// volatile preview text that the next token replaces regardless.
+func tailForPreview(s string, width, maxRows int) string {
+	budget := width * maxRows * 8
+	if budget < 512 {
+		budget = 512
+	}
+	if len(s) <= budget {
+		return s
+	}
+	return strings.ToValidUTF8(s[len(s)-budget:], "")
 }
 
 // renderStyledPreviewRows applies the live preview style to the newest rows only.
@@ -3993,7 +4110,10 @@ func (m Model) renderCodeBlockNotice() string {
 }
 
 func (m Model) codeBlockNoticeText() string {
-	lines := strings.Count(m.codeBlockBuf.String(), "\n")
+	// codeBlockBufLines tracks this incrementally (see its doc comment) so
+	// this notice — rendered from View() on every streamed token while a
+	// code block is open — doesn't rescan the whole buffer on every call.
+	lines := m.codeBlockBufLines
 	// Include any partial trailing line currently in m.streaming.
 	if m.streaming.Len() > 0 {
 		lines++
@@ -4010,7 +4130,8 @@ func (m Model) renderTableNotice() string {
 }
 
 func (m Model) tableNoticeText() string {
-	rows := strings.Count(m.tableBuf.String(), "\n")
+	// tableBufLines tracks this incrementally — see codeBlockBufLines.
+	rows := m.tableBufLines
 	if m.streaming.Len() > 0 {
 		rows++
 	}
@@ -6326,9 +6447,11 @@ func (m *Model) discardStreaming() {
 	m.streamingMode = streamIdle
 	m.reasoning.Reset()
 	m.codeBlockBuf.Reset()
+	m.codeBlockBufLines = 0
 	m.codeBlockLang = ""
 	m.inCodeBlock = false
 	m.tableBuf.Reset()
+	m.tableBufLines = 0
 	m.inTable = false
 }
 
@@ -6370,6 +6493,7 @@ func (m *Model) handleStreamLine(line string) {
 		}
 		m.codeBlockBuf.WriteString(line)
 		m.codeBlockBuf.WriteByte('\n')
+		m.codeBlockBufLines++
 		return
 	}
 	if lang, ok := parseFenceOpen(line); ok {
@@ -6384,6 +6508,7 @@ func (m *Model) handleStreamLine(line string) {
 		if isTableLine(line) {
 			m.tableBuf.WriteString(line)
 			m.tableBuf.WriteByte('\n')
+			m.tableBufLines++
 			return
 		}
 		// Blank lines between table rows don't end the table — the
@@ -6399,6 +6524,7 @@ func (m *Model) handleStreamLine(line string) {
 		m.inTable = true
 		m.tableBuf.WriteString(line)
 		m.tableBuf.WriteByte('\n')
+		m.tableBufLines++
 		return
 	}
 	if isUnicodeTableLine(line) {
@@ -6552,6 +6678,7 @@ func visibleContentStart(s string) int {
 func (m *Model) flushCodeBlock(highlight bool) {
 	body := strings.TrimRight(m.codeBlockBuf.String(), "\n")
 	m.codeBlockBuf.Reset()
+	m.codeBlockBufLines = 0
 	m.inCodeBlock = false
 	m.codeBlockLang = ""
 	if body == "" {
@@ -6566,6 +6693,7 @@ func (m *Model) flushCodeBlock(highlight bool) {
 func (m *Model) flushTable() {
 	raw := strings.TrimRight(m.tableBuf.String(), "\n")
 	m.tableBuf.Reset()
+	m.tableBufLines = 0
 	m.inTable = false
 	if raw == "" {
 		return
