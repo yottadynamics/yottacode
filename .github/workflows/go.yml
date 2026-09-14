@@ -63,16 +63,15 @@ jobs:
         run: go test -short -race ./...
 
       - name: Test (deadlock detector)
-        # Every mutex under internal/ is declared as syncutil.Mutex/RWMutex
-        # (see internal/syncutil), which resolves to sasha-s/go-deadlock's
-        # instrumented types under this tag: a goroutine that re-locks a
-        # mutex it already holds — directly, or through a chain of helper
-        # calls, like appendToolResults -> annotateToolCall both locking
-        # cfg.HistoryLock — fails in ~seconds with a full stack trace
-        # instead of hanging the run until CI's own timeout. Regression
-        # coverage for that incident lives in
-        # internal/agent/loop_history_lock_test.go. -short for the same
-        # reason as the two steps above.
+        # Production and test mutexes use syncutil.Mutex/RWMutex (see
+        # internal/syncutil), which resolves to sasha-s/go-deadlock's
+        # instrumented types under this tag. The syncutil subprocess probe
+        # deliberately re-locks one mutex and proves the detector exits with
+        # both acquisition sites; the ordinary suite then exercises real
+        # lock ordering. TryLock-polling locks use the documented standard-only
+        # PollingRWMutex exception because go-deadlock v0.3.9 cannot safely
+        # track failed cross-goroutine try-lock attempts. -short keeps the
+        # demo/visualization tests out, matching the two steps above.
         run: go test -short -tags deadlock ./...
 
   acp-smoke:

@@ -159,39 +159,18 @@ func TestMutationLockRegistry_LockCwdStability_CancelUnblocksWaiter(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// The contended acquisition runs on its own goroutine — in production
-	// this is always a different tool call's goroutine than whichever one
-	// holds the read side (see RLockCwdStability's doc comment); running it
-	// here on the test goroutine that already holds the read lock would
-	// have the same goroutine recursively touch cwdMu, which -tags
-	// deadlock's recursive-lock detector flags even though the TryLock
-	// polling underneath can never actually hang.
-	type attempt struct {
-		err     error
-		elapsed time.Duration
-	}
-	attemptCh := make(chan attempt, 1)
 	start := time.Now()
-	go func() {
-		_, err := r.LockCwdStability(ctx)
-		attemptCh <- attempt{err: err, elapsed: time.Since(start)}
-	}()
+	_, err = r.LockCwdStability(ctx)
+	elapsed := time.Since(start)
 
-	var got attempt
-	select {
-	case got = <-attemptCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("LockCwdStability did not return — did not unblock on ctx cancellation (would have hung until the read side released)")
+	if elapsed > 2*time.Second {
+		t.Fatalf("LockCwdStability took %s — did not unblock on ctx cancellation (would have hung until the read side released)", elapsed)
 	}
-
-	if got.elapsed > 2*time.Second {
-		t.Fatalf("LockCwdStability took %s — did not unblock on ctx cancellation (would have hung until the read side released)", got.elapsed)
-	}
-	if got.err == nil {
+	if err == nil {
 		t.Fatal("expected ctx.Err() from a canceled wait; got nil (acquired despite the read lock still being held)")
 	}
-	if !isCancelErr(got.err) {
-		t.Fatalf("expected a cancel error (isCancelErr); got %v", got.err)
+	if !isCancelErr(err) {
+		t.Fatalf("expected a cancel error (isCancelErr); got %v", err)
 	}
 
 	// Release the read side now that the canceled waiter has backed off.
@@ -229,34 +208,15 @@ func TestMutationLockRegistry_RLockCwdStability_CancelUnblocksWaiter(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// See the write-side test's comment above: the contended acquisition
-	// runs on its own goroutine rather than the one already holding the
-	// write lock, both to match production (always two different tool-call
-	// goroutines) and to avoid tripping -tags deadlock's same-goroutine
-	// recursive-lock check on a TryLock-polling pattern that can't hang.
-	type attempt struct {
-		err     error
-		elapsed time.Duration
-	}
-	attemptCh := make(chan attempt, 1)
 	start := time.Now()
-	go func() {
-		_, err := r.RLockCwdStability(ctx)
-		attemptCh <- attempt{err: err, elapsed: time.Since(start)}
-	}()
+	_, err = r.RLockCwdStability(ctx)
+	elapsed := time.Since(start)
 
-	var got attempt
-	select {
-	case got = <-attemptCh:
-	case <-time.After(2 * time.Second):
-		t.Fatal("RLockCwdStability did not return — did not unblock on ctx cancellation")
+	if elapsed > 2*time.Second {
+		t.Fatalf("RLockCwdStability took %s — did not unblock on ctx cancellation", elapsed)
 	}
-
-	if got.elapsed > 2*time.Second {
-		t.Fatalf("RLockCwdStability took %s — did not unblock on ctx cancellation", got.elapsed)
-	}
-	if got.err == nil || !isCancelErr(got.err) {
-		t.Fatalf("expected a cancel error (isCancelErr); got %v", got.err)
+	if err == nil || !isCancelErr(err) {
+		t.Fatalf("expected a cancel error (isCancelErr); got %v", err)
 	}
 
 	releaseW()

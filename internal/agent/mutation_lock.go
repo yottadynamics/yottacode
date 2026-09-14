@@ -32,7 +32,7 @@ type MutationLockRegistry struct {
 	busy map[string]mutationClaim
 	next uint64
 
-	cwdMu syncutil.RWMutex
+	cwdMu syncutil.PollingRWMutex
 }
 
 // RLockCwdStability is held by an ordinary mutating tool call for the
@@ -42,9 +42,11 @@ type MutationLockRegistry struct {
 // mutation, only mutation against a cwd swap. A nil registry is a safe
 // no-op, matching Acquire.
 //
-// ctx-aware: syncutil.RWMutex has no context-aware blocking acquire, so this
-// uses short TryLock polling. That avoids abandoning a blocked acquisition in
-// a background goroutine if the current holder never releases.
+// ctx-aware: PollingRWMutex has no context-aware blocking acquire, so this
+// uses short TryLock polling. The standard-only type is deliberate: the
+// deadlock detector's failed try-lock bookkeeping is unsafe for this pattern.
+// Polling also avoids abandoning a blocked acquisition in a background
+// goroutine if the current holder never releases.
 func (r *MutationLockRegistry) RLockCwdStability(ctx context.Context) (func(), error) {
 	if r == nil {
 		return func() {}, nil
@@ -56,7 +58,7 @@ func (r *MutationLockRegistry) RLockCwdStability(ctx context.Context) (func(), e
 }
 
 // waitForCwdLock waits for a cwd lock without creating a goroutine that can
-// outlive a canceled turn. Try-lock polling is deliberate: syncutil.RWMutex has
+// outlive a canceled turn. Try-lock polling is deliberate: PollingRWMutex has
 // no context-aware blocking acquire, and abandoning a blocked acquisition in
 // a goroutine leaks that goroutine if the current holder never releases.
 func waitForCwdLock(ctx context.Context, try func() bool) error {
