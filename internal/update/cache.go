@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -23,28 +24,28 @@ func cachePath() (string, error) {
 	return filepath.Join(home, ".yottacode", "cache", "update-check.json"), nil
 }
 
-// readCache returns the cached record and a fresh flag. A miss (no file,
-// parse error, expired, future-dated) returns fresh=false; the caller
-// should refetch. Errors are intentionally swallowed — the update path
-// must never fail loudly.
-func readCache(now time.Time) (cacheRecord, bool) {
+// readCache returns the cached record, whether it is fresh, and whether it is
+// usable. Stale records remain usable for immediate display while the caller
+// revalidates them; missing, corrupt, empty, or future-dated records are not.
+// Errors are intentionally swallowed — the update path must never fail loudly.
+func readCache(now time.Time) (cacheRecord, bool, bool) {
 	path, err := cachePath()
 	if err != nil {
-		return cacheRecord{}, false
+		return cacheRecord{}, false, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return cacheRecord{}, false
+		return cacheRecord{}, false, false
 	}
 	var rec cacheRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return cacheRecord{}, false
+		return cacheRecord{}, false, false
 	}
 	age := now.Sub(rec.LastChecked)
-	if age < 0 || age > cacheTTL {
-		return rec, false
+	if age < 0 || strings.TrimSpace(rec.LatestVersion) == "" {
+		return cacheRecord{}, false, false
 	}
-	return rec, true
+	return rec, age <= cacheTTL, true
 }
 
 func writeCache(rec cacheRecord) error {
@@ -59,9 +60,24 @@ func writeCache(rec cacheRecord) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// A same-directory uniquely named temporary file plus rename prevents
+	// concurrent processes or interrupted writes from exposing partial JSON.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".update-check-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

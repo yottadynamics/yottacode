@@ -9,6 +9,31 @@ import (
 	"time"
 )
 
+func TestManagerCloseAllContextReturnsWhenClientCloseHangs(t *testing.T) {
+	mgr := NewManager(1, time.Hour)
+	mgr.newClient = func(context.Context, Language, string) (*Client, error) { return &Client{}, nil }
+	block := make(chan struct{})
+	mgr.closeClientContext = func(context.Context, *Client) error {
+		<-block
+		return nil
+	}
+	client, err := mgr.Acquire(context.Background(), Language{ID: "go", Name: "Go", Command: []string{"gopls"}}, t.TempDir())
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	_ = client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	mgr.CloseAllContext(ctx)
+	close(block)
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("CloseAllContext exceeded deadline: %v", elapsed)
+	}
+	if stats := mgr.Stats(); stats.OpenServers != 0 {
+		t.Fatalf("pool not emptied: %+v", stats)
+	}
+}
 func TestManagerReusesClientByKey(t *testing.T) {
 	mgr := NewManager(2, time.Hour)
 	mgr.closeClient = func(*Client) error { return nil }

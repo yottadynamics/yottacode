@@ -116,7 +116,7 @@ func TestStartTurn_NoPendingNudgeLeavesMessageUntouched(t *testing.T) {
 func TestMemoryNudgeTextPinsRecallBiasAndEscapeHatch(t *testing.T) {
 	for name, text := range map[string]string{
 		"pre-compaction": preCompactionMemoryReminder,
-		"exit-save":      exitSavePrompt,
+		"periodic":       captureReminderPrompt,
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, want := range []string{
@@ -248,47 +248,16 @@ func TestStartTurn_AppendsLSPReminderAfterMemoryReminder(t *testing.T) {
 	}
 }
 
-func TestCaptureReminder_SuppressedDuringSummarizeAndExitSave(t *testing.T) {
-	for name, mut := range map[string]func(Model) Model{
-		"summarizing": func(m Model) Model { m.summarizing = true; return m },
-		"exit-saving": func(m Model) Model { m.exitSavePending = true; return m },
-	} {
-		t.Run(name, func(t *testing.T) {
-			if mut(captureModel(t, 6, 6)).captureReminderDue() {
-				t.Errorf("capture reminder must be suppressed while %s", name)
-			}
-		})
+func TestCaptureReminder_SuppressedDuringSummarize(t *testing.T) {
+	m := captureModel(t, 6, 6)
+	m.summarizing = true
+	if m.captureReminderDue() {
+		t.Error("capture reminder must be suppressed while summarizing")
 	}
 }
 
-func TestCaptureReminderTextPinsRecallBiasAndEscapeHatch(t *testing.T) {
-	for _, want := range []string{
-		"system reminder — not from the user",
-		"a decision and why",
-		"a gotcha",
-		"memory_save",
-		"update or consolidate rather than duplicate",
-		"If nothing durable is unsaved, save nothing",
-		"without mentioning this reminder",
-	} {
-		if !strings.Contains(captureReminderPrompt, want) {
-			t.Errorf("capture reminder lost wording: missing %q", want)
-		}
-	}
-}
 
-// --- final memory turn on quit ---
-
-// exitReadyModel returns a model that satisfies every exit-save gate:
-// feature on, adapter present, idle, and above the activity bar.
-func exitReadyModel(t *testing.T) Model {
-	t.Helper()
-	m := newTestModel(t)
-	m.cfg.Adapter = stubAdapterNoStream{}
-	m.fileCfg.Memory.FinalTurnOnQuit = true
-	m.userTurnsThisLaunch = exitSaveMinUserTurns
-	return m
-}
+// --- quitting never starts an AI turn ---
 
 // assertQuits fails unless cmd resolves to tea.QuitMsg.
 func assertQuits(t *testing.T, cmd tea.Cmd, context string) {
@@ -301,191 +270,25 @@ func assertQuits(t *testing.T, cmd tea.Cmd, context string) {
 	}
 }
 
-func TestExitSave_GatesQuitImmediately(t *testing.T) {
-	cases := []struct {
+func TestQuitAndIdleCtrlDDoNotStartTurn(t *testing.T) {
+	for _, tc := range []struct {
 		name string
-		mut  func(m Model) Model
+		run  func(Model) (Model, tea.Cmd)
 	}{
-		{"feature off", func(m Model) Model { m.fileCfg.Memory.FinalTurnOnQuit = false; return m }},
-		{"nil adapter", func(m Model) Model { m.cfg.Adapter = nil; return m }},
-		{"below activity bar", func(m Model) Model { m.userTurnsThisLaunch = exitSaveMinUserTurns - 1; return m }},
-		{"summarizing", func(m Model) Model { m.summarizing = true; return m }},
-		{"already running", func(m Model) Model { m.exitSavePending = true; return m }},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			m := c.mut(exitReadyModel(t))
-			alreadyRunning := m.exitSavePending
-			out, cmd := maybeStartExitSaveTurn(m)
-			assertQuits(t, cmd, c.name)
-			m2 := out.(Model)
-			if m2.exitSavePending != alreadyRunning {
-				t.Errorf("gated path must not flip exitSavePending")
-			}
-			if m2.turnActive {
-				t.Errorf("gated path must not start a turn")
+		{"slash quit", func(m Model) (Model, tea.Cmd) { return cmdQuit(m, nil) }},
+		{"idle ctrl+d", func(m Model) (Model, tea.Cmd) {
+			return applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel(t)
+			m.cfg.Adapter = stubAdapterNoStream{}
+			before := len(m.sess.Messages)
+			out, cmd := tc.run(m)
+			assertQuits(t, cmd, tc.name)
+			if out.turnActive || len(out.sess.Messages) != before {
+				t.Fatalf("quit started model work: active=%v messages=%d→%d", out.turnActive, before, len(out.sess.Messages))
 			}
 		})
-	}
-}
-
-// P2.1 — the activity bar dropped from two turns to one. A single exchange
-// routinely carries a correction or a decision-and-why, and the old bar
-// silently skipped the exit pass on every one-turn session.
-func TestExitSave_AdmitsSingleTurnSession(t *testing.T) {
-	m := exitReadyModel(t)
-	m.userTurnsThisLaunch = 1
-
-	out, cmd := maybeStartExitSaveTurn(m)
-	if cmd == nil {
-		t.Fatal("a one-turn session should now run the final memory turn")
-	}
-	if !out.(Model).exitSavePending {
-		t.Error("exitSavePending should be set for a one-turn session")
-	}
-
-	// A zero-turn session still skips — there is nothing to review.
-	m0 := exitReadyModel(t)
-	m0.userTurnsThisLaunch = 0
-	out0, cmd0 := maybeStartExitSaveTurn(m0)
-	assertQuits(t, cmd0, "zero-turn session")
-	if out0.(Model).exitSavePending {
-		t.Error("zero-turn session must not start the final turn")
-	}
-}
-
-func TestExitSave_StartsFinalTurnWhenWarranted(t *testing.T) {
-	m := exitReadyModel(t)
-	m.memoryNudgePending = true // pending reminder must be superseded, not duplicated
-
-	out, cmd := maybeStartExitSaveTurn(m)
-	if cmd == nil {
-		t.Fatalf("expected the final turn's Cmd batch, got nil")
-	}
-	m2 := out.(Model)
-	defer m2.turnCancel()
-
-	if !m2.exitSavePending {
-		t.Errorf("exitSavePending must mark the in-flight final turn")
-	}
-	if !m2.turnActive {
-		t.Errorf("the final memory turn must be a real turn (turnActive)")
-	}
-	last := m2.sess.Messages[len(m2.sess.Messages)-1]
-	if last.Content != exitSavePrompt {
-		t.Errorf("final turn must carry exitSavePrompt verbatim; got %q", last.Content)
-	}
-	transcript := m2.transcript.String()
-	if !strings.Contains(transcript, exitSaveDisplayLabel) {
-		t.Errorf("transcript must show the compact display label; got %q", transcript)
-	}
-	if strings.Contains(transcript, "memory_forget any now known") {
-		t.Errorf("exitSavePrompt body must not render in the transcript")
-	}
-}
-
-func TestExitSave_TurnEndCompletesQuit(t *testing.T) {
-	m := newTestModel(t)
-	m.exitSavePending = true
-	_, cmd := applyMsg(m, turnEndedMsg{})
-	assertQuits(t, cmd, "turn end with exitSavePending")
-}
-
-func TestExitSave_CtrlDIdleRoutesThroughExitSave(t *testing.T) {
-	m := exitReadyModel(t)
-	out, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
-	if cmd == nil {
-		t.Fatalf("Ctrl+D should produce a Cmd")
-	}
-	if _, ok := cmd().(tea.QuitMsg); ok {
-		t.Fatalf("Ctrl+D on an exit-ready session must start the final memory turn, not quit instantly")
-	}
-	if !out.exitSavePending {
-		t.Errorf("Ctrl+D must mark the final turn pending")
-	}
-	if out.turnCancel != nil {
-		defer out.turnCancel()
-	}
-}
-
-func TestExitSave_CtrlCAlwaysQuitsImmediately(t *testing.T) {
-	m := exitReadyModel(t)
-	out, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	assertQuits(t, cmd, "idle Ctrl+C")
-	if out.exitSavePending {
-		t.Errorf("Ctrl+C must never start the final memory turn")
-	}
-}
-
-func TestExitSave_CtrlDMidTurnHardQuits(t *testing.T) {
-	m := exitReadyModel(t)
-	m.turnActive = true // e.g. the final memory turn itself is running
-	_, cmd := applyMsg(m, tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
-	assertQuits(t, cmd, "mid-turn Ctrl+D")
-}
-
-// --- exit-save timeout (bounds worst-case exit latency) ---
-
-func TestExitSave_StartsFinalTurnBatchesTimeoutCmd(t *testing.T) {
-	m := exitReadyModel(t)
-	out, cmd := maybeStartExitSaveTurn(m)
-	if cmd == nil {
-		t.Fatalf("expected a Cmd batch, got nil")
-	}
-	m2 := out.(Model)
-	defer m2.turnCancel()
-	// tea.Batch's Cmd returns a BatchMsg immediately without running the
-	// sub-commands itself (the runtime dispatches those); invoking it here
-	// must not block on the 20s timer or the network call it's wrapping.
-	if _, ok := cmd().(tea.BatchMsg); !ok {
-		t.Errorf("expected the turn-start Cmd and the timeout Cmd to be batched together")
-	}
-}
-
-func TestExitSaveTimeoutMsg_CancelsInFlightExitSaveTurn(t *testing.T) {
-	m := exitReadyModel(t)
-	m.exitSavePending = true
-	m.turnActive = true
-	canceled := false
-	m.turnCancel = func() { canceled = true }
-
-	out, cmd := applyMsg(m, exitSaveTimeoutMsg{})
-	if cmd != nil {
-		t.Errorf("exitSaveTimeoutMsg should produce no further Cmd, got one")
-	}
-	if !canceled {
-		t.Errorf("exitSaveTimeoutMsg must cancel the in-flight exit-save turn")
-	}
-	if !out.turnCancelRequested {
-		t.Errorf("exitSaveTimeoutMsg must mark the cancellation as requested so the interrupted turn renders visibly")
-	}
-}
-
-func TestExitSaveTimeoutMsg_NoOpAfterTurnAlreadyEnded(t *testing.T) {
-	// turnEndedMsg unconditionally clears turnCancel to nil before this
-	// could ever race it — a stale timer firing after that must be a
-	// harmless no-op, not a nil-func panic.
-	m := exitReadyModel(t)
-	m.exitSavePending = true
-	m.turnActive = false
-	m.turnCancel = nil
-
-	if _, cmd := applyMsg(m, exitSaveTimeoutMsg{}); cmd != nil {
-		t.Errorf("stale exitSaveTimeoutMsg should produce no Cmd")
-	}
-}
-
-func TestExitSaveTimeoutMsg_NoOpForUnrelatedTurn(t *testing.T) {
-	// Defense in depth: even if this message somehow arrived while a
-	// normal (non-exit-save) turn is running, it must not interrupt it.
-	m := exitReadyModel(t)
-	m.exitSavePending = false
-	m.turnActive = true
-	canceled := false
-	m.turnCancel = func() { canceled = true }
-
-	applyMsg(m, exitSaveTimeoutMsg{})
-	if canceled {
-		t.Errorf("exitSaveTimeoutMsg must not cancel a turn that isn't the exit-save pass")
 	}
 }

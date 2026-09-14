@@ -37,13 +37,14 @@ func DefaultManagerMaxServers() int { return defaultManagerMaxServers }
 // call while still staying simple: all servers are closed at session teardown
 // and idle/oldest entries are evicted before new starts.
 type Manager struct {
-	mu          sync.Mutex
-	clients     map[string]*managerEntry
-	maxServers  int
-	idleTimeout time.Duration
-	stats       ManagerStats
-	newClient   func(context.Context, Language, string) (*Client, error)
-	closeClient func(*Client) error
+	mu                 sync.Mutex
+	clients            map[string]*managerEntry
+	maxServers         int
+	idleTimeout        time.Duration
+	stats              ManagerStats
+	newClient          func(context.Context, Language, string) (*Client, error)
+	closeClient        func(*Client) error
+	closeClientContext func(context.Context, *Client) error
 }
 
 type managerEntry struct {
@@ -63,7 +64,11 @@ func NewManager(maxServers int, idleTimeout time.Duration) *Manager {
 	if idleTimeout <= 0 {
 		idleTimeout = defaultManagerIdle
 	}
-	return &Manager{clients: map[string]*managerEntry{}, maxServers: maxServers, idleTimeout: idleTimeout, stats: ManagerStats{MaxServers: maxServers}, newClient: NewClient, closeClient: func(c *Client) error { return c.Close() }}
+	return &Manager{
+		clients: map[string]*managerEntry{}, maxServers: maxServers, idleTimeout: idleTimeout,
+		stats: ManagerStats{MaxServers: maxServers}, newClient: NewClient,
+		closeClient: func(c *Client) error { return c.Close() },
+	}
 }
 
 // Acquire returns a reusable client wrapper. Closing the wrapper releases it
@@ -216,6 +221,14 @@ func (m *Manager) InvalidateAll() {
 
 // CloseAll terminates every pooled server. It is safe to call multiple times.
 func (m *Manager) CloseAll() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	m.CloseAllContext(ctx)
+}
+
+// CloseAllContext removes every server from the pool and bounds the wait for
+// their concurrent shutdown by ctx.
+func (m *Manager) CloseAllContext(ctx context.Context) {
 	if m == nil {
 		return
 	}
@@ -227,8 +240,30 @@ func (m *Manager) CloseAll() {
 	}
 	m.stats.OpenServers = 0
 	m.mu.Unlock()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
 	for _, client := range clients {
-		_ = m.closeClient(client)
+		if client == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(client *Client) {
+			defer wg.Done()
+			if m.closeClientContext != nil {
+				_ = m.closeClientContext(ctx, client)
+			} else {
+				_ = client.CloseContext(ctx)
+			}
+		}(client)
+	}
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 

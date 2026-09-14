@@ -665,7 +665,7 @@ func (m Model) updateLoopExitConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.loopExitConfirmCursor == 0 {
 			m.loopExitConfirmOpen = false
 			m.disarmAllLoops("")
-			return maybeStartExitSaveTurn(m)
+			return requestWorktreeAwareGracefulExit(m)
 		}
 		m.loopExitConfirmOpen = false
 		return m, nil

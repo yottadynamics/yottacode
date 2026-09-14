@@ -32,16 +32,15 @@ func requestImmediateExit(m Model) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// requestWorktreeAwareGracefulExit runs the normal graceful-exit path after the
-// worktree keep/remove decision. That preserves final-memory behavior for /quit
-// and Ctrl+D without letting the process leave a worktree unintentionally.
+// requestWorktreeAwareGracefulExit preserves the worktree keep/remove decision
+// for deliberate exits; after that decision it quits without starting new work.
 func requestWorktreeAwareGracefulExit(m Model) (tea.Model, tea.Cmd) {
 	out, _ := requestImmediateExit(m)
 	if out.worktreeExitConfirmOpen {
 		out.worktreeExitGraceful = true
 		return out, nil
 	}
-	return maybeStartExitSaveTurn(out)
+	return out, tea.Quit
 }
 
 // renderWorktreeExitConfirm uses the same labeled-box chrome as approval
@@ -91,8 +90,7 @@ func (m Model) confirmWorktreeExit(cleanup string) (Model, tea.Cmd) {
 	m.worktreeExitCleanup = cleanup
 	if m.worktreeExitGraceful {
 		m.worktreeExitGraceful = false
-		out, cmd := maybeStartExitSaveTurn(m)
-		return out.(Model), cmd
+		return m, tea.Quit
 	}
 	return m, tea.Quit
 }

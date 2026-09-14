@@ -3,6 +3,9 @@ package mcp
 import (
 	"bytes"
 	"context"
+
+	"errors"
+
 	"fmt"
 	"io"
 	"os"
@@ -155,8 +158,25 @@ func (c *StdioClient) Start(ctx context.Context) error {
 		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+	if c.stopped {
+		c.ops.mu.Unlock()
+		return fmt.Errorf("mcp(%s): client is stopped", c.name)
+	}
 	c.ops.starting = true
 	c.ops.mu.Unlock()
+	// This block is a merge-conflict-resolution fix, not a new
+	// mechanism: main's Start (see internal/mcp/stdio_client.go on
+	// main, added by #321 "Harden MCP transports and lifecycle
+	// management") already locks only for this check-and-set, then
+	// unlocks before the slow work below — bind and fetchTools each
+	// take c.ops.mu themselves, and it is NOT reentrant, so holding it
+	// across those calls self-deadlocks the goroutine the moment bind
+	// runs, and every return before that point leaks the lock forever,
+	// wedging every future ListTools/CallTool/Stop on this client. This
+	// branch's own `stopped` check got added against an older,
+	// whole-function-locked version of Start, and merging main back in
+	// silently lost main's fix while keeping the old locking shape.
+	// This restores main's pattern with the stopped check folded in.
 	defer func() {
 		c.ops.mu.Lock()
 		if !c.ops.started {
@@ -238,8 +258,8 @@ func (c *StdioClient) CallTool(ctx context.Context, toolName, argsJSON string) (
 // Stop closes the SDK session, which closes the subprocess stdin and
 // triggers the graceful-shutdown ladder (close → wait → SIGTERM → kill)
 // implemented in the SDK's pipeRWC. The subprocess-lifetime context is
-// then cancelled as a backstop in case session.Close left a zombie.
-// Idempotent — repeat calls return nil.
+// canceled first so child teardown begins before the potentially blocking
+// protocol/session close. Idempotent — repeat calls return nil.
 func (c *StdioClient) Stop(ctx context.Context) error {
 	c.ops.mu.Lock()
 	session := c.ops.session
@@ -253,14 +273,46 @@ func (c *StdioClient) Stop(ctx context.Context) error {
 	if alreadyStopped {
 		return nil
 	}
-	var err error
-	if session != nil {
-		err = session.Close()
-	}
+	// Cancel the child before protocol close: SDK Close can wait on a peer that
+	// never responds, while cancellation immediately starts process teardown.
 	if procCancel != nil {
 		procCancel()
 	}
-	return err
+	if session == nil {
+		return nil
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- session.Close() }()
+	select {
+	case err := <-errCh:
+		if procCancel != nil && isExpectedShutdownErr(err) {
+			// Canceling the child before the protocol close races the SDK's
+			// graceful-shutdown ladder: session.Close may observe the child
+			// already torn down and report context.Canceled, a signal kill, or
+			// another cancellation-shaped error. Those are the expected outcome
+			// of the cancel-first ordering, not transport failures to surface.
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// isExpectedShutdownErr reports whether err is a cancellation/kill the
+// cancel-first Stop ordering deliberately produces during teardown, as
+// opposed to a transport failure worth returning to the caller. A nil
+// err is a clean shutdown and reports true so callers can branch on a
+// single gate.
+func isExpectedShutdownErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// The SDK can surface the subprocess kill as a non-sentinel error string.
+	return strings.Contains(err.Error(), "signal: killed")
 }
 
 // LogTail returns the recent stderr lines captured from the subprocess.

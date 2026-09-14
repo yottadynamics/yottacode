@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -13,6 +15,60 @@ import (
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/skills"
 )
+
+type tuiBlockingCleanupTool struct {
+	agent.Tool
+	started chan struct{}
+}
+
+func (t tuiBlockingCleanupTool) Cleanup(ctx context.Context) error {
+	close(t.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestCleanupRegistryToolsBoundedByShutdownContext(t *testing.T) {
+	reg := agent.NewRegistry()
+	started := make(chan struct{})
+	reg.Register(tuiBlockingCleanupTool{Tool: &agent.MemorySearchTool{}, started: started})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	begin := time.Now()
+	cleanupRegistryToolsBounded(ctx, reg)
+	select {
+	case <-started:
+	default:
+		t.Fatal("registry cleanup was not invoked")
+	}
+	if elapsed := time.Since(begin); elapsed > 200*time.Millisecond {
+		t.Fatalf("registry cleanup exceeded shutdown budget: %v", elapsed)
+	}
+}
+
+func TestDeferredStartupCommandsRunIndependently(t *testing.T) {
+	ctx := context.Background()
+	slowRelease := make(chan struct{})
+	slow := boundedStartupCmd(ctx, func(context.Context) tea.Msg {
+		<-slowRelease
+		return "slow"
+	})
+	fast := boundedStartupCmd(ctx, func(context.Context) tea.Msg { return "fast" })
+	batch, ok := tea.Batch(slow, fast)().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("expected two independently scheduled commands, got %#v", batch)
+	}
+	fastDone := make(chan tea.Msg, 1)
+	go func() { fastDone <- batch[1]() }()
+	select {
+	case got := <-fastDone:
+		if got != "fast" {
+			t.Fatalf("fast command = %#v", got)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("slow startup command starved independent fast command")
+	}
+	close(slowRelease)
+}
 
 // TestAppendSkillsSection_FramesWithoutEnumerating locks the metadata
 // dedup: the system prompt frames the skills surface and points at the

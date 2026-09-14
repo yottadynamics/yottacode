@@ -18,7 +18,7 @@ func TestCache_RoundTrip(t *testing.T) {
 	if err := writeCache(rec); err != nil {
 		t.Fatalf("writeCache: %v", err)
 	}
-	got, fresh := readCache(now)
+	got, fresh, _ := readCache(now)
 	if !fresh {
 		t.Fatalf("expected fresh cache, got miss")
 	}
@@ -33,8 +33,8 @@ func TestCache_Expired(t *testing.T) {
 	if err := writeCache(cacheRecord{LastChecked: past, LatestVersion: "0.3.0"}); err != nil {
 		t.Fatalf("writeCache: %v", err)
 	}
-	if _, fresh := readCache(time.Now()); fresh {
-		t.Fatalf("expected expired cache to read as miss")
+	if _, fresh, usable := readCache(time.Now()); fresh || !usable {
+		t.Fatalf("expected expired cache to remain usable but stale")
 	}
 }
 
@@ -48,7 +48,7 @@ func TestCache_Corrupt(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{garbage"), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if _, fresh := readCache(time.Now()); fresh {
+	if _, fresh, _ := readCache(time.Now()); fresh {
 		t.Fatalf("expected corrupt cache to read as miss")
 	}
 }
@@ -59,7 +59,7 @@ func TestCache_ClockSkew(t *testing.T) {
 	if err := writeCache(cacheRecord{LastChecked: future, LatestVersion: "0.3.0"}); err != nil {
 		t.Fatalf("writeCache: %v", err)
 	}
-	if _, fresh := readCache(time.Now()); fresh {
+	if _, fresh, _ := readCache(time.Now()); fresh {
 		t.Fatalf("expected future-dated cache to read as miss")
 	}
 }

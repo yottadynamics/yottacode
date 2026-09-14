@@ -240,6 +240,11 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 		c.ops.mu.Unlock()
 		return fmt.Errorf("mcp(%s): already started", c.name)
 	}
+
+	if c.stopped {
+		c.ops.mu.Unlock()
+		return fmt.Errorf("mcp(%s): client is stopped", c.name)
+	}
 	c.ops.starting = true
 	c.ops.mu.Unlock()
 	defer func() {
@@ -253,6 +258,7 @@ func (c *HTTPClient) Start(ctx context.Context) error {
 	if err := c.policy.CheckURL(c.url); err != nil {
 		c.logf("policy: %v", err)
 		return fmt.Errorf("mcp(%s): %w", c.name, err)
+
 	}
 	if c.oauth != nil && c.useSSE {
 		// Defense in depth: config.Validate already rejects this combo

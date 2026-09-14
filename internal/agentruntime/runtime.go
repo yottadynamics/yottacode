@@ -167,6 +167,8 @@ type Runtime struct {
 
 const runtimeSubagentDrainGrace = 5 * time.Second
 
+var runtimeCloseTimeout = 10 * time.Second
+
 // Close releases every process/goroutine resource owned by this Runtime.
 // It is intentionally safe to call more than once: callers use it from both
 // normal session-close paths and error/defer cleanup paths. Persistence stays
@@ -175,6 +177,22 @@ func (rt *Runtime) Close(ctx context.Context) {
 	if rt == nil {
 		return
 	}
+	// Run teardown behind a hard return bound even if an individual resource
+	// ignores cancellation. An earlier caller deadline remains authoritative.
+	closeCtx, cancel := context.WithTimeout(ctx, runtimeCloseTimeout)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		rt.closeWithContext(closeCtx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-closeCtx.Done():
+	}
+}
+
+func (rt *Runtime) closeWithContext(ctx context.Context) {
 	_ = agent.CleanupRegistryTools(ctx, rt.Registry)
 	if rt.SubagentTasks != nil {
 		if rt.SubagentTasks.CancelAll() > 0 {
@@ -204,13 +222,40 @@ func (rt *Runtime) Close(ctx context.Context) {
 		rt.MCPManager.Stop(ctx)
 	}
 	if rt.LSPManager != nil {
-		rt.LSPManager.CloseAll()
+		rt.LSPManager.CloseAllContext(ctx)
 	}
 	if rt.RecallIndex != nil {
 		_ = rt.RecallIndex.Close()
 	}
 	if cached, ok := rt.CodeMapProvider.(*codemap.CachedProvider); ok {
 		cached.Close()
+	}
+}
+
+func (rt *Runtime) RunDeferredProviderCheck(ctx context.Context) []string {
+	if err := preflight(ctx, adapterConfig(rt.ChatOptions, rt.FileCfg)); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
+}
+
+func (rt *Runtime) RunDeferredEmbeddingCheck(ctx context.Context) ([]string, *memory.EmbedClient) {
+	if s := rt.FileCfg.Retrieval.Strategy; s != "semantic" && s != "auto" {
+		return nil, nil
+	}
+	ec := memory.NewEmbedClient("", rt.FileCfg.Retrieval.EmbeddingModel)
+	if reachable, installed := ec.Status(ctx); installed {
+		ec.Timeout = memory.InteractiveEmbedTimeout
+		return nil, ec
+	} else if reachable {
+		return []string{fmt.Sprintf("memory: embedding model %q not installed — using BM25 (run: ollama pull %s)", ec.Model, ec.Model)}, nil
+	}
+	return nil, nil
+}
+
+func (rt *Runtime) RunDeferredPodmanCleanup(ctx context.Context) {
+	if rt.FileCfg.Sandbox.Backend == "podman" {
+		_ = sandbox.PruneOrphaned(ctx)
 	}
 }
 
@@ -260,12 +305,17 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	prFooter := fileCfg.Attribution.PRFooter()
 	rt.FileCfg = fileCfg
 
-	embedClient, embedReachable := memory.ResolveEmbedClient(ctx, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.EmbeddingModel, "")
-	if embedClient == nil && embedReachable {
-		rt.Warnings = append(rt.Warnings, fmt.Sprintf(
-			"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)",
-			fileCfg.Retrieval.EmbeddingModel, fileCfg.Retrieval.EmbeddingModel))
+	var embedClient *memory.EmbedClient
+	if !spec.DeferStartupChecks {
+		var embedReachable bool
+		embedClient, embedReachable = memory.ResolveEmbedClient(ctx, fileCfg.Retrieval.Strategy, fileCfg.Retrieval.EmbeddingModel, "")
+		if embedClient == nil && embedReachable {
+			rt.Warnings = append(rt.Warnings, fmt.Sprintf(
+				"memory: embedding model %q not installed — using BM25 (run: ollama pull %s)",
+				fileCfg.Retrieval.EmbeddingModel, fileCfg.Retrieval.EmbeddingModel))
+		}
 	}
+
 	rt.EmbedClient = embedClient
 
 	skillsRes, _ := skills.LoadAll(cwd, usercmd.Reserved)
@@ -347,8 +397,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	} else if router != nil {
 		ad = router
 	} else {
-		if err := preflight(ctx, adapterConfig(opts, fileCfg)); err != nil {
-			return nil, err
+		if !spec.DeferStartupChecks {
+			if err := preflight(ctx, adapterConfig(opts, fileCfg)); err != nil {
+				return nil, err
+			}
 		}
 		ad = adapter.NewWithConfig(adapterConfig(opts, fileCfg))
 	}
@@ -431,12 +483,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	var cmdSandbox agent.Sandbox
 	var sandboxFactory agent.SandboxFactory
 	if fileCfg.Sandbox.Backend == "podman" {
-		// Best-effort: reclaims yc-* containers left stuck non-running by a
-		// crashed or interrupted-teardown prior session (see PruneOrphaned's
-		// doc comment for why State, not age, is the safety filter). Errors
-		// are swallowed the same way podman.removeContainer's own callers
-		// already do for best-effort cleanup elsewhere in this package.
-		_ = sandbox.PruneOrphaned(ctx)
+		if !spec.DeferStartupChecks {
+			// Best-effort orphan pruning remains synchronous for non-interactive callers.
+			_ = sandbox.PruneOrphaned(ctx)
+		}
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
 		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr

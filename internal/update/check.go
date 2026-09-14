@@ -37,18 +37,20 @@ type fetcher func(ctx context.Context) (rawRelease, error)
 
 var defaultFetcher fetcher = fetchFromGitHub
 
-// CheckBackground starts an async check. The returned channel receives
-// exactly one Result on success, then closes. On any failure (no HOME,
-// network error, parse error, ...) the channel closes with no value.
-// Silent failure is intentional: an update check must never block
-// startup or annoy.
+// CheckBackground starts an async stale-while-revalidate check. Any usable
+// cached result is delivered immediately. A stale cache is then refreshed and
+// the refreshed result is delivered before the channel closes; a fresh cache
+// needs no network request. Failures stay silent and never delay startup.
 func CheckBackground(ctx context.Context) <-chan Result {
-	ch := make(chan Result, 1)
+	ch := make(chan Result, 2)
 	go func() {
 		defer close(ch)
 		now := time.Now()
-		if rec, fresh := readCache(now); fresh {
+		rec, fresh, cached := readCache(now)
+		if cached {
 			ch <- newResult(rec.LatestVersion, rec.ReleaseURL)
+		}
+		if fresh {
 			return
 		}
 		rel, err := defaultFetcher(ctx)

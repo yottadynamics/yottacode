@@ -83,6 +83,19 @@ func TestModel_WindowSizeMakesItReady(t *testing.T) {
 	}
 }
 
+func TestModelDeferredGitMetadataApplied(t *testing.T) {
+	m := newTestModel(t)
+	m.branch = "old"
+	m.gitAhead = 9
+	m.gitBehind = 8
+	m, _ = applyMsg(m, deferredStartupMsg{
+		branch: "feature/deferred", gitStatus: gitAheadBehindStatus{ahead: 2, behind: 3}, hasGit: true,
+	})
+	if m.branch != "feature/deferred" || m.gitAhead != 2 || m.gitBehind != 3 {
+		t.Fatalf("deferred git metadata not applied: branch=%q ahead=%d behind=%d", m.branch, m.gitAhead, m.gitBehind)
+	}
+}
+
 func TestModel_UpdateCheckDoesNotBlockInit(t *testing.T) {
 	m := newTestModel(t)
 	ch := make(chan update.Result)
@@ -98,7 +111,7 @@ func TestModel_UpdateCheckDoesNotBlockInit(t *testing.T) {
 	}
 }
 
-func TestWaitForUpdateCheckIgnoresClosedOrCurrentRelease(t *testing.T) {
+func TestWaitForUpdateCheckIgnoresClosedAndDeliversCurrentRelease(t *testing.T) {
 	closed := make(chan update.Result)
 	close(closed)
 	if msg := waitForUpdateCheck(closed)(); msg != nil {
@@ -108,8 +121,8 @@ func TestWaitForUpdateCheckIgnoresClosedOrCurrentRelease(t *testing.T) {
 	current := make(chan update.Result, 1)
 	current <- update.Result{Current: "0.5.0", Latest: "0.5.0", NewVersion: false}
 	close(current)
-	if msg := waitForUpdateCheck(current)(); msg != nil {
-		t.Fatalf("non-new release should produce no message, got %T", msg)
+	if msg, ok := waitForUpdateCheck(current)().(updateCheckMsg); !ok || msg.result.NewVersion {
+		t.Fatalf("current release should be delivered for stream re-arming, got %#v", msg)
 	}
 }
 

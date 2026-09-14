@@ -70,7 +70,7 @@ func TestParseReleaseJSON(t *testing.T) {
 	}
 }
 
-func TestCheckBackground_CacheHit(t *testing.T) {
+func TestCheckBackground_FreshCacheHit(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	withFetcher(t, func(ctx context.Context) (rawRelease, error) {
 		t.Fatalf("fetcher should not be called on cache hit")
@@ -92,6 +92,28 @@ func TestCheckBackground_CacheHit(t *testing.T) {
 	}
 }
 
+func TestCheckBackground_StaleCacheThenRefresh(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := writeCache(cacheRecord{LastChecked: time.Now().Add(-25 * time.Hour), LatestVersion: "0.3.0", ReleaseURL: "cached"}); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	withFetcher(t, func(context.Context) (rawRelease, error) {
+		return rawRelease{TagName: "v0.4.0", HTMLURL: "refreshed"}, nil
+	})
+	ch := CheckBackground(context.Background())
+	first, ok := waitResult(t, ch)
+	if !ok || first.Latest != "0.3.0" {
+		t.Fatalf("first result = %+v, %v; want stale cache", first, ok)
+	}
+	second, ok := waitResult(t, ch)
+	if !ok || second.Latest != "0.4.0" {
+		t.Fatalf("second result = %+v, %v; want refresh", second, ok)
+	}
+	if _, ok := waitResult(t, ch); ok {
+		t.Fatal("result stream should close after refresh")
+	}
+}
+
 func TestCheckBackground_FetchAndCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -108,7 +130,7 @@ func TestCheckBackground_FetchAndCache(t *testing.T) {
 	if r.Latest != "0.3.0" {
 		t.Errorf("Latest = %q, want 0.3.0", r.Latest)
 	}
-	rec, fresh := readCache(time.Now())
+	rec, fresh, _ := readCache(time.Now())
 	if !fresh || rec.LatestVersion != "0.3.0" {
 		t.Errorf("cache not written: fresh=%v rec=%+v", fresh, rec)
 	}
