@@ -1087,6 +1087,10 @@ type providerProbeMsg struct {
 	announce bool
 }
 
+type doctorPermissionsMsg struct {
+	report permissions.ValidationReport
+}
+
 type prStatusMsg struct {
 	number int
 }
@@ -1490,6 +1494,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if _, ok := msg.(cmdlineClickFlashDoneMsg); ok {
 		m.cmdlineClickFlash = false
+		return m, nil
+	}
+	if doctor, ok := msg.(doctorPermissionsMsg); ok {
+		m.appendLine(formatPermissionsDoctor(doctor.report))
 		return m, nil
 	}
 	if probe, ok := msg.(providerProbeMsg); ok {

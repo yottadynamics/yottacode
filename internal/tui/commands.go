@@ -22,6 +22,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/promptmacros"
 	"github.com/yottadynamics/yottacode/internal/providerops"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -1256,6 +1257,7 @@ func inSlice(ss []string, s string) bool {
 
 func cmdDoctor(m Model, _ []string) (Model, tea.Cmd) {
 	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider")))
+	m.appendLine(formatPermissionsDoctor(permissions.Validate(m.cwd)))
 	return m, runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), true)
 }
 
@@ -1323,11 +1325,29 @@ func cloneHeaders(src map[string]string) map[string]string {
 
 func runProviderProbe(ctx context.Context, cfg adapter.Config, announce bool) tea.Cmd {
 	return func() tea.Msg {
-		return providerProbeMsg{
-			result:   adapter.Probe(ctx, cfg),
-			announce: announce,
+		return providerProbeMsg{result: adapter.Probe(ctx, cfg), announce: announce}
+	}
+}
+
+func formatPermissionsDoctor(report permissions.ValidationReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "permissions: %s", report.Status)
+	for _, file := range report.Files {
+		fmt.Fprintf(&b, "\n  %s: %s (%s)", file.Name, file.Status, file.Path)
+		for _, issue := range file.Diagnostics {
+			fmt.Fprintf(&b, "\n    issue: %s", issue)
+		}
+		for _, warning := range file.Warnings {
+			fmt.Fprintf(&b, "\n    warning: %s", warning)
 		}
 	}
+	symbol := SysState
+	if report.Status == "issue" {
+		symbol = SysFailure
+	} else if report.Status == "warning" {
+		symbol = SysWarning
+	}
+	return SysMsg(symbol, "doctor", b.String())
 }
 
 func formatProviderProfile(profile adapter.ProviderProfile, baseURL string) string {

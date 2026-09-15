@@ -926,6 +926,9 @@ func TestSlash_DoctorRunsActiveProbe(t *testing.T) {
 			t.Fatalf("/doctor output missing %q:\n%s", want, got)
 		}
 	}
+	if !strings.Contains(got, "permissions:") {
+		t.Fatalf("/doctor output missing permissions diagnostics:\n%s", got)
+	}
 }
 
 func TestSlash_ClearStartsNewSession(t *testing.T) {

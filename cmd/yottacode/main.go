@@ -18,6 +18,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/oneshot"
+	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/session"
 	"github.com/yottadynamics/yottacode/internal/tui"
 	"github.com/yottadynamics/yottacode/internal/update"
@@ -367,7 +368,7 @@ optional local integrations in the same summary + section shape:
   - GitHub auth + rate-limit snapshot (skip with --no-github)
   - LSP code intelligence server readiness
   - media editing binary readiness
-  - sandbox backend and Go cache visibility
+  - permission policy syntax, readability, and advisory rule warnings
 
 Use --json for scripting.`,
 		Args: cobra.NoArgs,
@@ -379,6 +380,11 @@ Use --json for scripting.`,
 			if loaded, err := config.LoadDefault(); err == nil {
 				fileCfg = loaded
 			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			permissionsResult := permissions.Validate(cwd)
 			mediaResult := probeMediaDoctor(cmd.Context())
 			lspResult := probeLSPDoctor(cmd.Context(), *opts, fileCfg)
 			providerResult := adapter.Probe(cmd.Context(), adapterConfigFromOptions(*opts))
@@ -387,7 +393,7 @@ Use --json for scripting.`,
 			if !noGitHub {
 				githubResult = probeGitHub(cmd.Context())
 			}
-			summary := newDoctorSummary(providerResult, githubResult, lspResult, mediaResult, sandboxResult)
+			summary := newDoctorSummary(providerResult, githubResult, lspResult, mediaResult, sandboxResult, permissionsResult)
 			if jsonOutput {
 				// JSON envelope: provider-probe fields stay at top level for
 				// backward compatibility. New grouped report objects are additive.
@@ -395,12 +401,13 @@ Use --json for scripting.`,
 				enc.SetIndent("", "  ")
 				combined := struct {
 					adapter.ProbeResult
-					Summary  DoctorSummary       `json:"summary"`
-					Provider DoctorSectionStatus `json:"provider_section"`
-					GitHub   GitHubProbeResult   `json:"github"`
-					LSP      LSPDoctorResult     `json:"lsp_code_intelligence"`
-					Media    MediaDoctorResult   `json:"media_editing"`
-					Sandbox  SandboxDoctorResult `json:"sandbox"`
+					Summary     DoctorSummary                `json:"summary"`
+					Provider    DoctorSectionStatus          `json:"provider_section"`
+					GitHub      GitHubProbeResult            `json:"github"`
+					LSP         LSPDoctorResult              `json:"lsp_code_intelligence"`
+					Media       MediaDoctorResult            `json:"media_editing"`
+					Sandbox     SandboxDoctorResult          `json:"sandbox"`
+					Permissions permissions.ValidationReport `json:"permissions"`
 				}{
 					ProbeResult: providerResult,
 					Summary:     summary,
@@ -409,14 +416,15 @@ Use --json for scripting.`,
 					LSP:         lspResult,
 					Media:       mediaResult,
 					Sandbox:     sandboxResult,
+					Permissions: permissionsResult,
 				}
 				if err := enc.Encode(combined); err != nil {
 					return err
 				}
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorReport(summary, providerResult, githubResult, lspResult, mediaResult, sandboxResult))
+				fmt.Fprintln(cmd.OutOrStdout(), formatDoctorReport(summary, providerResult, githubResult, lspResult, mediaResult, sandboxResult, permissionsResult))
 			}
-			if len(providerResult.Issues) > 0 || (!githubResult.Skipped && len(githubResult.Issues) > 0) {
+			if len(providerResult.Issues) > 0 || len(permissionsResult.Issues) > 0 || (!githubResult.Skipped && len(githubResult.Issues) > 0) {
 				return errors.New("doctor found issues")
 			}
 			return nil
