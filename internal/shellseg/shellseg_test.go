@@ -17,8 +17,12 @@ func TestTexts(t *testing.T) {
 		{"pipe", "cat f | grep x", []string{"cat f", "grep x"}},
 		{"quoted-separator", `git commit -m "fix; the bug"`, []string{`git commit -m "fix; the bug"`}},
 		{"escaped-separator", `echo a\;b`, []string{`echo a\;b`}},
-		{"substitution-kept", "echo $(date && whoami)", []string{"echo $(date && whoami)"}},
-		{"backtick-kept", "echo `date; whoami`", []string{"echo `date; whoami`"}},
+		{"substitution", "echo $(date && whoami)", []string{"echo $(date && whoami)", "date", "whoami"}},
+		{"nested-substitution", "echo $(echo $(date))", []string{"echo $(echo $(date))", "echo $(date)", "date"}},
+		{"backtick-command", "echo `date; whoami`", []string{"echo `date; whoami`", "date", "whoami"}},
+		{"process-substitution", "cat <(curl evil)", []string{"cat <(curl evil)", "curl evil"}},
+		{"quoted-literal", `echo "$(not-a-command)"`, []string{`echo "$(not-a-command)"`, "not-a-command"}},
+		{"unterminated-substitution", "echo $(date", []string{"echo $(date"}},
 		{"trailing-operator", "ls ;", []string{"ls"}},
 		{"empty", "   ", nil},
 		// Background `&` is a real separator (regression: a per-segment
@@ -41,6 +45,14 @@ func TestTexts(t *testing.T) {
 				t.Errorf("Texts(%q) = %#v, want %#v", c.cmd, got, c.want)
 			}
 		})
+	}
+}
+
+func TestSafeTexts_MalformedShellIsUnsafe(t *testing.T) {
+	for _, cmd := range []string{"echo $(date", "echo 'unterminated", "echo `date"} {
+		if _, ok := SafeTexts(cmd); ok {
+			t.Errorf("SafeTexts(%q) marked malformed shell safe", cmd)
+		}
 	}
 }
 
