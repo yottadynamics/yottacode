@@ -216,7 +216,10 @@ Read tools do not prompt, so yottacode blocks common secret-bearing paths from s
 
 If you truly need to inspect a protected file, do it through an explicit shell command that prompts for approval.
 
-## Permission files
+## Permission policy diagnostics
+
+`yottacode doctor` and the TUI `/doctor` command validate the project permission policy files without modifying them. They report whether the shared and local files are missing, empty, valid, unreadable, or malformed, and show advisory warnings for risky or shadowed rules. A syntax, read, or rule-format error makes doctor return an issue; advisory lint warnings do not block a run.
+
 
 Project-local permission rules live in:
 
