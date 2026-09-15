@@ -218,7 +218,7 @@ If you truly need to inspect a protected file, do it through an explicit shell c
 
 ## Permission policy diagnostics
 
-`yottacode doctor` and the TUI `/doctor` command validate the project permission policy files without modifying them. They report whether the shared and local files are missing, empty, valid, unreadable, or malformed, and show advisory warnings for risky or shadowed rules. A syntax, read, or rule-format error makes doctor return an issue; advisory lint warnings do not block a run.
+`yottacode doctor` and the TUI `/doctor` command validate the machine-wide system policy (`/etc/yottacode/permissions.json`) together with the project shared and local policy files without modifying them. They report whether each source is missing, empty, valid, unreadable, or malformed, and show advisory warnings for risky or shadowed rules. A syntax, read, or rule-format error makes doctor return an issue; advisory lint warnings do not block a run.
 
 
 Project-local permission rules live in:
