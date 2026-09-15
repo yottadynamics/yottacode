@@ -1,7 +1,6 @@
-// Package shellseg splits a (possibly compound) shell command into its
-// top-level segments — the pieces separated by &&, ||, ;, and pipes —
-// while respecting quotes, escapes, and $(...)/backtick substitutions so
-// a separator inside a string literal or substitution doesn't split.
+// Package shellseg splits compound shell commands into independently matched
+// segments. Commands inside substitutions are also targets, so an outer allow
+// cannot authorize a nested command with a separate risk profile.
 //
 // It is the single source of truth for "what are the distinct commands in
 // this line." The agent's approval modal uses it to risk-flag each
@@ -44,15 +43,130 @@ func Split(cmd string) []Segment {
 	return out
 }
 
-// Texts is a convenience wrapper returning just the segment texts — the
-// shape the permissions evaluator needs.
+// Texts is a convenience wrapper returning command texts. It includes the
+// outer segments and recursively includes commands embedded in command
+// substitutions and backticks, so an allow rule for the outer command cannot
+// accidentally approve an unreviewed nested command.
 func Texts(cmd string) []string {
-	segs := Split(cmd)
-	out := make([]string, 0, len(segs))
-	for _, s := range segs {
-		out = append(out, s.Text)
+	var out []string
+	var collect func(string)
+	collect = func(input string) {
+		for _, s := range Split(input) {
+			out = append(out, s.Text)
+			for _, nested := range embeddedCommands(s.Text) {
+				collect(nested)
+			}
+		}
 	}
+	collect(cmd)
 	return out
+}
+
+// SafeTexts returns command targets and whether the command structure was
+// complete enough for permission matching. Unclosed quotes/substitutions are
+// marked unsafe so an allow rule cannot approve malformed shell input.
+func SafeTexts(cmd string) ([]string, bool) {
+	texts := Texts(cmd)
+	return texts, balanced(cmd)
+}
+
+func balanced(cmd string) bool {
+	var single, double, backtick bool
+	paren := 0
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] == '\\' {
+			i++
+			continue
+		}
+		if !double && !backtick && cmd[i] == '\'' {
+			single = !single
+			continue
+		}
+		if !single && !backtick && cmd[i] == '"' {
+			double = !double
+			continue
+		}
+		if single || double {
+			continue
+		}
+		if cmd[i] == '`' {
+			backtick = !backtick
+			continue
+		}
+		if !backtick && cmd[i] == '(' {
+			paren++
+		}
+		if !backtick && cmd[i] == ')' {
+			paren--
+			if paren < 0 {
+				return false
+			}
+		}
+	}
+	return !single && !double && !backtick && paren == 0
+}
+
+func embeddedCommands(cmd string) []string {
+	var commands []string
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] == '\\' {
+			i++
+			continue
+		}
+		if cmd[i] == '`' {
+			start := i + 1
+			for j := start; j < len(cmd); j++ {
+				if cmd[j] == '\\' {
+					j++
+					continue
+				}
+				if cmd[j] == '`' {
+					if strings.TrimSpace(cmd[start:j]) != "" {
+						commands = append(commands, cmd[start:j])
+					}
+					i = j
+					break
+				}
+			}
+			continue
+		}
+		if (cmd[i] != '$' && cmd[i] != '<' && cmd[i] != '>') || i+1 >= len(cmd) || cmd[i+1] != '(' {
+			continue
+		}
+		start, depth := i+2, 1
+		inSingle, inDouble := false, false
+		for j := start; j < len(cmd); j++ {
+			if cmd[j] == '\\' {
+				j++
+				continue
+			}
+			if !inDouble && cmd[j] == '\'' {
+				inSingle = !inSingle
+				continue
+			}
+			if !inSingle && cmd[j] == '"' {
+				inDouble = !inDouble
+				continue
+			}
+			if inSingle || inDouble {
+				continue
+			}
+			switch cmd[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+				if depth == 0 {
+					if strings.TrimSpace(cmd[start:j]) != "" {
+						commands = append(commands, cmd[start:j])
+					}
+					i = j
+					j = len(cmd)
+				}
+			}
+		}
+	}
+	return commands
 }
 
 // lastNonSpaceByte returns the last non-whitespace byte of s, or 0 when s
