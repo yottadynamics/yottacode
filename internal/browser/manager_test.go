@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -33,6 +36,30 @@ type fakeSession struct {
 	// dead simulates a crashed browser process: alive() reports false
 	// once this is set, without needing a real OS process to kill.
 	dead bool
+
+	// pages controls the tab count snapshot() reports (and, through it,
+	// Status.TabCount). 0 defaults to 1 (just the main page), matching a
+	// real session's invariant of always having at least one tracked page.
+	pages int
+	// tabsResult, consoleLogsResult, networkRequestsResult are returned
+	// verbatim by the matching method.
+	tabsResult            []TabInfo
+	consoleLogsResult     []ConsoleEntry
+	networkRequestsResult []NetworkEntry
+	// switchTabErr, closeTabErr, setFilesErr, downloadErr are returned
+	// verbatim by the matching method.
+	switchTabErr error
+	closeTabErr  error
+	setFilesErr  error
+	downloadErr  error
+	// downloadResult, when set, is returned by downloadViaClick/
+	// downloadViaURL instead of a synthesized default. Either way, the
+	// fake actually writes downloadContent (or a default) to
+	// filepath.Join(dir, info.GUID) — Manager.Download stats and moves
+	// that file for real, so this needs to exist on disk to test the
+	// real move/cleanup logic, not just the call plumbing.
+	downloadResult  *proto.PageDownloadWillBegin
+	downloadContent []byte
 }
 
 func (f *fakeSession) record(name string) {
@@ -80,10 +107,14 @@ func (f *fakeSession) wait(context.Context, string, string, bool, time.Duration)
 	f.record("wait")
 	return nil
 }
-func (f *fakeSession) currentURL() string {
+func (f *fakeSession) snapshot() (string, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.url
+	pages := f.pages
+	if pages == 0 {
+		pages = 1
+	}
+	return f.url, pages
 }
 func (f *fakeSession) close() error {
 	f.record("close")
@@ -96,6 +127,69 @@ func (f *fakeSession) alive() bool {
 }
 func (f *fakeSession) forceCleanup() {
 	f.record("forceCleanup")
+}
+
+func (f *fakeSession) tabs(context.Context) []TabInfo {
+	f.record("tabs")
+	return f.tabsResult
+}
+
+func (f *fakeSession) consoleLogs(limit int) []ConsoleEntry {
+	f.record(fmt.Sprintf("consoleLogs:%d", limit))
+	return f.consoleLogsResult
+}
+
+func (f *fakeSession) networkRequests(limit int) []NetworkEntry {
+	f.record(fmt.Sprintf("networkRequests:%d", limit))
+	return f.networkRequestsResult
+}
+
+func (f *fakeSession) switchTab(index int) error {
+	f.record(fmt.Sprintf("switchTab:%d", index))
+	return f.switchTabErr
+}
+
+func (f *fakeSession) closeTab(_ context.Context, index int) error {
+	f.record(fmt.Sprintf("closeTab:%d", index))
+	return f.closeTabErr
+}
+
+func (f *fakeSession) setFiles(_ context.Context, selector string, paths []string) error {
+	f.record(fmt.Sprintf("setFiles:%s:%v", selector, paths))
+	return f.setFilesErr
+}
+
+// fakeDownload is the shared body of downloadViaClick/downloadViaURL: it
+// writes the configured (or default) content to filepath.Join(dir,
+// info.GUID), the same place a real Chrome download would land, so
+// Manager.Download's own stat+move logic runs for real against a test
+// fake rather than being skipped.
+func (f *fakeSession) fakeDownload(dir string) (*proto.PageDownloadWillBegin, error) {
+	if f.downloadErr != nil {
+		return nil, f.downloadErr
+	}
+	info := f.downloadResult
+	if info == nil {
+		info = &proto.PageDownloadWillBegin{GUID: "fake-guid", SuggestedFilename: "downloaded.txt"}
+	}
+	content := f.downloadContent
+	if content == nil {
+		content = []byte("fake download bytes")
+	}
+	if err := os.WriteFile(filepath.Join(dir, string(info.GUID)), content, 0o644); err != nil {
+		return nil, err
+	}
+	return info, nil
+}
+
+func (f *fakeSession) downloadViaClick(_ context.Context, selector, dir string) (*proto.PageDownloadWillBegin, error) {
+	f.record("downloadViaClick:" + selector)
+	return f.fakeDownload(dir)
+}
+
+func (f *fakeSession) downloadViaURL(_ context.Context, url, dir string) (*proto.PageDownloadWillBegin, error) {
+	f.record("downloadViaURL:" + url)
+	return f.fakeDownload(dir)
 }
 
 var _ pageSession = (*fakeSession)(nil)
@@ -455,5 +549,190 @@ func TestManager_ConcurrentActionsSerialize(t *testing.T) {
 	}
 	if got := fake.callCount("click"); got != n {
 		t.Errorf("click called %d times, want %d", got, n)
+	}
+}
+
+// TestManager_TabsNeverLaunches mirrors TestManager_WaitNeverLaunches:
+// listing tabs on a session that was never launched has nothing to list.
+func TestManager_TabsNeverLaunches(t *testing.T) {
+	m := &Manager{
+		newSession: func(context.Context, string, string) (pageSession, error) {
+			t.Fatal("newSession should not be called")
+			return nil, nil
+		},
+		findBinary:   func() (string, error) { t.Fatal("findBinary should not be called"); return "", nil },
+		mkProfileDir: func() (string, error) { t.Fatal("mkProfileDir should not be called"); return "", nil },
+	}
+	tabs, err := m.Tabs(context.Background())
+	if err != nil || tabs != nil {
+		t.Fatalf("Tabs on an unlaunched manager = (%v, %v), want (nil, nil)", tabs, err)
+	}
+}
+
+func TestManager_TabsReflectsRegistry(t *testing.T) {
+	want := []TabInfo{{Index: 0, ID: "a", URL: "https://a.example", Active: true}, {Index: 1, ID: "b", URL: "https://b.example"}}
+	fake := &fakeSession{tabsResult: want}
+	m := newTestManager(fake, t.TempDir())
+	if _, err := m.Navigate(context.Background(), "https://a.example", ""); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	got, err := m.Tabs(context.Background())
+	if err != nil {
+		t.Fatalf("Tabs: %v", err)
+	}
+	if len(got) != len(want) || got[1].URL != "https://b.example" {
+		t.Errorf("Tabs = %+v, want %+v", got, want)
+	}
+}
+
+func TestManager_StatusReportsTabCount(t *testing.T) {
+	fake := &fakeSession{pages: 3}
+	m := newTestManager(fake, t.TempDir())
+	if _, err := m.Navigate(context.Background(), "https://example.com", ""); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if st := m.Status(); st.TabCount != 3 {
+		t.Errorf("Status.TabCount = %d, want 3", st.TabCount)
+	}
+}
+
+func TestManager_SwitchTabPropagatesOutOfRangeError(t *testing.T) {
+	fake := &fakeSession{switchTabErr: fmt.Errorf("%w: index 5, have 1 tab(s)", ErrTabNotFound)}
+	m := newTestManager(fake, t.TempDir())
+	if _, err := m.Navigate(context.Background(), "https://example.com", ""); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.SwitchTab(context.Background(), 5); !errors.Is(err, ErrTabNotFound) {
+		t.Errorf("SwitchTab: got %v, want ErrTabNotFound", err)
+	}
+}
+
+func TestManager_SwitchTabOnUnlaunchedSessionErrors(t *testing.T) {
+	m := &Manager{
+		newSession: func(context.Context, string, string) (pageSession, error) {
+			t.Fatal("newSession should not be called")
+			return nil, nil
+		},
+		findBinary:   func() (string, error) { t.Fatal("findBinary should not be called"); return "", nil },
+		mkProfileDir: func() (string, error) { t.Fatal("mkProfileDir should not be called"); return "", nil },
+	}
+	if err := m.SwitchTab(context.Background(), 0); !errors.Is(err, ErrTabNotFound) {
+		t.Errorf("SwitchTab on unlaunched manager: got %v, want ErrTabNotFound", err)
+	}
+}
+
+func TestManager_CloseTabPropagatesToSession(t *testing.T) {
+	fake := &fakeSession{}
+	m := newTestManager(fake, t.TempDir())
+	if _, err := m.Navigate(context.Background(), "https://example.com", ""); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.CloseTab(context.Background(), 1); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+	if fake.callCount("closeTab:1") != 1 {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestManager_CloseTabPropagatesError(t *testing.T) {
+	fake := &fakeSession{closeTabErr: errors.New("cannot close the only remaining tab; use browser_close to end the session instead")}
+	m := newTestManager(fake, t.TempDir())
+	if _, err := m.Navigate(context.Background(), "https://example.com", ""); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.CloseTab(context.Background(), 0); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestManager_CloseTabOnUnlaunchedSessionErrors(t *testing.T) {
+	m := &Manager{
+		newSession: func(context.Context, string, string) (pageSession, error) {
+			t.Fatal("newSession should not be called")
+			return nil, nil
+		},
+		findBinary:   func() (string, error) { t.Fatal("findBinary should not be called"); return "", nil },
+		mkProfileDir: func() (string, error) { t.Fatal("mkProfileDir should not be called"); return "", nil },
+	}
+	if err := m.CloseTab(context.Background(), 0); !errors.Is(err, ErrTabNotFound) {
+		t.Errorf("CloseTab on unlaunched manager: got %v, want ErrTabNotFound", err)
+	}
+}
+
+func TestManager_UploadPropagatesToSession(t *testing.T) {
+	fake := &fakeSession{}
+	m := newTestManager(fake, t.TempDir())
+	if err := m.Upload(context.Background(), "#file", []string{"/tmp/a.txt", "/tmp/b.txt"}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if fake.callCount("setFiles:#file:[/tmp/a.txt /tmp/b.txt]") != 1 {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestManager_UploadPropagatesError(t *testing.T) {
+	fake := &fakeSession{setFilesErr: errors.New("boom")}
+	m := newTestManager(fake, t.TempDir())
+	if err := m.Upload(context.Background(), "#file", []string{"/tmp/a.txt"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// TestManager_DownloadClickMovesFileToDestPath is the core payoff of
+// Manager.Download: the fake writes its content under a scratch temp dir
+// (simulating what Chrome does), and Download must stat, move, and clean
+// that up itself — this exercises the real filesystem logic, not just
+// call plumbing.
+func TestManager_DownloadClickMovesFileToDestPath(t *testing.T) {
+	fake := &fakeSession{
+		downloadResult:  &proto.PageDownloadWillBegin{GUID: "guid-1", SuggestedFilename: "report.pdf"},
+		downloadContent: []byte("pdf bytes here"),
+	}
+	m := newTestManager(fake, t.TempDir())
+	dest := filepath.Join(t.TempDir(), "nested", "report.pdf")
+
+	res, err := m.Download(context.Background(), "#dl", "", dest)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.Path != dest || res.SuggestedFilename != "report.pdf" || res.SizeBytes != int64(len("pdf bytes here")) {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("dest file missing: %v", err)
+	}
+	if string(data) != "pdf bytes here" {
+		t.Errorf("dest content = %q", data)
+	}
+	if fake.callCount("downloadViaClick:#dl") != 1 {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestManager_DownloadViaURLUsesNavigatePath(t *testing.T) {
+	fake := &fakeSession{downloadResult: &proto.PageDownloadWillBegin{GUID: "guid-2", SuggestedFilename: "x.bin"}}
+	m := newTestManager(fake, t.TempDir())
+	dest := filepath.Join(t.TempDir(), "x.bin")
+
+	if _, err := m.Download(context.Background(), "", "https://example.com/x.bin", dest); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if fake.callCount("downloadViaURL:https://example.com/x.bin") != 1 {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestManager_DownloadPropagatesError(t *testing.T) {
+	fake := &fakeSession{downloadErr: fmt.Errorf("%w: no download event", ErrDownloadFailed)}
+	m := newTestManager(fake, t.TempDir())
+	dest := filepath.Join(t.TempDir(), "x.bin")
+
+	if _, err := m.Download(context.Background(), "#dl", "", dest); !errors.Is(err, ErrDownloadFailed) {
+		t.Errorf("Download: got %v, want ErrDownloadFailed", err)
+	}
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Errorf("dest file should not exist after a failed download")
 	}
 }

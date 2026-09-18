@@ -167,13 +167,37 @@ top of the normal approval model:
   a screenshot or an accessibility-tree snapshot can surface on-screen
   private data (an inbox, a logged-in dashboard, a form someone else
   left filled in) even though nothing was clicked. `browser_status`,
-  `browser_wait`, and `browser_close` are the only exceptions — they
-  report existing state, block on an already-visible condition, or
+  `browser_wait`, `browser_close`, `browser_tabs`, `browser_switch_tab`,
+  and `browser_close_tab` are the exceptions — they report existing
+  state, block on an already-visible condition, change which tracked
+  page later calls target without reading or changing its content, or
   only reduce capability, so none of them can expose anything an
   already-approved call hasn't already shown.
-- **One browser, one page, no parallelism.** The tools don't implement
-  `ParallelSafeTool`, so calls always serialize through the same
-  approval queue as everything else.
+- **One browser, one *active* page, no parallelism.** The session
+  tracks every tab it has opened (so `browser_tabs`/`browser_switch_tab`
+  can list/switch among them, and a click that opens a
+  `target="_blank"` tab or calls `window.open()` can be auto-followed),
+  but every action still only ever touches the one currently active
+  page. The tools don't implement `ParallelSafeTool`, so calls always
+  serialize through the same approval queue as everything else
+  regardless of how many tabs are tracked.
+- **Upload/download reuse the write-path trust boundary.**
+  `browser_upload`'s local file paths and `browser_download`'s
+  destination path both go through the same `ValidateWritePath` check
+  as `write_file` — inside the session workspace or an `--allow-paths`
+  root, no symlink writes. An upload hands a local file's bytes to
+  whatever origin the active page is on, which is at least as sensitive
+  as a local write, so it gets the same boundary rather than a looser
+  one.
+- **Console/network capture is buffered continuously, and reading it
+  needs approval.** `browser_console_logs`/`browser_network_requests`
+  read from a per-page bounded buffer (`Runtime`/`Network` domain
+  events) populated from the moment a page is tracked, not just during
+  the call — so they can surface messages or requests from well before
+  the call was made. Both always prompt: console output and request
+  URLs can carry private data (a logged token, a session-bearing query
+  param) even though nothing was clicked to produce them. Metadata
+  only — no response bodies, and no request blocking/mocking.
 - **Not available to `dispatch` workers.** A dispatch worker never
   sees the `browser_*` tools, regardless of whether `browser` is
   enabled for the parent session — concurrent browser sessions across

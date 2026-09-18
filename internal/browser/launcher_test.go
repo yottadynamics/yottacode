@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,32 @@ func TestFindChromeBinary_UnsupportedOS(t *testing.T) {
 
 	if _, err := findChromeBinary(); !errors.Is(err, ErrNoBinaryFound) {
 		t.Errorf("got %v, want ErrNoBinaryFound", err)
+	}
+}
+
+// TestBrowserSearchPaths_DarwinCoversRealInstalls is a regression test
+// for a real gap found in review: the darwin list used to carry
+// /usr/bin/google-chrome and /usr/bin/chromium — Linux install
+// locations that never exist on macOS — while having no PATH fallback
+// or Homebrew CLI formula paths at all, unlike the linux list. Pins that
+// the dead entries are gone and the real ones (an app bundle, both
+// Homebrew prefixes, a PATH fallback) are present.
+func TestBrowserSearchPaths_DarwinCoversRealInstalls(t *testing.T) {
+	darwin := browserSearchPaths["darwin"]
+	for _, dead := range []string{"/usr/bin/google-chrome", "/usr/bin/chromium"} {
+		if slices.Contains(darwin, dead) {
+			t.Errorf("darwin search list still contains dead Linux path %q", dead)
+		}
+	}
+	for _, want := range []string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/opt/homebrew/bin/chromium",
+		"/usr/local/bin/chromium",
+		"chromium",
+	} {
+		if !slices.Contains(darwin, want) {
+			t.Errorf("darwin search list missing %q: %v", want, darwin)
+		}
 	}
 }
 

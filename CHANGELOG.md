@@ -8,18 +8,26 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
-worktree-scalable-swimming-dream
-- **`browser_*` tools (experimental).** Ten new agent tools —
+- **`browser_*` tools (experimental).** Seventeen agent tools —
   `browser_status`, `browser_navigate`, `browser_screenshot`,
   `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
-  `browser_scroll`, `browser_wait`, `browser_close` — drive a real,
-  headless Chrome/Chromium instance over the Chrome DevTools Protocol
-  via `go-rod/rod`, with no Node.js or Playwright dependency. A fresh,
-  isolated temp profile per session (never your real, logged-in
-  browser), headless-only, one browser/one page per session, and not
-  available to `dispatch` workers. Every action tool prompts for
-  approval, including the two read-only ones (screenshot, inspect),
-  since either can surface on-screen private data. JS-initiated dialogs
+  `browser_scroll`, `browser_wait`, `browser_close`, `browser_tabs`,
+  `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
+  `browser_download`, `browser_console_logs`, `browser_network_requests`
+  — drive a real, headless Chrome/Chromium instance over the Chrome
+  DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
+  dependency. A fresh, isolated temp profile per session (never your
+  real, logged-in browser), headless-only, and not available to
+  `dispatch` workers. The session tracks every tab it opens;
+  `browser_click`/`browser_type` auto-follow a tab their own action opens; `browser_tabs`/`browser_switch_tab`/`browser_close_tab` cover listing, switching among, and closing the rest (refusing to close the only remaining tab). `browser_upload` and `browser_download`
+  reuse `write_file`'s write-path trust boundary for their local file
+  paths. `browser_console_logs`/`browser_network_requests` continuously
+  buffer each page's `console.*` calls/uncaught exceptions and request
+  metadata (method/URL/status/failures, never response bodies) from
+  the moment it's tracked, not just during the call. Every action tool
+  prompts for approval,
+  including the two read-only ones (screenshot, inspect), since either
+  can surface on-screen private data. JS-initiated dialogs
   (`alert`/`confirm`/`prompt`/`beforeunload`) are auto-dismissed so a
   page that pops one can't hang a tool call, and every action is
   bounded by a default 60s timeout so a single hung page can't wedge
@@ -27,7 +35,9 @@ worktree-scalable-swimming-dream
   browser process itself crashes or is killed, the next action
   transparently relaunches a fresh session instead of failing forever
   with an opaque dead-connection error. Off by default; enable with
-  `--experimental browser`. See
+  `--experimental browser`. A new CI workflow
+  (`.github/workflows/browser-integration.yml`) runs the real-Chrome
+  integration suite on every change to this surface. See
   [`tools.md`](docs/tools.md#browser_status),
   [`experimental.md`](docs/experimental.md), and
   [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#browser-automation).

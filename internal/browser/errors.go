@@ -1,7 +1,8 @@
 // Package browser drives a real Chromium/Chrome instance over the Chrome
 // DevTools Protocol via go-rod/rod, giving the agent's browser_* tools a
 // pure-Go backend with no Node.js or Playwright dependency. See
-// roadmap/v0.5.0/j1-browser-automation-rod.md for the full spec.
+// docs/tools.md and docs/security-and-allow-lists.md for the tool
+// contract and safety model.
 package browser
 
 import "errors"
@@ -31,6 +32,16 @@ var (
 	// ErrActionDenied means the manager's session was already torn down
 	// by an explicit browser_close. Once closed, a Manager never
 	// relaunches — close only ever reduces capability, per the safety
-	// model in the roadmap doc.
+	// model documented in docs/security-and-allow-lists.md.
 	ErrActionDenied = errors.New("action denied: browser session is closed")
+
+	// ErrTabNotFound means a browser_switch_tab index didn't resolve to a
+	// currently tracked page (out of range, or the tab closed since the
+	// caller last listed tabs).
+	ErrTabNotFound = errors.New("tab index not found")
+
+	// ErrDownloadFailed means a triggered download never completed
+	// before the action deadline — the click/navigate that should have
+	// started it didn't, or the browser never reported completion.
+	ErrDownloadFailed = errors.New("download did not complete before deadline")
 )

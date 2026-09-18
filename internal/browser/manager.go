@@ -3,9 +3,13 @@ package browser
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -19,6 +23,17 @@ type Status struct {
 	Active     bool
 	CurrentURL string
 	ProfileDir string
+	// TabCount is the number of tracked pages (main page plus any
+	// popup/tab opened since launch). 0 when no session is active.
+	TabCount int
+}
+
+// DownloadResult is the outcome of a successful browser_download call —
+// the file is already at Path by the time this is returned.
+type DownloadResult struct {
+	Path              string
+	SuggestedFilename string
+	SizeBytes         int64
 }
 
 // defaultActionTimeout bounds every browser_* action call that doesn't
@@ -155,6 +170,28 @@ func (m *Manager) withActionTimeout(ctx context.Context) (context.Context, conte
 	return context.WithTimeout(ctx, m.timeout())
 }
 
+// ensureAliveNoLaunchLocked resolves the current session for a call that
+// must NOT launch the browser (Tabs, ConsoleLogs, NetworkRequests,
+// SwitchTab, CloseTab): a closed manager denies, a dead session is
+// discarded and reported rather than silently reused, and no session at
+// all yields (nil, false, nil) — callers decide what "nothing to act on
+// yet" means for their own semantics (an empty result for a listing
+// call, an error for one that references an index). Callers must
+// already hold m.mu.
+func (m *Manager) ensureAliveNoLaunchLocked() (sess pageSession, ok bool, err error) {
+	if m.closed {
+		return nil, false, ErrActionDenied
+	}
+	if m.sess == nil {
+		return nil, false, nil
+	}
+	if !m.sess.alive() {
+		m.discardDeadSessionLocked()
+		return nil, false, errors.New("browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it")
+	}
+	return m.sess, true, nil
+}
+
 // Status never launches the browser — see the Status doc comment.
 func (m *Manager) Status() Status {
 	m.mu.Lock()
@@ -172,9 +209,190 @@ func (m *Manager) Status() Status {
 	// m.sess) still only happens in ensureLocked, on the next real action.
 	if m.sess != nil && m.sess.alive() {
 		st.Active = true
-		st.CurrentURL = m.sess.currentURL()
+		st.CurrentURL, st.TabCount = m.sess.snapshot()
 	}
 	return st
+}
+
+// Tabs never launches the browser, like Status — an unlaunched session
+// has no tabs to report. Unlike Status, each entry costs a live CDP
+// round-trip (to read that page's current title/URL), so it's bounded by
+// the same action timeout every mutating call gets, even though nothing
+// is mutated.
+func (m *Manager) Tabs(ctx context.Context) ([]TabInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	return sess.tabs(ctx), nil
+}
+
+// ConsoleLogs never launches, like Tabs — an unlaunched session has
+// nothing buffered yet. Pure in-memory read, no action timeout needed.
+func (m *Manager) ConsoleLogs(ctx context.Context, limit int) ([]ConsoleEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return sess.consoleLogs(limit), nil
+}
+
+// NetworkRequests mirrors ConsoleLogs exactly.
+func (m *Manager) NetworkRequests(ctx context.Context, limit int) ([]NetworkEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	return sess.networkRequests(limit), nil
+}
+
+// SwitchTab changes which tracked page subsequent actions act on. Like
+// Tabs, it never launches — switching among tabs that don't exist yet
+// makes no sense.
+func (m *Manager) SwitchTab(ctx context.Context, index int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no browser session active", ErrTabNotFound)
+	}
+	return sess.switchTab(index)
+}
+
+// CloseTab closes one tracked tab by index without tearing down the
+// whole session. Like SwitchTab, it never launches — closing a tab that
+// doesn't exist yet makes no sense — but unlike SwitchTab it does a real
+// CDP round-trip, so it gets the same action timeout every mutating call
+// gets.
+func (m *Manager) CloseTab(ctx context.Context, index int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: no browser session active", ErrTabNotFound)
+	}
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	return sess.closeTab(ctx, index)
+}
+
+// Upload sets a file input element's files, lazily launching the browser
+// like every other mutating action. Callers must have already validated
+// every path is inside the trusted workspace — see BrowserUploadTool,
+// which reuses the same write-path boundary as write_file: handing a
+// local file's bytes to whatever origin the active page is on is at
+// least as sensitive as writing it.
+func (m *Manager) Upload(ctx context.Context, selector string, paths []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return err
+	}
+	return s.setFiles(ctx, selector, paths)
+}
+
+// Download triggers a download — by clicking selector, or by navigating
+// directly to url (exactly one must be set) — and saves it to destPath,
+// which callers must have already validated the same way write_file does
+// (see BrowserDownloadTool). It owns the whole sequence: a scratch temp
+// dir for Chrome's own GUID-named download file, the CDP download
+// arm/wait (session's downloadViaClick/downloadViaURL), then moving the
+// result to destPath and cleaning up the temp dir.
+func (m *Manager) Download(ctx context.Context, selector, url, destPath string) (DownloadResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return DownloadResult{}, err
+	}
+
+	tmpDir, err := os.MkdirTemp("", "yottacode-browser-download-*")
+	if err != nil {
+		return DownloadResult{}, fmt.Errorf("browser download: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var info *proto.PageDownloadWillBegin
+	if selector != "" {
+		info, err = s.downloadViaClick(ctx, selector, tmpDir)
+	} else {
+		info, err = s.downloadViaURL(ctx, url, tmpDir)
+	}
+	if err != nil {
+		return DownloadResult{}, err
+	}
+
+	src := filepath.Join(tmpDir, info.GUID)
+	fi, err := os.Stat(src)
+	if err != nil {
+		return DownloadResult{}, fmt.Errorf("%w: saved file missing: %v", ErrDownloadFailed, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return DownloadResult{}, fmt.Errorf("browser download: %w", err)
+	}
+	if err := moveFile(src, destPath); err != nil {
+		return DownloadResult{}, fmt.Errorf("browser download: %w", err)
+	}
+	return DownloadResult{Path: destPath, SuggestedFilename: info.SuggestedFilename, SizeBytes: fi.Size()}, nil
+}
+
+// moveFile renames src to dst, falling back to copy-then-remove when
+// rename fails — which os.Rename always does across filesystems (EXDEV).
+// That's a real case here, not a hypothetical one: src lives under the
+// OS temp dir (MkdirTemp's default), while dst is wherever the caller
+// validated (cwd or an --allow-paths root), which can easily be a
+// different mount.
+func moveFile(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(dst) // don't leave a truncated file at the reported-failed destination
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return err
+	}
+	return os.Remove(src)
 }
 
 func (m *Manager) Navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error) {
