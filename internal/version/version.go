@@ -9,7 +9,7 @@ import (
 
 // Current is the human-readable release label. Bump on every meaningful
 // shipped change. Set to a `-dev` suffix between releases.
-const Current = "0.4.0"
+const Current = "0.5.0-rc.1"
 
 // shortCommitLen is how many hex chars of the git SHA we surface — long
 // enough to be unique within any reasonable repo, short enough to fit
