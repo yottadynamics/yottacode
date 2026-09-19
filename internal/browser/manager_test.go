@@ -824,10 +824,10 @@ func TestManager_HandoffSwapsToVisibleSessionAtSameURL(t *testing.T) {
 	}
 
 	// Later actions drive the visible session, not the old one.
-	if _, err := h.m.Inspect(ctx, ""); err != nil {
+	if _, err := h.m.Inspect(ctx, "", InspectOptions{}); err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if h.headed.callCount("inspect") != 1 || h.headless.callCount("inspect") != 0 {
+	if h.headed.callCount("inspect:interactive=false") != 1 || h.headless.callCount("inspect:interactive=false") != 0 {
 		t.Errorf("Inspect went to the wrong session: headed=%v headless=%v", h.headed.calls, h.headless.calls)
 	}
 }

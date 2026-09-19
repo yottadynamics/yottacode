@@ -62,10 +62,6 @@ var (
 	// it and the element is gone. The fix is always to inspect again.
 	ErrStaleRef = errors.New("element ref is stale or unknown")
 
-	// ErrBlockedURL means a navigation target is on the always-blocked
-	// floor (cloud instance-metadata endpoints) — see checkNavigationURL.
-	ErrBlockedURL = errors.New("blocked URL")
-
 	// ErrEvalFailed means browser_eval's JavaScript threw, or could not be
 	// evaluated at all.
 	ErrEvalFailed = errors.New("javascript evaluation failed")

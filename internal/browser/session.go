@@ -322,12 +322,16 @@ const newTabDetectWindow = 300 * time.Millisecond
 // of which binds its own per-call context (see every session method's
 // `pg.Context(ctx)`), so tying the long-lived connection itself to one
 // call's short deadline would cancel it out from under every later call.
+func launchHeadedSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
+	return launchSession(ctx, bin, profileDir, launchOptions{})
+}
+
 func launchSession(ctx context.Context, bin, profileDir string, lo launchOptions) (pageSession, error) {
 	l := launcher.New().
 		Bin(bin).
 		Headless(true).
 		UserDataDir(profileDir).
-		Leakless(true).
+		Leakless(leaklessUsable()).
 		Context(ctx)
 	if lo.stealth {
 		l = stealthLauncher(l)
@@ -638,6 +642,14 @@ func (s *session) setDialogPolicy(accept bool, promptText string) {
 // remains, which Info()'s own error handling already covers.
 func (s *session) snapshot() (url string, tabCount int) {
 	s.mu.Lock()
+
+	if len(s.pages) == 0 {
+		// The last page closed since the caller last checked alive() (a
+		// window.close(), or the user closing the window). Report "nothing"
+		// rather than indexing an empty registry.
+		s.mu.Unlock()
+		return "", 0
+	}
 	pg := s.pages[s.active].page
 	tabCount = len(s.pages)
 	s.mu.Unlock()
