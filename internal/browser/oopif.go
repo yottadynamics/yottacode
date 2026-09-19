@@ -187,7 +187,7 @@ func (s *session) oopifSections(ctx context.Context, tp *trackedPage, budget int
 		if err != nil || len(res.Nodes) == 0 {
 			continue
 		}
-		out = append(out, axSection{Label: oopifLabel(c, o), Nodes: res.Nodes, Session: o.session})
+		out = append(out, axSection{Label: oopifLabel(tp.page.Context(ctx), c, o), Nodes: res.Nodes, Session: o.session})
 		budget--
 	}
 	return out
@@ -195,12 +195,27 @@ func (s *session) oopifSections(ctx context.Context, tp *trackedPage, budget int
 
 // oopifLabel names a cross-process frame like childFrames names the others:
 // `frame "name" url`, from the frame's own view of itself when it answers.
-func oopifLabel(c sessionClient, o oopif) string {
+func oopifLabel(parent proto.Client, c sessionClient, o oopif) string {
 	url, name := o.url, ""
 	if ft, err := (proto.PageGetFrameTree{}).Call(c); err == nil && ft.FrameTree != nil && ft.FrameTree.Frame != nil {
 		name = ft.FrameTree.Frame.Name
 		if ft.FrameTree.Frame.URL != "" {
 			url = ft.FrameTree.Frame.URL
+		}
+	}
+	if name == "" {
+		// OOPIF frame targets do not always expose the iframe's HTML name in
+		// their own frame tree. Recover it from the parent frame owner so the
+		// inspect output remains stable across Chrome's process boundary.
+		if owner, err := (proto.DOMGetFrameOwner{FrameID: proto.PageFrameID(o.target)}).Call(parent); err == nil && owner != nil && owner.BackendNodeID != 0 {
+			if node, err := (proto.DOMDescribeNode{BackendNodeID: owner.BackendNodeID}).Call(parent); err == nil && node.Node != nil {
+				for i := 0; i+1 < len(node.Node.Attributes); i += 2 {
+					if node.Node.Attributes[i] == "id" || node.Node.Attributes[i] == "name" {
+						name = node.Node.Attributes[i+1]
+						break
+					}
+				}
+			}
 		}
 	}
 	return frameLabel(&proto.PageFrame{Name: name, URL: url})
