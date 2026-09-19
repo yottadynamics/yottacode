@@ -53,6 +53,10 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	if strings.HasPrefix(toolName, "mcp/") {
 		return Target{PermName: "MCP", Descriptor: strings.TrimPrefix(toolName, "mcp/")}
 	}
+	// browser_* tools: see browser.go for which ones are mapped and why.
+	if strings.HasPrefix(toolName, "browser_") {
+		return browserTarget(toolName, argsJSON)
+	}
 	switch toolName {
 	case "run_bash":
 		// Per-segment descriptors so a Bash allow-rule must match EVERY

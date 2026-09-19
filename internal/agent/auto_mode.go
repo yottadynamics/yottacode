@@ -2,18 +2,21 @@ package agent
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+
+	"github.com/yottadynamics/yottacode/internal/permissions"
 )
 
 // AutoModeState is the per-session, runtime-mutable auto-mode flag the
 // loop reads on every tool dispatch. When active, mutating tools that
 // would normally hit an approval modal auto-allow with Source=auto-mode
 // — EXCEPT for the safety floor (run_bash, run_tests, debug_start,
-// debug_eval, git_commit, git_checkpoint, rollback), which always prompts
-// regardless of mode.
+// debug_eval, git_commit, git_checkpoint, rollback, browser_upload,
+// browser_download), which always prompts regardless of mode.
 //
 // Mutually exclusive with plan mode at the TUI layer: entering one
 // turns the other off. The loop-level gates don't enforce this on
@@ -42,11 +45,22 @@ func (a *AutoModeState) IsActive() bool {
 // auto mode to skip edit-by-edit approval friction — not to silently
 // hand over shell access or amend git history.
 //
+// browser_upload and browser_download are the browser tools that cross the
+// local filesystem boundary: an upload sends a local file's bytes to
+// whatever site the page is on, and a download writes a file to local
+// disk. Every other browser tool (inspect, screenshot, console/network
+// reads, navigate, click, …) stays auto-approved so /auto keeps working
+// for verifying a web app; these two always need the user.
+//
+// browser_navigate is floor-gated per call, not per tool — see
+// IsAutoModeSafetyFloorCall.
+//
 // To get true blanket auto-approval (including run_bash and commits),
 // use yolo mode; that's the user-explicit "always approve" path.
 func IsAutoModeSafetyFloor(toolName string) bool {
 	switch toolName {
-	case "run_bash", "run_tests", "debug_start", "debug_eval", "git_commit", "git_checkpoint", "rollback":
+	case "run_bash", "run_tests", "debug_start", "debug_eval", "git_commit", "git_checkpoint", "rollback",
+		"browser_upload", "browser_download":
 		return true
 	case "enter_worktree", "exit_worktree":
 		// Worktree entry/exit shifts what the agent is "working on"
@@ -59,6 +73,51 @@ func IsAutoModeSafetyFloor(toolName string) bool {
 		return true
 	}
 	return false
+}
+
+// IsAutoModeSafetyFloorCall is IsAutoModeSafetyFloor for one specific call: the
+// tool-level floor, plus browser_navigate to anywhere but this machine.
+//
+// A page the agent has opened can contain instructions, and an auto-approved
+// browser_navigate is then a way to act on them: a URL with secrets in its
+// query string sends them to whoever runs the site, and an internal address
+// (a cloud instance's 169.254.169.254 metadata service, an admin page on the
+// LAN) is reached without anyone seeing it. So in auto mode the agent may open
+// pages on this machine unprompted — testing a dev server on localhost is what
+// /auto is for — but going to any other host stops and asks, and the prompt
+// shows the URL. A per-site rule the user saves (Browser(navigate example.com))
+// still skips the prompt, as it does for every floor tool.
+//
+// Anything that isn't a plain http(s) URL to a loopback host — another scheme,
+// userinfo, an odd authority, a name like localhost.evil.com, a private-range
+// address — counts as "elsewhere" and prompts.
+func IsAutoModeSafetyFloorCall(toolName, argsJSON string) bool {
+	if IsAutoModeSafetyFloor(toolName) {
+		return true
+	}
+	return toolName == "browser_navigate" && !navigatesToLoopback(argsJSON)
+}
+
+// navigatesToLoopback reports whether a browser_navigate call's URL is a plain
+// http(s) URL whose host is this machine: "localhost" or a loopback IP literal
+// (127.0.0.0/8, ::1). Private-range addresses are deliberately NOT loopback —
+// they are other machines on the network.
+func navigatesToLoopback(argsJSON string) bool {
+	var a struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return false
+	}
+	host, ok := permissions.BrowserNavigateHost(a.URL)
+	if !ok {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // autoModeSafeBashVerbs is the read-only-by-construction allowlist of

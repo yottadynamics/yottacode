@@ -40,6 +40,18 @@ var (
 	// caller last listed tabs).
 	ErrTabNotFound = errors.New("tab index not found")
 
+	// ErrNoDisplay means a visible browser window was requested
+	// (browser_handoff) on a host with no display server to show it on —
+	// an SSH session, container, or CI box. The isolated headless session
+	// is left untouched; the human has to complete the step some other
+	// way.
+	ErrNoDisplay = errors.New("no display available for a visible browser window")
+
+	// ErrBlockedURL means the URL the agent asked to open uses a scheme the
+	// browser tools refuse (file:, chrome:, javascript:, data:, …). Only
+	// http, https, and about:blank are allowed — see checkNavigableURL.
+	ErrBlockedURL = errors.New("blocked URL")
+
 	// ErrDownloadFailed means a triggered download never completed
 	// before the action deadline — the click/navigate that should have
 	// started it didn't, or the browser never reported completion.

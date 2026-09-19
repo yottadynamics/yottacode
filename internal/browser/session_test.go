@@ -226,3 +226,14 @@ func TestTrackedPage_NetworkSnapshot_RespectsLimit(t *testing.T) {
 		t.Errorf("limit should return the most recent entries, got %+v", got)
 	}
 }
+
+// snapshot() runs from Status/Handoff after a separate alive() check; if the
+// last page closes in between, it must report "nothing", not index an empty
+// page registry.
+func TestSession_Snapshot_EmptyRegistryDoesNotPanic(t *testing.T) {
+	s := newSessionWithIDs(0)
+	url, tabs := s.snapshot()
+	if url != "" || tabs != 0 {
+		t.Errorf("snapshot() on an empty registry = (%q, %d), want (\"\", 0)", url, tabs)
+	}
+}

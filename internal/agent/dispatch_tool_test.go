@@ -407,6 +407,19 @@ func TestDispatchPanic_DoesNotClobberAlreadyCompletedResult(t *testing.T) {
 		t.Fatalf("dispatch: %v", err)
 	}
 	waitForTasksDone(t, d.Agent.Tasks, 2, 5*time.Second)
+	// MarkDone publishes terminal state immediately before the completion
+	// callback runs. Wait for both callbacks before asserting their counts;
+	// macOS CI can schedule the test goroutine between those operations.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		allCallbacksFired := len(fireCounts) == 2
+		mu.Unlock()
+		if allCallbacksFired || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	for _, tk := range d.Agent.Tasks.List() {
 		mu.Lock()
