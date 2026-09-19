@@ -2431,7 +2431,7 @@ same approval queue as everything else regardless of how many tabs are
 tracked. Tab indexes are point-in-time listing indexes and can shift
 when a tab closes; list again before using a stale index. `browser_click` and `browser_type` (with `submit: true`)
 auto-follow a tab opened as a direct result of that action (a
-`target="_blank"` link, `window.open()`) within a fixed ~300ms
+`target="_blank"` link, `window.open()`) within a fixed ~2s
 detection window — the tool's result message reports the resulting
 `current url` and `tabs` count either way, and `browser_tabs`/
 `browser_switch_tab`/`browser_close_tab` cover every other case (an

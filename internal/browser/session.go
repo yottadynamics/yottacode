@@ -230,11 +230,12 @@ type session struct {
 // whether the action opened a new tab (target="_blank" links,
 // window.open()). Named and justified the same way networkIdleWindow is:
 // a fixed, documented heuristic rather than an unbounded wait. Every
-// click already goes through human approval — far slower than 300ms — so
-// this fixed tax is negligible in relative terms, and it's scoped to
-// click/submit only: navigate/screenshot/inspect/scroll/wait/hotkey pay
-// nothing extra.
-const newTabDetectWindow = 300 * time.Millisecond
+// click already goes through human approval, so this fixed tax is
+// negligible in relative terms, and it is long enough for slower hosted
+// runners (notably macOS arm64) to deliver TargetCreated after the
+// renderer has processed the click. It is scoped to click/submit only:
+// navigate/screenshot/inspect/scroll/wait/hotkey pay nothing extra.
+const newTabDetectWindow = 2 * time.Second
 
 // launchSession starts a headless Chromium/Chrome using the given binary
 // and isolated profile dir, and opens its single initial page. bin and
