@@ -147,11 +147,14 @@ func NewManager() *Manager {
 		newSession: func(ctx context.Context, bin, profileDir string) (pageSession, error) {
 			return launchSession(ctx, bin, profileDir, launchOptions{})
 		},
-		findBinary:   findChromeBinary,
-		mkProfileDir: newProfileDir,
-		idleTimeout:  defaultIdleTimeout,
-		provider:     ProviderLocal,
-		sweepStale:   defaultSweep,
+		newHeadedSession: func(ctx context.Context, bin, profileDir string) (pageSession, error) {
+			return launchSessionMode(ctx, bin, profileDir, false, launchOptions{})
+		},
+		findBinary:       findChromeBinary,
+		mkProfileDir:     newProfileDir,
+		idleTimeout:      defaultIdleTimeout,
+		provider:         ProviderLocal,
+		sweepStale:       defaultSweep,
 	}
 }
 

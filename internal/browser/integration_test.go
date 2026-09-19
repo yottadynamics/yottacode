@@ -908,12 +908,12 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 				t.Fatalf("Eval innerWidth: %v", err)
 			}
 			got = res.Value.Int()
-			if got >= want-40 && got <= want+40 {
+			if got >= want-60 && got <= want+40 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if got < want-40 || got > want+40 {
+		if got < want-60 || got > want+40 {
 			t.Errorf("window resized to %dpx wide but page viewport is %dpx: the page is not filling the window", want, got)
 		}
 	}

@@ -112,7 +112,7 @@ func TestIntegration_WebPageCannotNavigateToFile(t *testing.T) {
 				t.Errorf("clicking %s let a web page open %s", sel, tab.URL)
 			}
 		}
-		if tree, err := m.Inspect(ctx, ""); err == nil && strings.Contains(tree, "CANARY-must-not-reach-the-agent") {
+		if tree, err := m.Inspect(ctx, "", InspectOptions{}); err == nil && strings.Contains(tree, "CANARY-must-not-reach-the-agent") {
 			t.Errorf("clicking %s exposed the local file's contents to the agent", sel)
 		}
 	}

@@ -323,13 +323,17 @@ const newTabDetectWindow = 300 * time.Millisecond
 // `pg.Context(ctx)`), so tying the long-lived connection itself to one
 // call's short deadline would cancel it out from under every later call.
 func launchHeadedSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	return launchSession(ctx, bin, profileDir, launchOptions{})
+	return launchSessionMode(ctx, bin, profileDir, false, launchOptions{})
 }
 
 func launchSession(ctx context.Context, bin, profileDir string, lo launchOptions) (pageSession, error) {
+	return launchSessionMode(ctx, bin, profileDir, true, lo)
+}
+
+func launchSessionMode(ctx context.Context, bin, profileDir string, headless bool, lo launchOptions) (pageSession, error) {
 	l := launcher.New().
 		Bin(bin).
-		Headless(true).
+		Headless(headless).
 		UserDataDir(profileDir).
 		Leakless(leaklessUsable()).
 		Context(ctx)
@@ -350,9 +354,9 @@ func launchSession(ctx context.Context, bin, profileDir string, lo launchOptions
 	}
 
 	br := rod.New().ControlURL(u)
-	if lo.stealth {
-		// rod's default device is a fixed Mac laptop on an old Chrome; stealth
-		// presents the real browser's identity instead (see stealthProfile).
+	if lo.stealth || !headless {
+		// Headed sessions must follow the real window dimensions; rod's default
+		// device emulation pins a fixed 1280px viewport instead.
 		br = br.NoDefaultDevice()
 	}
 	if err := br.Connect(); err != nil {
