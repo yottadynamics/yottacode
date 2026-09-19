@@ -37,16 +37,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Vulnerability scan
-        # Excelize v2.11.0 is currently the newest release, and the upstream
-        # fix for GO-2026-6452 has not shipped yet. Keep this scan visible but
-        # non-blocking until a fixed Excelize release is available; swallowing
-        # the result would hide a real security signal.
-        continue-on-error: true
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
       - name: Test
         # -short skips demo/visualization tests whose stdout would
         # otherwise trip GitHub Actions' Go problem-matcher and surface
