@@ -33,6 +33,7 @@ type browserSession interface {
 	Scroll(ctx context.Context, selector string, deltaX, deltaY float64) error
 	Wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error
 	Close(ctx context.Context) error
+
 	Handoff(ctx context.Context) (browser.HandoffResult, error)
 	Tabs(ctx context.Context) ([]browser.TabInfo, error)
 	SwitchTab(ctx context.Context, index int) error
@@ -746,6 +747,7 @@ type BrowserUploadTool struct {
 	browserToolBase
 	Cwd       *CwdRef
 	WriteOpts WritePathOptions
+
 	// DenyReadPaths is the credential-bearing read deny list every read tool
 	// enforces (see DefaultDenyReadPaths). Uploading is a read of the file —
 	// its bytes leave the machine — so the same list applies; without it an
@@ -814,6 +816,7 @@ func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (strin
 		if err := ValidateWritePath(rp, t.WriteOpts); err != nil {
 			return "", fmt.Errorf("browser_upload: %w", err)
 		}
+
 		if err := ValidateReadPath(rp, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("browser_upload: %w", err)
 		}

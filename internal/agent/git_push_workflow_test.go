@@ -164,6 +164,60 @@ func TestPushBranch_HappyPathSetsUpstream(t *testing.T) {
 	}
 }
 
+func TestPushBranch_MismatchedUpstreamRepairsTracking(t *testing.T) {
+	// Reused worktrees can retain an upstream for a different branch. The
+	// push must target the current HEAD and repair tracking instead of using
+	// bare `git push`, which Git rejects for a mismatched upstream.
+	tmp := gitInit(t)
+	bare := gitInitBare(t)
+	if out, err := exec.Command("git", "-C", tmp, "remote", "add", "origin", bare).CombinedOutput(); err != nil {
+		t.Fatalf("remote add: %v: %s", err, out)
+	}
+	writeFile(t, tmp, "f.txt", "v1\n")
+	gitCommit(t, tmp, "base")
+	if out, err := exec.Command("git", "-C", tmp, "push", "-u", "origin", "main").CombinedOutput(); err != nil {
+		t.Fatalf("push main: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", tmp, "switch", "-c", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("switch feature: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", tmp, "branch", "--set-upstream-to=origin/main", "feature").CombinedOutput(); err != nil {
+		t.Fatalf("set mismatched upstream: %v: %s", err, out)
+	}
+	writeFile(t, tmp, "f.txt", "feature\n")
+	gitCommit(t, tmp, "feature")
+
+	res, err := PushBranch(context.Background(), tmp, nil)
+	if err != nil {
+		t.Fatalf("PushBranch: %v", err)
+	}
+	if !res.Pushed || !res.SetUpstream {
+		t.Fatalf("expected successful upstream repair; got %+v", res)
+	}
+	upstreamOut, err := exec.Command("git", "-C", tmp, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}").CombinedOutput()
+	if err != nil {
+		t.Fatalf("read repaired upstream: %v: %s", err, upstreamOut)
+	}
+	if upstream := strings.TrimSpace(string(upstreamOut)); upstream != "origin/feature" {
+		t.Fatalf("upstream=%q; want origin/feature", upstream)
+	}
+	remoteHeadCmd := exec.Command("git", "--git-dir", bare, "symbolic-ref", "HEAD")
+	remoteHeadCmd.Dir = "/"
+	remoteHeadOut, err := remoteHeadCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("read bare remote HEAD: %v: %s", err, remoteHeadOut)
+	}
+	if remoteHead := strings.TrimSpace(string(remoteHeadOut)); remoteHead != "refs/heads/master" {
+		t.Fatalf("bare remote HEAD changed unexpectedly: %q", remoteHead)
+	}
+	remoteFeatureCmd := exec.Command("git", "--git-dir", bare, "show", "feature:f.txt")
+	remoteFeatureCmd.Dir = "/"
+	remoteFeatureOut, err := remoteFeatureCmd.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(remoteFeatureOut)) != "feature" {
+		t.Fatalf("remote feature branch missing pushed commit: %v: %s", err, remoteFeatureOut)
+	}
+}
+
 func TestPushBranch_LooksUpPRWhenClientPresent(t *testing.T) {
 	// With a github.Interface configured, a successful push
 	// should populate PRURL via ReadPR. ErrPRNotFound silently
@@ -194,6 +248,7 @@ func TestPushBranch_LooksUpPRWhenClientPresent(t *testing.T) {
 
 func TestPushBranch_PRNotFoundDoesNotFail(t *testing.T) {
 	// A branch without an existing PR is the common case after
+
 	// the first push — PRURL stays empty, no error propagates.
 	tmp := gitInit(t)
 	bare := gitInitBare(t)

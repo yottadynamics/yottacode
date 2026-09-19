@@ -198,6 +198,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&BrowserTabsTool{browserToolBase: base})
 		reg.Register(&BrowserSwitchTabTool{browserToolBase: base})
 		reg.Register(&BrowserCloseTabTool{browserToolBase: base})
+
 		reg.Register(&BrowserUploadTool{browserToolBase: base, Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads})
 		reg.Register(&BrowserDownloadTool{browserToolBase: base, Cwd: cwd, WriteOpts: wo})
 		reg.Register(&BrowserConsoleLogsTool{browserToolBase: base})

@@ -186,6 +186,7 @@ top of the normal approval model:
   page later calls target without reading or changing its content, or
   only reduce capability, so none of them can expose anything an
   already-approved call hasn't already shown.
+
 - **`/auto` keeps the risky browser calls gated.** Auto mode approves
   the other browser tools (inspect, screenshot, console/network reads,
   click, type, …) without a prompt so a web app can be verified end to
@@ -230,6 +231,7 @@ top of the normal approval model:
   page. The tools don't implement `ParallelSafeTool`, so calls always
   serialize through the same approval queue as everything else
   regardless of how many tabs are tracked.
+
 - **Upload/download reuse the existing path boundaries.**
   `browser_upload`'s local file paths and `browser_download`'s
   destination path both go through the same `ValidateWritePath` check

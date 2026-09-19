@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
 	"strings"
 	"syscall"
 	"time"
@@ -28,6 +29,7 @@ type Status struct {
 	// TabCount is the number of tracked pages (main page plus any
 	// popup/tab opened since launch). 0 when no session is active.
 	TabCount int
+
 	// Headed reports whether the active session is showing a visible
 	// window (after browser_handoff). False for a headless session and
 	// when no session is active.
@@ -254,6 +256,7 @@ func (m *Manager) Status() Status {
 	if m.sess != nil && m.sess.alive() {
 		st.Active = true
 		st.CurrentURL, st.TabCount = m.sess.snapshot()
+
 		st.Headed = m.headed
 	}
 	return st
@@ -470,6 +473,7 @@ func (m *Manager) Upload(ctx context.Context, selector string, paths []string) e
 // arm/wait (session's downloadViaClick/downloadViaURL), then moving the
 // result to destPath and cleaning up the temp dir.
 func (m *Manager) Download(ctx context.Context, selector, url, destPath string) (DownloadResult, error) {
+
 	// The url form navigates the browser, so it gets the same scheme policy
 	// as Navigate (a file:// download would copy any readable file into the
 	// workspace). The click form has no URL of its own to check here.
@@ -527,6 +531,7 @@ func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
+
 	return copyThenRemove(src, dst)
 }
 
@@ -540,6 +545,7 @@ func copyThenRemove(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
 	if err != nil {
 		return err

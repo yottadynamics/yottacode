@@ -83,10 +83,15 @@ func TestAgentTool_RunChildPanicInOrchestration_ClosesTranscript(t *testing.T) {
 
 	panicEmit := func(Event) { panic("boom in orchestration") }
 
-	result, errored, status, _ := tool.runChild(
-		context.Background(), taskID, cfg, "p", transcript, panicEmit, nil,
-		streamer, "", childRunOpts{reg: reg},
-	)
+	var result string
+	var errored bool
+	var status subagents.TaskStatus
+	withSuppressedPanicRecoveryStderr(t, func() {
+		result, errored, status, _ = tool.runChild(
+			context.Background(), taskID, cfg, "p", transcript, panicEmit, nil,
+			streamer, "", childRunOpts{reg: reg},
+		)
+	})
 
 	if !errored || status != subagents.TaskErrored {
 		t.Fatalf("expected errored=true status=TaskErrored after a recovered panic, got errored=%v status=%v", errored, status)

@@ -94,6 +94,7 @@ func (f *fakeBrowserSession) Tabs(ctx context.Context) ([]browser.TabInfo, error
 	f.calls = append(f.calls, "tabs")
 	return f.tabsResult, f.tabsErr
 }
+
 func (f *fakeBrowserSession) Handoff(ctx context.Context) (browser.HandoffResult, error) {
 	f.calls = append(f.calls, "handoff")
 	return f.handoffResult, f.handoffErr
@@ -237,6 +238,7 @@ func TestRegisterCoreCwdTools_BrowserGate(t *testing.T) {
 	names := []string{
 		"browser_status", "browser_navigate", "browser_screenshot", "browser_inspect",
 		"browser_click", "browser_type", "browser_hotkey", "browser_scroll",
+
 		"browser_wait", "browser_handoff", "browser_close", "browser_tabs", "browser_switch_tab",
 		"browser_close_tab", "browser_upload", "browser_download",
 		"browser_console_logs", "browser_network_requests",

@@ -17,6 +17,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   — drive a real, headless Chrome/Chromium instance over the Chrome
   DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
   dependency. A fresh, isolated temp profile per session (never your
+
   real, logged-in browser), headless by default, and not available to
   `dispatch` workers. The session tracks every tab it opens;
   `browser_click`/`browser_type` auto-follow a tab their own action opens; `browser_tabs`/`browser_switch_tab`/`browser_close_tab` cover listing, switching among, and closing the rest (refusing to close the only remaining tab). `browser_upload` and `browser_download`
@@ -34,6 +35,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   the whole session (including `browser_close`) forever. If the
   browser process itself crashes or is killed, the next action
   transparently relaunches a fresh session instead of failing forever
+
   with an opaque dead-connection error. `browser_handoff` reopens the
   isolated session as a visible window (same URL, fresh isolated
   profile) so you can complete a human-verification challenge such as
@@ -511,7 +513,6 @@ worktree-permissions-fine-grained-review
   short of remembering to press Esc. It's now bounded to 20s; past that
   the turn is canceled exactly as Esc/Ctrl+C would, and the quit
   completes on its own.
-
 
 ## 0.3.0 — 2026-06-10
 
