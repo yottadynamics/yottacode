@@ -331,7 +331,7 @@ func launchSession(ctx context.Context, bin, profileDir string, lo launchOptions
 }
 
 func launchSessionMode(ctx context.Context, bin, profileDir string, headless bool, lo launchOptions) (pageSession, error) {
-	l := launcher.New().
+	l := hardenBrowserFlags(launcher.New()).
 		Bin(bin).
 		Headless(headless).
 		UserDataDir(profileDir).
