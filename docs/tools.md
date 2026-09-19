@@ -124,7 +124,6 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_hotkey`](#browser_hotkey) | required | Experimental behind `browser`; send a key or key combo to the page |
 | [`browser_scroll`](#browser_scroll) | required | Experimental behind `browser`; scroll an element into view, or scroll the page by direction/delta |
 | [`browser_wait`](#browser_wait) | none | Experimental behind `browser`; wait for a selector/text/network-idle condition |
-| [`browser_handoff`](#browser_handoff) | required | Experimental behind `browser`; reopen the isolated session as a visible window so the user can complete a human-verification challenge |
 | [`browser_close`](#browser_close) | none | Experimental behind `browser`; close the browser session and remove its temp profile |
 | [`browser_tabs`](#browser_tabs) | none | Experimental behind `browser`; list every tracked tab and which one is active |
 | [`browser_switch_tab`](#browser_switch_tab) | none | Experimental behind `browser`; switch which tracked tab later calls act on |
@@ -133,6 +132,9 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_download`](#browser_download) | required | Experimental behind `browser`; trigger a download (via click or url) and save it to a local path |
 | [`browser_console_logs`](#browser_console_logs) | required | Experimental behind `browser`; return buffered console.* calls and uncaught exceptions from the active page |
 | [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
+| [`browser_eval`](#browser_eval) | required | Experimental behind `browser`; evaluate a JavaScript expression in the page and return the result as JSON |
+| [`browser_back`](#browser_back) | required | Experimental behind `browser`; go back one page in the active tab's history |
+| [`browser_dialog`](#browser_dialog) | `accept` only | Experimental behind `browser`; set how JavaScript dialogs (alert/confirm/prompt) are answered |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2184,25 +2186,13 @@ and
 [security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
 for the full safety posture.
 
-In `/auto` mode the browser tools are auto-approved except
-[`browser_upload`](#browser_upload), [`browser_download`](#browser_download),
-and [`browser_navigate`](#browser_navigate) to any host other than
-`localhost` / `127.x.x.x` / `::1`, which stay in the auto-mode safety floor
-and always prompt (only `/yolo` skips that). A saved per-site rule such as
-`Browser(navigate example.com)` skips the navigate prompt for that site.
-
-Every browser tool that prompts for approval can be remembered from the
-prompt with `[S]` (this session), `[A]` (saved) or `[D]` (block) — see
-[security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
-for the `Browser(...)` rules those create and what they deliberately don't
-cover (`browser_upload`/`browser_download`, non-web URLs). Where a tool
-below says "Always prompts for approval", read "prompts unless a rule you
-created allows it".
-
 `browser_status` reports the binary path found (if any), whether a
-session is active, its mode (`headless`, or `headed` after
-[`browser_handoff`](#browser_handoff)), its current URL, and its profile
-directory. It never launches a browser.
+session is active, its current URL, its profile directory, and how
+JavaScript dialogs are being answered (`dialogs: dismiss|accept`). For a
+remote backend (Browserbase, Camofox) it reports `provider: … (remote)`
+instead of a local binary and profile, and says what a plan downgrade
+dropped. It notes when the previous browser was closed for sitting idle.
+It never launches a browser.
 
 | Param | Type | Default |
 |---|---|---|
@@ -2219,15 +2209,18 @@ profile directory) on the first call in a session.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `url` | string | — | Required. Only `http://`, `https://` and `about:blank` are accepted |
+| `url` | string | — | Required |
 | `wait_until` | string | `load` | `load`, `domcontentloaded`, or `networkidle` |
 
-Always prompts for approval. Any other scheme — `file:`, `chrome:`,
-`view-source:`, `javascript:`, `data:` — is refused before a browser is
-even launched: a `file://` URL would let the browser read files the read
-tools deny (like `.env`) and hand their contents to the model. To look at
-a local file or built site, serve it from a local web server and open its
-`http://localhost` URL. `browser_download`'s `url` form has the same rule.
+Always prompts for approval. Cloud instance-metadata endpoints
+(`169.254.169.254`, `metadata.google.internal`, anything in the
+`169.254.0.0/16` link-local range, and the like), and a hostname that
+resolves to one, are refused — including via a redirect or a page's own
+requests to a literal address, and including under `--yolo` — with a
+`blocked URL` error (best-effort against DNS aliases; see the
+[security doc](security-and-allow-lists.md#browser-automation)). On a remote backend the result
+ends in `[remote browser: <provider>]`. For plain information retrieval
+prefer `web_search`/`fetch_url`.
 
 ## browser_screenshot
 
@@ -2238,8 +2231,13 @@ the active model doesn't accept image input.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `selector` | string | — | CSS selector to screenshot just that element |
+| `selector` | string | — | CSS selector (or `@eN` ref) to screenshot just that element |
 | `full_page` | boolean | `false` | Capture the full scrollable page, not just the viewport. Ignored when `selector` is set. |
+| `annotate` | boolean | `false` | Draw a numbered box over every interactive control; box *N* is ref `@eN`. Whole-page only — cannot be combined with `selector`. Refreshes the refs like a whole-page `browser_inspect`. Not available on Camofox. |
+
+With `annotate` the text label reports how many controls were boxed and
+how many were not drawn (off-screen, or past an 80-box limit); the
+overlay is removed from the page again before the tool returns.
 
 Always prompts for approval — a screenshot can surface on-screen
 private data even without clicking anything.
@@ -2251,16 +2249,34 @@ outline) of the current page, or of one element's subtree if
 `selector` is given. The token-cheap way to "read" a page without a
 screenshot.
 
+Every interactive element (button, link, textbox, checkbox, combobox,
+tab, …) is tagged with an `@eN` ref, with its state (`[disabled]`,
+`[checked]`, …) after it. Every tool that takes an element target
+accepts a ref wherever it accepts a CSS selector. Refs are valid until
+the next whole-page inspect; a ref whose element is gone fails as stale.
+A whole-page inspect also lists controls inside iframes (same- and
+cross-origin) under a `--- frame "name" url ---` header, with refs that
+continue the numbering. A frame that runs in its own process (site
+isolation) is listed too, but only `browser_click` and `browser_type`
+work on its controls; other tools fail with "not supported inside a
+cross-process iframe".
+
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `selector` | string | — | CSS selector to scope the snapshot to that element's subtree |
+| `selector` | string | — | CSS selector (or `@eN` ref) to scope the snapshot to that element's subtree. A scoped inspect *adds* refs; it does not invalidate earlier ones. |
+| `interactive_only` | boolean | `false` | List only the interactive elements, flat, each with its ref — the compact "what can I click or fill?" view. Ignored by Camofox. |
+
+Output over 500 nodes / 20,000 characters ends in `…[truncated]` and the
+complete snapshot is saved to a file in a per-session scratch directory
+(removed when the browser closes); the returned text names the path, and
+refs past the cut are still valid.
 
 Always prompts for approval — same privacy rationale as
 `browser_screenshot`.
 
 ## browser_click
 
-Click the element matching a CSS selector, waiting for it to become
+Click the element matching a CSS selector or `@eN` ref, waiting for it to become
 interactable first.
 
 | Param | Type | Default |
@@ -2271,7 +2287,7 @@ Always prompts for approval.
 
 ## browser_type
 
-Clear and type text into the element matching a CSS selector, waiting
+Clear and type text into the element matching a CSS selector or `@eN` ref, waiting
 for it to become interactable first.
 
 | Param | Type | Default | Notes |
@@ -2310,7 +2326,7 @@ Always prompts for approval.
 
 ## browser_wait
 
-Wait for a CSS selector to become visible, for text to appear anywhere
+Wait for a CSS selector (or `@eN` ref) to become visible, for text to appear anywhere
 on the page, and/or for the network to go idle.
 
 | Param | Type | Default | Notes |
@@ -2323,52 +2339,6 @@ on the page, and/or for the network to go idle.
 No approval — it blocks on an already-visible condition and never
 launches the browser: a session that was never started has nothing to
 wait for yet.
-
-## browser_handoff
-
-Hand the isolated browser to the user so they can complete a step only
-a person can do — typically a human-verification challenge (a "Press &
-Hold" box, a CAPTCHA) that the headless session can't show them. It
-reopens the session as a **visible window** on the current URL, and the
-session stays visible for the rest of its life.
-
-It does not solve, click through, or bypass anything. The user does the
-verification themselves; the tool result tells the agent to say what to
-do, wait for the user's reply, then confirm the real page loaded with
-`browser_inspect`/`browser_screenshot`.
-
-| Param | Type | Default |
-|---|---|---|
-| _(none)_ | | |
-
-Always prompts for approval — it launches a new browser process and
-opens a window on the user's display.
-
-Behavior worth knowing:
-
-- **Fresh isolated profile, not a copy.** Chrome can't switch from
-  headless to headed in place, and carrying the headless session's
-  cookies across would also carry whatever "this client is automated"
-  verdict the site already attached to them. Only the current URL
-  carries over; anything else you did in the headless session (a login,
-  a filled form) has to be redone.
-- **Fills the window.** Unlike the headless session (which emulates a
-  fixed 1280×800 laptop viewport), the visible window uses your
-  display's real window size and Chrome's real user agent, so the page
-  follows the window when you resize or maximize it.
-- **Launch-first, then swap.** The visible browser is started before the
-  headless one is torn down, so a failure leaves the existing session
-  untouched.
-- **Needs a display.** On Linux that means `DISPLAY` or `WAYLAND_DISPLAY`
-  is set; macOS always qualifies. On an SSH, container, or CI host the
-  call fails with an error that tells the agent to ask you to open the
-  page in your own browser and paste what it needs.
-- **Stays headed.** If you close the window or it crashes, the next
-  action relaunches a normal *headless* session rather than popping a
-  window you didn't ask for; call `browser_handoff` again if needed.
-- **Sites may still re-challenge.** The window is a real Chrome under
-  automation control, and a site's bot detection can decide to challenge
-  it again. Nothing here tries to evade that.
 
 ## browser_close
 
@@ -2434,14 +2404,11 @@ launching the browser like every other mutating action.
 | `selector` | string | — (required) |
 | `paths` | array of string | — (required) |
 
-Always prompts for approval, and the prompt lists the files being
-uploaded. Every path is resolved and validated the same way `write_file`
-validates its destination (inside the session workspace or an
-`--allow-paths` root, no symlink writes) **and** against the same
-credential read deny list `read_file` uses (`.env`, `~/.ssh`, …) —
-uploading a file hands its bytes to whatever origin the active page is
-on, so a file the model can't read it also can't upload. One denied path
-refuses the whole batch.
+Always prompts for approval. Every path is resolved and validated the
+same way `write_file` validates its destination (inside the session
+workspace or an `--allow-paths` root, no symlink writes) — uploading a
+file hands its bytes to whatever origin the active page is on, which is
+at least as sensitive as writing it locally.
 
 ## browser_download
 
@@ -2490,11 +2457,68 @@ Always prompts for approval — request URLs can carry private data (a
 session token in a query param) and reveal what backend APIs a page
 talks to, same rationale as `browser_console_logs`.
 
+## browser_eval
+
+Evaluate a JavaScript **expression** in the active page's main frame,
+with DevTools-console semantics, and return the result as JSON: a
+returned Promise is awaited; strings come back quoted (so `"1"` and `1`
+stay distinguishable); `NaN`, `Infinity` and bigints keep their
+spelling; a value that can't be serialized (a DOM node, a function) comes
+back as its description; a thrown exception is reported as an error
+naming it. To run statements, wrap them in an IIFE:
+`(() => { …; return x })()`.
+
+| Param | Type | Default |
+|---|---|---|
+| `expression` | string | — (required) |
+
+A script that runs longer than 15 seconds is terminated (the page stays
+usable), and output is truncated at 20,000 characters. It runs in the
+page's own JavaScript context, so it sees whatever the page's origin can:
+cookies, storage, the DOM. Not available on Camofox.
+
+Always prompts for approval, and never offers an "always allow" shortcut
+— see
+[security-and-allow-lists.md](security-and-allow-lists.md#browser-automation).
+
+## browser_back
+
+Go back one entry in the active tab's history, like the Back button, and
+wait for the page to load. Errors with "no earlier page in history" when
+the tab has nothing to go back to (the blank page a fresh tab starts on
+doesn't count as history).
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+Always prompts for approval.
+
+## browser_dialog
+
+Set how JavaScript dialogs (`alert`, `confirm`, `prompt`,
+`beforeunload`) are answered from now on. A dialog blocks its page until
+answered, so every one is answered automatically; the default is
+**dismiss** (`confirm()` returns `false`). Set the policy *before* the
+click or navigation that triggers the dialog. The policy applies to every
+tab, until changed or until the browser is closed. Every dialog — type,
+message, and how it was answered — is recorded and appears in
+`browser_console_logs` with level `dialog`.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `action` | string | — | Required: `accept` or `dismiss` |
+| `prompt_text` | string | — | The answer to `prompt()` dialogs when accepting; omit to accept the prompt's own default |
+
+`accept` prompts for approval — it lets a `confirm()` through that may
+gate a destructive action the triggering click's approval never covered;
+`dismiss` only reduces capability and needs none. A no-op on Camofox
+(its API has no dialog handling).
+
 ---
 
-v1 scope for the whole `browser_*` family: headless by default (a
-visible window only when the user is handed the session via
-[`browser_handoff`](#browser_handoff)), a fresh isolated profile per session (never your real,
+v1 scope for the whole `browser_*` family: headless only (no visible
+window), a fresh isolated profile per session (never your real,
 logged-in Chrome — no cookies, history, or saved logins), and no
 `dispatch` worker access. The session tracks every tab it has opened,
 but only ever acts on one **active** tab at a time — the tools don't
@@ -2503,7 +2527,6 @@ same approval queue as everything else regardless of how many tabs are
 tracked. Tab indexes are point-in-time listing indexes and can shift
 when a tab closes; list again before using a stale index. `browser_click` and `browser_type` (with `submit: true`)
 auto-follow a tab opened as a direct result of that action (a
-
 `target="_blank"` link, `window.open()`) within a fixed ~300ms
 detection window — the tool's result message reports the resulting
 `current url` and `tabs` count either way, and `browser_tabs`/
@@ -2620,6 +2643,7 @@ state, create tool validates the title and opens the issue.
 | _(none)_ | | |
 
 No approval. Parallel-safe.
+
 
 ## issue_create
 

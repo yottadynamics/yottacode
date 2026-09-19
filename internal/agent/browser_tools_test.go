@@ -47,6 +47,16 @@ type fakeBrowserSession struct {
 	networkRequestsResult []browser.NetworkEntry
 	networkRequestsErr    error
 
+	annotatedShot browser.AnnotatedShot
+	annotatedErr  error
+	evalResult    string
+	evalErr       error
+	backResult    browser.NavigateResult
+	backErr       error
+	dialogAccept  bool
+	dialogPrompt  string
+	setDialogErr  error
+
 	calls []string
 }
 
@@ -62,8 +72,8 @@ func (f *fakeBrowserSession) Screenshot(ctx context.Context, selector string, fu
 	f.calls = append(f.calls, "screenshot:"+selector)
 	return f.screenshotData, f.screenshotErr
 }
-func (f *fakeBrowserSession) Inspect(ctx context.Context, selector string) (string, error) {
-	f.calls = append(f.calls, "inspect:"+selector)
+func (f *fakeBrowserSession) Inspect(ctx context.Context, selector string, opts browser.InspectOptions) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("inspect:%s:interactive=%t", selector, opts.InteractiveOnly))
 	return f.inspectText, f.inspectErr
 }
 func (f *fakeBrowserSession) Click(ctx context.Context, selector string) error {
@@ -123,6 +133,27 @@ func (f *fakeBrowserSession) NetworkRequests(ctx context.Context, limit int) ([]
 	f.calls = append(f.calls, fmt.Sprintf("network_requests:%d", limit))
 	return f.networkRequestsResult, f.networkRequestsErr
 }
+
+func (f *fakeBrowserSession) ScreenshotAnnotated(ctx context.Context, fullPage bool) (browser.AnnotatedShot, error) {
+	f.calls = append(f.calls, fmt.Sprintf("screenshot_annotated:full=%t", fullPage))
+	return f.annotatedShot, f.annotatedErr
+}
+func (f *fakeBrowserSession) Eval(ctx context.Context, expression string) (string, error) {
+	f.calls = append(f.calls, "eval:"+expression)
+	return f.evalResult, f.evalErr
+}
+func (f *fakeBrowserSession) Back(ctx context.Context) (browser.NavigateResult, error) {
+	f.calls = append(f.calls, "back")
+	return f.backResult, f.backErr
+}
+func (f *fakeBrowserSession) SetDialogPolicy(accept bool, promptText string) error {
+	f.calls = append(f.calls, fmt.Sprintf("dialog:%t:%s", accept, promptText))
+	if f.setDialogErr == nil {
+		f.dialogAccept, f.dialogPrompt = accept, promptText
+	}
+	return f.setDialogErr
+}
+func (f *fakeBrowserSession) DialogPolicy() (bool, string) { return f.dialogAccept, f.dialogPrompt }
 
 var _ browserSession = (*fakeBrowserSession)(nil)
 

@@ -666,6 +666,51 @@ malformed filter graph or unexpectedly huge input can't hang a tool call
 indefinitely. Values `<= 0` fall back to the defaults above. See
 [video-tools.md](video-tools.md#resource-usage).
 
+## Browser
+
+The `[browser]` block tunes the experimental `browser_*` tools (see
+[browser.md](browser.md)). It does nothing unless the `browser`
+experimental feature is on, and an absent block means the plain local,
+headless, isolated-profile Chrome.
+
+```toml
+[browser]
+provider = "local"          # "local" (default) | "browserbase" | "camofox"
+stealth = false             # local only: hide the obvious automation tells
+proxy_url = ""              # local only: http://, https:// or socks5://, optional user:pass@
+idle_timeout_minutes = 15   # close a browser left unused this long; 0 = default, negative = never
+
+[browser.browserbase]       # provider = "browserbase"
+api_key_env = "BROWSERBASE_API_KEY"   # env var holding the key — the key itself never goes in this file
+project_id = ""             # else $BROWSERBASE_PROJECT_ID
+base_url = ""               # override the API endpoint
+no_proxies = false          # residential proxies are on by default (and billed)
+no_keep_alive = false       # reconnection after a dropped connection is on by default
+advanced_stealth = false    # Browserbase's custom Chromium (their Scale plan)
+session_timeout_seconds = 0 # 0 = project default; max 21600
+
+[browser.camofox]           # provider = "camofox"
+url = ""                    # else $CAMOFOX_URL
+api_key_env = "CAMOFOX_API_KEY"       # optional bearer token, read from this env var
+```
+
+`stealth` and `proxy_url` apply to the local browser only; combining them
+with another provider is a load-time error rather than a silent no-op. A
+proxy URL's credentials, an API key, and a project id are never echoed in
+`browser_status` or in error messages. API keys come from environment
+variables, but **a proxy URL's `user:pass@` is stored in this file in
+plain text** — keep the file's permissions tight, or use an
+unauthenticated local proxy. A Browserbase `base_url` must be `https://`
+(plain `http://` only to localhost), since it is sent the API key. `browserbase` and `camofox` send
+page content to a third party or a server you run — see the trade-offs in
+[browser.md](browser.md#backends) and
+[security-and-allow-lists.md](security-and-allow-lists.md#browser-automation).
+
+A config with a bad `[browser]` value fails to load like any other
+invalid section, but a *valid* block whose provider then can't start
+(a missing API key, an unreachable Camofox server) only fails the first
+`browser_*` call, with a message naming what's missing.
+
 ## Model routing
 
 The `[router]` block hosts two independent, opt-in features.

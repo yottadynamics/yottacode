@@ -203,6 +203,9 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&BrowserDownloadTool{browserToolBase: base, Cwd: cwd, WriteOpts: wo})
 		reg.Register(&BrowserConsoleLogsTool{browserToolBase: base})
 		reg.Register(&BrowserNetworkRequestsTool{browserToolBase: base})
+		reg.Register(&BrowserEvalTool{browserToolBase: base})
+		reg.Register(&BrowserBackTool{browserToolBase: base})
+		reg.Register(&BrowserDialogTool{browserToolBase: base})
 	}
 	if deps.EnableLSP {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}

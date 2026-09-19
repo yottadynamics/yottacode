@@ -62,6 +62,14 @@ func IsAutoModeSafetyFloor(toolName string) bool {
 	case "run_bash", "run_tests", "debug_start", "debug_eval", "git_commit", "git_checkpoint", "rollback",
 		"browser_upload", "browser_download":
 		return true
+	case "browser_eval", "browser_dialog":
+		// browser_eval runs arbitrary JavaScript with the page origin's
+		// authority (cookies, storage, the DOM) — the same class as
+		// debug_eval. browser_dialog only prompts when it is switching to
+		// "accept", which lets a confirm() through that gates a destructive
+		// action the triggering click never covered; dismissing never
+		// reaches approval, so flooring the name floors exactly that case.
+		return true
 	case "enter_worktree", "exit_worktree":
 		// Worktree entry/exit shifts what the agent is "working on"
 		// (and exit_worktree with cleanup=remove discards uncommitted

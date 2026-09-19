@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,15 +25,13 @@ type browserSession interface {
 	Status() browser.Status
 	Navigate(ctx context.Context, url, waitUntil string) (browser.NavigateResult, error)
 	Screenshot(ctx context.Context, selector string, fullPage bool) ([]byte, error)
-	Inspect(ctx context.Context, selector string) (string, error)
+	Inspect(ctx context.Context, selector string, opts browser.InspectOptions) (string, error)
 	Click(ctx context.Context, selector string) error
 	Type(ctx context.Context, selector, text string, submit bool) error
 	Hotkey(ctx context.Context, keys string) error
 	Scroll(ctx context.Context, selector string, deltaX, deltaY float64) error
 	Wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error
 	Close(ctx context.Context) error
-
-	Handoff(ctx context.Context) (browser.HandoffResult, error)
 	Tabs(ctx context.Context) ([]browser.TabInfo, error)
 	SwitchTab(ctx context.Context, index int) error
 	CloseTab(ctx context.Context, index int) error
@@ -42,6 +39,11 @@ type browserSession interface {
 	Download(ctx context.Context, selector, url, destPath string) (browser.DownloadResult, error)
 	ConsoleLogs(ctx context.Context, limit int) ([]browser.ConsoleEntry, error)
 	NetworkRequests(ctx context.Context, limit int) ([]browser.NetworkEntry, error)
+	ScreenshotAnnotated(ctx context.Context, fullPage bool) (browser.AnnotatedShot, error)
+	Eval(ctx context.Context, expression string) (string, error)
+	Back(ctx context.Context) (browser.NavigateResult, error)
+	SetDialogPolicy(accept bool, promptText string) error
+	DialogPolicy() (accept bool, promptText string)
 }
 
 // browserToolBase is embedded by every browser_* tool struct. Enabled
@@ -62,7 +64,7 @@ type BrowserStatusTool struct{ browserToolBase }
 
 func (t *BrowserStatusTool) Name() string { return "browser_status" }
 func (t *BrowserStatusTool) Description() string {
-	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, whether it is headless (invisible to the user) or headed (visible after browser_handoff), its current URL, and its isolated profile directory. Never launches a browser."
+	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, its current URL, and its isolated profile directory. Never launches a browser."
 }
 func (t *BrowserStatusTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -86,11 +88,27 @@ func (t *BrowserStatusTool) Execute(context.Context, string) (string, error) {
 	if profile == "" {
 		profile = "(none)"
 	}
-	mode := "headless"
-	if st.Headed {
-		mode = "headed"
+	dialogs := "dismiss"
+	if accept, _ := t.Session.DialogPolicy(); accept {
+		dialogs = "accept"
 	}
-	return fmt.Sprintf("binary: %s\nactive: %t\nmode: %s\nurl: %s\nprofile_dir: %s", binary, st.Active, mode, url, profile), nil
+	out := fmt.Sprintf("binary: %s\nactive: %t\nurl: %s\nprofile_dir: %s\ndialogs: %s", binary, st.Active, url, profile, dialogs)
+	if st.Remote {
+		// A browser we don't launch: there is no local binary or profile to
+		// report, and the pages are processed by someone else's server.
+		out = fmt.Sprintf("provider: %s (remote", st.Provider)
+		if st.Endpoint != "" {
+			out += " — " + st.Endpoint
+		}
+		out += fmt.Sprintf(")\nactive: %t\nurl: %s\ndialogs: %s", st.Active, url, dialogs)
+	}
+	if len(st.Degraded) > 0 {
+		out += "\nnote: the account's plan lacks " + strings.Join(st.Degraded, " and ") + ", so this session runs without it"
+	}
+	if st.ReapedIdle {
+		out += "\nnote: the previous browser session was closed after sitting idle; its tabs and page state are gone, and the next browser_* action starts a fresh one"
+	}
+	return out, nil
 }
 
 // BrowserNavigateTool navigates the single active page to a URL, lazily
@@ -99,7 +117,7 @@ type BrowserNavigateTool struct{ browserToolBase }
 
 func (t *BrowserNavigateTool) Name() string { return "browser_navigate" }
 func (t *BrowserNavigateTool) Description() string {
-	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning. The session is invisible to the user: if the page shows a human-verification challenge (\"Press & Hold\", CAPTCHA), do not tell the user to look for a browser window — call browser_handoff so they can complete it themselves."
+	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning. For plain information retrieval prefer web_search or fetch_url (faster and cheaper); use the browser when you need to interact with a page or see it rendered. Cloud instance-metadata endpoints (169.254.169.254 and friends) are always refused."
 }
 func (t *BrowserNavigateTool) Schema() map[string]any {
 	return map[string]any{
@@ -141,7 +159,13 @@ func (t *BrowserNavigateTool) Execute(ctx context.Context, argsJSON string) (str
 	if err != nil {
 		return "", fmt.Errorf("browser_navigate: %w", err)
 	}
-	return fmt.Sprintf("navigated to %s (title: %q)", res.URL, res.Title), nil
+	msg := fmt.Sprintf("navigated to %s (title: %q)", res.URL, res.Title)
+	// Say so when the page is being loaded by someone else's browser: the
+	// model (and the transcript) should never have to guess where it went.
+	if res.Remote {
+		msg += fmt.Sprintf(" [remote browser: %s]", res.Provider)
+	}
+	return msg, nil
 }
 
 // BrowserScreenshotTool captures a PNG of the page (or one element) as an
@@ -154,14 +178,15 @@ type BrowserScreenshotTool struct {
 
 func (t *BrowserScreenshotTool) Name() string { return "browser_screenshot" }
 func (t *BrowserScreenshotTool) Description() string {
-	return "Capture a PNG screenshot of the current page, or of one element if a selector is given. Requires approval: a screenshot can surface on-screen private data even without clicking anything."
+	return "Capture a PNG screenshot of the current page, or of one element if a selector is given. With annotate, a numbered box is drawn over every interactive control — box N is element ref @eN, so you can act on what you see (browser_click @e7) without guessing selectors; it refreshes the refs like a whole-page browser_inspect. Requires approval: a screenshot can surface on-screen private data even without clicking anything."
 }
 func (t *BrowserScreenshotTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector":  map[string]any{"type": "string", "description": "CSS selector to screenshot just that element. Omit to screenshot the page."},
+			"selector":  map[string]any{"type": "string", "description": "CSS selector (or @eN ref) to screenshot just that element. Omit to screenshot the page."},
 			"full_page": map[string]any{"type": "boolean", "description": "Capture the full scrollable page rather than just the viewport. Ignored when selector is set."},
+			"annotate":  map[string]any{"type": "boolean", "description": "Draw a numbered box over every interactive control; box N is element ref @eN. Whole-page screenshots only — cannot be combined with selector."},
 		},
 	}
 }
@@ -187,15 +212,37 @@ func (t *BrowserScreenshotTool) ExecuteMultimodal(ctx context.Context, argsJSON 
 	var a struct {
 		Selector string `json:"selector"`
 		FullPage bool   `json:"full_page"`
+		Annotate bool   `json:"annotate"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return MultimodalResult{}, fmt.Errorf("browser_screenshot: invalid args: %w", err)
 	}
-	data, err := t.Session.Screenshot(ctx, a.Selector, a.FullPage)
-	if err != nil {
-		return MultimodalResult{}, fmt.Errorf("browser_screenshot: %w", err)
+	var (
+		data  []byte
+		label string
+	)
+	if a.Annotate {
+		if strings.TrimSpace(a.Selector) != "" {
+			return MultimodalResult{}, fmt.Errorf("browser_screenshot: annotate captures the whole page and cannot be combined with selector")
+		}
+		shot, err := t.Session.ScreenshotAnnotated(ctx, a.FullPage)
+		if err != nil {
+			return MultimodalResult{}, fmt.Errorf("browser_screenshot: %w", err)
+		}
+		data = shot.PNG
+		label = fmt.Sprintf("[screenshot: %d bytes, image/png, annotated: %d control(s) boxed — box N is ref @eN", len(data), shot.Labeled)
+		if shot.Skipped > 0 {
+			label += fmt.Sprintf("; %d not drawn (off-screen or over the limit) — use browser_inspect for those refs", shot.Skipped)
+		}
+		label += "]"
+	} else {
+		var err error
+		data, err = t.Session.Screenshot(ctx, a.Selector, a.FullPage)
+		if err != nil {
+			return MultimodalResult{}, fmt.Errorf("browser_screenshot: %w", err)
+		}
+		label = fmt.Sprintf("[screenshot: %d bytes, image/png]", len(data))
 	}
-	label := fmt.Sprintf("[screenshot: %d bytes, image/png]", len(data))
 	if !t.SupportsImages {
 		return MultimodalResult{Content: label + " — current model does not support image input"}, nil
 	}
@@ -209,13 +256,14 @@ type BrowserInspectTool struct{ browserToolBase }
 
 func (t *BrowserInspectTool) Name() string { return "browser_inspect" }
 func (t *BrowserInspectTool) Description() string {
-	return "Return an accessibility-tree text snapshot (role, name, value) of the current page, or of one element if a selector is given. Cheaper on tokens than a screenshot. Requires approval: the snapshot can surface on-screen private data even without clicking anything."
+	return "Return an accessibility-tree text snapshot (role, name, value) of the current page, or of one element if a selector is given. Cheaper on tokens than a screenshot. Every interactive element (button, link, textbox, checkbox, …) is tagged with an @eN ref that browser_click, browser_type and the other element tools accept in place of a CSS selector — prefer refs to guessing selectors. Refs are valid until the next whole-page browser_inspect; inspect again after the page changes. Use interactive_only for a compact list of just the controls. Oversized snapshots are saved to a file whose path is returned. Requires approval: the snapshot can surface on-screen private data even without clicking anything."
 }
 func (t *BrowserInspectTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector": map[string]any{"type": "string", "description": "CSS selector to scope the snapshot to that element's subtree. Omit for the whole page."},
+			"selector":         map[string]any{"type": "string", "description": "CSS selector (or @eN ref) to scope the snapshot to that element's subtree. Omit for the whole page."},
+			"interactive_only": map[string]any{"type": "boolean", "description": "List only the interactive elements, flat, each with its @eN ref — the compact view for finding what to click or fill. Omit for the full outline including headings and text."},
 		},
 	}
 }
@@ -235,12 +283,13 @@ func (t *BrowserInspectTool) Execute(ctx context.Context, argsJSON string) (stri
 		return browserDisabledMessage, nil
 	}
 	var a struct {
-		Selector string `json:"selector"`
+		Selector        string `json:"selector"`
+		InteractiveOnly bool   `json:"interactive_only"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("browser_inspect: invalid args: %w", err)
 	}
-	out, err := t.Session.Inspect(ctx, a.Selector)
+	out, err := t.Session.Inspect(ctx, a.Selector, browser.InspectOptions{InteractiveOnly: a.InteractiveOnly})
 	if err != nil {
 		return "", fmt.Errorf("browser_inspect: %w", err)
 	}
@@ -252,13 +301,13 @@ type BrowserClickTool struct{ browserToolBase }
 
 func (t *BrowserClickTool) Name() string { return "browser_click" }
 func (t *BrowserClickTool) Description() string {
-	return "Click the element matching a CSS selector, waiting for it to become interactable first."
+	return "Click the element matching a CSS selector or @eN ref (from browser_inspect), waiting for it to become interactable first."
 }
 func (t *BrowserClickTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector": map[string]any{"type": "string", "description": "CSS selector of the element to click"},
+			"selector": map[string]any{"type": "string", "description": "CSS selector (or @eN ref from browser_inspect) of the element to click"},
 		},
 		"required": []string{"selector"},
 	}
@@ -307,7 +356,7 @@ func (t *BrowserTypeTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector": map[string]any{"type": "string", "description": "CSS selector of the input/textarea/contenteditable element"},
+			"selector": map[string]any{"type": "string", "description": "CSS selector (or @eN ref from browser_inspect) of the input/textarea/contenteditable element"},
 			"text":     map[string]any{"type": "string", "description": "Text to type"},
 			"submit":   map[string]any{"type": "boolean", "description": "Press Enter after typing"},
 		},
@@ -318,18 +367,9 @@ func (t *BrowserTypeTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserTypeTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Selector string `json:"selector"`
-		Text     string `json:"text"`
-		Submit   bool   `json:"submit"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	// The typed text is the point of the call — into a hostile page's field
-	// it is also a way to send data out — so the prompt must show it, not
-	// just the selector.
-	submit := ""
-	if a.Submit {
-		submit = ", submit"
-	}
-	return fmt.Sprintf("browser_type(%s, text=%s%s)", a.Selector, previewQuote(a.Text, previewTextMax), submit)
+	return fmt.Sprintf("browser_type(%s)", a.Selector)
 }
 func (t *BrowserTypeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -437,7 +477,7 @@ func (t *BrowserScrollTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector":  map[string]any{"type": "string", "description": "CSS selector to scroll into view. When set, direction/delta_x/delta_y are ignored."},
+			"selector":  map[string]any{"type": "string", "description": "CSS selector (or @eN ref) to scroll into view. When set, direction/delta_x/delta_y are ignored."},
 			"direction": map[string]any{"type": "string", "enum": []string{"up", "down", "left", "right"}, "description": "Scroll direction, applied at a default magnitude. Ignored if delta_x/delta_y is non-zero."},
 			"delta_x":   map[string]any{"type": "number", "description": "Explicit horizontal scroll delta in pixels. Overrides direction."},
 			"delta_y":   map[string]any{"type": "number", "description": "Explicit vertical scroll delta in pixels. Overrides direction."},
@@ -498,7 +538,7 @@ func (t *BrowserWaitTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector":     map[string]any{"type": "string", "description": "Wait for this CSS selector to become visible"},
+			"selector":     map[string]any{"type": "string", "description": "Wait for this CSS selector (or @eN ref) to become visible"},
 			"text":         map[string]any{"type": "string", "description": "Wait for this text to appear anywhere on the page"},
 			"network_idle": map[string]any{"type": "boolean", "description": "Wait for the network to go idle"},
 			"timeout_ms":   map[string]any{"type": "integer", "description": "Deadline in milliseconds. Defaults to a built-in timeout."},
@@ -532,50 +572,6 @@ func (t *BrowserWaitTool) Execute(ctx context.Context, argsJSON string) (string,
 		return "", fmt.Errorf("browser_wait: %w", err)
 	}
 	return "wait condition satisfied", nil
-}
-
-// BrowserHandoffTool makes the isolated session visible so the human can
-// complete a step the headless browser can't show them — typically a
-// bot-verification challenge. It never solves or bypasses anything itself.
-type BrowserHandoffTool struct{ browserToolBase }
-
-func (t *BrowserHandoffTool) Name() string { return "browser_handoff" }
-func (t *BrowserHandoffTool) Description() string {
-	return "Hand the isolated browser to the user so they can complete a step only a person can do — such as a human-verification challenge (\"Press & Hold\", CAPTCHA). Reopens the isolated session as a visible window on the current URL (a fresh isolated profile; earlier cookies do not carry over) and keeps it visible for the rest of the session. This does not solve, click through, or bypass anything: the user does it. After calling it, tell the user what to do in the window and wait for their reply before continuing. Fails on hosts with no display (SSH, containers, CI); then ask the user to open the page in their own browser and paste what you need."
-}
-func (t *BrowserHandoffTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{}}
-}
-func (t *BrowserHandoffTool) RequiresApproval(string) bool { return t.Enabled }
-func (t *BrowserHandoffTool) PreviewCall(string) string {
-	// This string is the whole approval prompt, so it has to say what
-	// approving does: it opens a window for the user to act in. It does not
-	// approve, pass, or validate any check itself.
-	return "browser_handoff() — open the browser window so you can complete the verification yourself"
-}
-func (t *BrowserHandoffTool) Execute(ctx context.Context, _ string) (string, error) {
-	if !t.Enabled {
-		return browserDisabledMessage, nil
-	}
-	res, err := t.Session.Handoff(ctx)
-	if err != nil {
-		return "", fmt.Errorf("browser_handoff: %w", err)
-	}
-	where := res.URL
-	if where == "" {
-		where = "a blank page (there was no earlier page to reopen)"
-	}
-	var b strings.Builder
-	if res.AlreadyVisible {
-		fmt.Fprintf(&b, "the browser window is already visible, showing %s.", where)
-	} else {
-		fmt.Fprintf(&b, "opened a visible window of the isolated browser, showing %s.", where)
-	}
-	b.WriteString(" The user must complete the verification themselves in that window — do not try to solve or click through it yourself. Tell them what to do, then wait for their reply. Once they confirm, check the page with browser_inspect or browser_screenshot before continuing.")
-	if res.LoadWarning != "" {
-		fmt.Fprintf(&b, " Note: the page had not finished loading (%s); the window is still open.", res.LoadWarning)
-	}
-	return b.String(), nil
 }
 
 // BrowserCloseTool tears down the browser process and its isolated temp
@@ -747,12 +743,6 @@ type BrowserUploadTool struct {
 	browserToolBase
 	Cwd       *CwdRef
 	WriteOpts WritePathOptions
-
-	// DenyReadPaths is the credential-bearing read deny list every read tool
-	// enforces (see DefaultDenyReadPaths). Uploading is a read of the file —
-	// its bytes leave the machine — so the same list applies; without it an
-	// upload could hand ./.env to a web page even though read_file refuses it.
-	DenyReadPaths []string
 }
 
 func (t *BrowserUploadTool) Name() string { return "browser_upload" }
@@ -763,7 +753,7 @@ func (t *BrowserUploadTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector": map[string]any{"type": "string", "description": "CSS selector of the file input element"},
+			"selector": map[string]any{"type": "string", "description": "CSS selector (or @eN ref) of the file input element"},
 			"paths":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Local file paths to upload"},
 		},
 		"required": []string{"selector", "paths"},
@@ -772,25 +762,10 @@ func (t *BrowserUploadTool) Schema() map[string]any {
 func (t *BrowserUploadTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserUploadTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Selector string   `json:"selector"`
-		Paths    []string `json:"paths"`
+		Selector string `json:"selector"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	// Which files are leaving the machine is exactly what the user is being
-	// asked to approve, so list them (bounded, with the true count).
-	const maxShown = 5
-	shown := make([]string, 0, maxShown)
-	for i, p := range a.Paths {
-		if i == maxShown {
-			break
-		}
-		shown = append(shown, previewQuote(p, previewPathMax))
-	}
-	more := ""
-	if len(a.Paths) > maxShown {
-		more = fmt.Sprintf(" +%d more", len(a.Paths)-maxShown)
-	}
-	return fmt.Sprintf("browser_upload(%s, files=[%s]%s)", a.Selector, strings.Join(shown, ", "), more)
+	return fmt.Sprintf("browser_upload(%s)", a.Selector)
 }
 func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -814,10 +789,6 @@ func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (strin
 	for i, p := range a.Paths {
 		rp := resolvePath(cwd, p)
 		if err := ValidateWritePath(rp, t.WriteOpts); err != nil {
-			return "", fmt.Errorf("browser_upload: %w", err)
-		}
-
-		if err := ValidateReadPath(rp, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("browser_upload: %w", err)
 		}
 		resolved[i] = rp
@@ -845,7 +816,7 @@ func (t *BrowserDownloadTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"selector": map[string]any{"type": "string", "description": "CSS selector of an element (e.g. a download link/button) to click to trigger the download"},
+			"selector": map[string]any{"type": "string", "description": "CSS selector (or @eN ref) of an element (e.g. a download link/button) to click to trigger the download"},
 			"url":      map[string]any{"type": "string", "description": "URL to navigate to directly to trigger the download"},
 			"path":     map[string]any{"type": "string", "description": "Local destination path for the downloaded file"},
 		},
@@ -855,18 +826,10 @@ func (t *BrowserDownloadTool) Schema() map[string]any {
 func (t *BrowserDownloadTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserDownloadTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Selector string `json:"selector"`
-		URL      string `json:"url"`
-		Path     string `json:"path"`
+		Path string `json:"path"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	// Show where the bytes come from as well as where they land: the
-	// destination alone says nothing about what is being fetched.
-	from := "click " + a.Selector
-	if strings.TrimSpace(a.URL) != "" {
-		from = a.URL
-	}
-	return fmt.Sprintf("browser_download(from=%s, to=%s)", previewQuote(from, previewPathMax), previewQuote(a.Path, previewPathMax))
+	return fmt.Sprintf("browser_download(%s)", a.Path)
 }
 func (t *BrowserDownloadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -1014,23 +977,3 @@ func (t *BrowserNetworkRequestsTool) Execute(ctx context.Context, argsJSON strin
 
 var _ MultimodalTool = (*BrowserScreenshotTool)(nil)
 var _ CleanupTool = (*BrowserCloseTool)(nil)
-
-// Bounds for what an approval preview echoes back. Long enough to read what is
-// being approved, short enough that one huge argument can't push the rest of
-// the prompt off screen.
-const (
-	previewTextMax = 120
-	previewPathMax = 160
-)
-
-// previewQuote renders s for an approval prompt: quoted, so control
-// characters and newlines show up as escapes instead of silently reflowing the
-// prompt, and truncated with the real length shown so a hidden tail is never
-// invisible.
-func previewQuote(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return strconv.Quote(s)
-	}
-	return strconv.Quote(string(r[:max])) + fmt.Sprintf("… (%d chars)", len(r))
-}

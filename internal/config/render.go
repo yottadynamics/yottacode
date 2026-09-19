@@ -304,13 +304,21 @@ func Save(cfg Config, path string) error {
 }
 
 // encodeTunables renders only the [context], [retrieval], [memory], [lsp],
-// [sandbox], [media], [attribution], and [experimental] sections via the BurntSushi
-// encoder. We marshal a trimmed struct so the encoder doesn't try to emit
-// [active], [[providers]], or [router]. Memory/LSP/sandbox/media/
-// attribution/experimental must be included: Render rebuilds the file from the struct,
-// so any section left out of this list is silently DROPPED from disk the
-// next time a picker or wizard saves the config.
+// [sandbox], [media], [browser], [attribution], and [experimental] sections via
+// the BurntSushi encoder. We marshal a trimmed struct so the encoder doesn't try
+// to emit [active], [[providers]], or [router]. Memory/LSP/sandbox/media/
+// browser/attribution/experimental must be included: Render rebuilds the file
+// from the struct, so any section left out of this list is silently DROPPED
+// from disk the next time a picker or wizard saves the config.
 func encodeTunables(cfg Config) (string, error) {
+	// [browser] is rendered only when the user set something: a nil pointer is
+	// omitted by the encoder, which keeps an untouched config free of an
+	// all-zero block (and its two empty sub-tables).
+	var browserSection *BrowserConfig
+	if cfg.Browser != (BrowserConfig{}) {
+		b := cfg.Browser
+		browserSection = &b
+	}
 	var trimmed = struct {
 		Context      ContextConfig     `toml:"context"`
 		Retrieval    RetrievalConfig   `toml:"retrieval"`
@@ -320,6 +328,7 @@ func encodeTunables(cfg Config) (string, error) {
 		LSP          LSPConfig         `toml:"lsp"`
 		Sandbox      SandboxConfig     `toml:"sandbox"`
 		Media        MediaConfig       `toml:"media"`
+		Browser      *BrowserConfig    `toml:"browser"`
 		Attribution  AttributionConfig `toml:"attribution"`
 		Experimental map[string]bool   `toml:"experimental"`
 	}{
@@ -331,6 +340,7 @@ func encodeTunables(cfg Config) (string, error) {
 		LSP:          cfg.LSP,
 		Sandbox:      cfg.Sandbox,
 		Media:        cfg.Media,
+		Browser:      browserSection,
 		Attribution:  cfg.Attribution,
 		Experimental: cfg.Experimental,
 	}

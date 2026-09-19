@@ -20,6 +20,11 @@ import (
 type NavigateResult struct {
 	URL   string
 	Title string
+	// Provider and Remote say which backend loaded the page, stamped by the
+	// Manager: Remote is true when it was someone else's browser (a cloud
+	// session, a Camofox server), so the tool can say so in its result.
+	Provider string
+	Remote   bool
 }
 
 // TabInfo is a point-in-time snapshot of one tracked page, returned by
@@ -75,7 +80,7 @@ type NetworkEntry struct {
 type pageSession interface {
 	navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error)
 	screenshot(ctx context.Context, selector string, fullPage bool) ([]byte, error)
-	inspect(ctx context.Context, selector string) (string, error)
+	inspect(ctx context.Context, selector string, opts InspectOptions) (string, error)
 	click(ctx context.Context, selector string) error
 	typeText(ctx context.Context, selector, text string, submit bool) error
 	hotkey(ctx context.Context, keys string) error
@@ -122,6 +127,18 @@ type pageSession interface {
 	// (limit<=0 means the full buffer). Pure in-memory, no ctx.
 	consoleLogs(limit int) []ConsoleEntry
 	networkRequests(limit int) []NetworkEntry
+
+	// eval runs a JavaScript expression in the active page's main frame and
+	// returns its JSON-rendered result — see eval.go.
+	eval(ctx context.Context, expression string) (string, error)
+	// back navigates the active page to its previous history entry.
+	back(ctx context.Context) (NavigateResult, error)
+	// screenshotAnnotated captures the page with numbered boxes over its
+	// ref'd controls — see annotate.go.
+	screenshotAnnotated(ctx context.Context, fullPage bool) (AnnotatedShot, error)
+	// setDialogPolicy sets how JS dialogs are answered from now on: accept
+	// (with promptText for prompt()) or dismiss — see dialog.go.
+	setDialogPolicy(accept bool, promptText string)
 }
 
 // trackedPage is one page/tab the session has seen, from launch or from
@@ -137,6 +154,27 @@ type trackedPage struct {
 	mu      syncutil.Mutex
 	console []ConsoleEntry
 	network []*NetworkEntry
+	// refs are the @eN element handles issued by this page's last
+	// browser_inspect (see refs.go). Guarded by mu.
+	refs refTable
+
+	// blockedN/lastBlocked count requests the metadata-endpoint guard
+	// stopped on this page (see armRequestGuard). Guarded by mu.
+	blockedN    int
+	lastBlocked string
+
+	// oopifs are this page's cross-process iframes, present only when site
+	// isolation puts a frame in its own process (see oopif.go). Guarded by mu.
+	oopifs []oopif
+
+	// dialogs is the session-wide JS-dialog policy this page's handler
+	// consults (see dialog.go). Shared across pages; nil in bare test literals.
+	dialogs *dialogPolicy
+
+	// pageInit and proxyAuth are the session's, copied here so
+	// attachPageCapture (which only sees the page) can apply them.
+	pageInit  func(*rod.Page)
+	proxyAuth *proxyCreds
 }
 
 // recordConsole appends one entry, evicting the oldest if over
@@ -224,18 +262,53 @@ type session struct {
 	mu     syncutil.Mutex
 	pages  []*trackedPage
 	active int
+
+	// dialogs is the JS-dialog policy shared by every tracked page.
+	dialogs *dialogPolicy
+
+	// spills backs inspect's oversized-snapshot files (see inspect.go).
+	spills spillStore
+
+	// pageInit runs on every page as it is tracked, before any capture is
+	// attached (stealth's per-page identity). proxyAuth answers an
+	// authenticating proxy's challenge. Both fixed at construction.
+	pageInit  func(*rod.Page)
+	proxyAuth *proxyCreds
+
+	// remote is non-nil for a session on a browser we don't own (launcher is
+	// then nil): teardown releases the provider-side session instead of
+	// killing a process, and file-transfer actions are refused. degraded lists
+	// paid provider features that were dropped (see browserbaseClient.create).
+	remote   *remoteHandle
+	degraded []string
+}
+
+// proxyCreds are the credentials an authenticating HTTP(S) proxy is given.
+type proxyCreds struct{ user, pass string }
+
+// sessionConfig is everything newSessionCore needs beyond the browser and
+// its first page.
+type sessionConfig struct {
+	pageInit  func(*rod.Page)
+	proxyAuth *proxyCreds
+	remote    *remoteHandle
+}
+
+// launchOptions are the local-launch tweaks a session can carry.
+type launchOptions struct {
+	stealth bool
+	proxy   *proxySpec
 }
 
 // newTabDetectWindow bounds how long click/type(submit=true) wait to see
 // whether the action opened a new tab (target="_blank" links,
 // window.open()). Named and justified the same way networkIdleWindow is:
 // a fixed, documented heuristic rather than an unbounded wait. Every
-
 // click already goes through human approval — far slower than 300ms — so
 // this fixed tax is negligible in relative terms, and it's scoped to
 // click/submit only: navigate/screenshot/inspect/scroll/wait/hotkey pay
 // nothing extra.
-const newTabDetectWindow = 2 * time.Second
+const newTabDetectWindow = 300 * time.Millisecond
 
 // launchSession starts a headless Chromium/Chrome using the given binary
 // and isolated profile dir, and opens its single initial page. bin and
@@ -249,24 +322,22 @@ const newTabDetectWindow = 2 * time.Second
 // of which binds its own per-call context (see every session method's
 // `pg.Context(ctx)`), so tying the long-lived connection itself to one
 // call's short deadline would cancel it out from under every later call.
-func launchSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	return launchSessionMode(ctx, bin, profileDir, true)
-}
-
-// launchHeadedSession is launchSession with a visible window, for
-// Manager.Handoff: the human completes a step (a bot-verification
-// challenge) that the headless session can't show them.
-func launchHeadedSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	return launchSessionMode(ctx, bin, profileDir, false)
-}
-
-func launchSessionMode(ctx context.Context, bin, profileDir string, headless bool) (pageSession, error) {
-	l := hardenBrowserFlags(launcher.New()).
+func launchSession(ctx context.Context, bin, profileDir string, lo launchOptions) (pageSession, error) {
+	l := launcher.New().
 		Bin(bin).
-		Headless(headless).
+		Headless(true).
 		UserDataDir(profileDir).
-		Leakless(leaklessUsable()).
+		Leakless(true).
 		Context(ctx)
+	if lo.stealth {
+		l = stealthLauncher(l)
+		if ua := launchUserAgent(ctx, bin); ua != "" {
+			l = l.Set("user-agent", ua)
+		}
+	}
+	if lo.proxy != nil {
+		l = l.Proxy(lo.proxy.server)
+	}
 
 	u, err := l.Launch()
 	if err != nil {
@@ -275,19 +346,23 @@ func launchSessionMode(ctx context.Context, bin, profileDir string, headless boo
 	}
 
 	br := rod.New().ControlURL(u)
-	if !headless {
-		// rod emulates a fixed 1280x800 Mac-laptop device (viewport and
-		// user agent) on every page it creates. That's a sensible fixed
-		// viewport for a headless session, but in a visible window it pins
-		// the page to the top-left corner with dead space around it and
-		// ignores the window's real size. The window is for a human, so let
-		// the page fill it.
+	if lo.stealth {
+		// rod's default device is a fixed Mac laptop on an old Chrome; stealth
+		// presents the real browser's identity instead (see stealthProfile).
 		br = br.NoDefaultDevice()
 	}
 	if err := br.Connect(); err != nil {
 		l.Kill()
 		l.Cleanup()
 		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
+	}
+
+	cfg := sessionConfig{}
+	if lo.stealth {
+		cfg.pageInit = stealthInit(br)
+	}
+	if lo.proxy != nil && lo.proxy.user != "" {
+		cfg.proxyAuth = &proxyCreds{user: lo.proxy.user, pass: lo.proxy.pass}
 	}
 
 	pg, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
@@ -297,8 +372,18 @@ func launchSessionMode(ctx context.Context, bin, profileDir string, headless boo
 		l.Cleanup()
 		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 	}
+	return newSessionCore(br, l, pg, cfg), nil
+}
 
-	s := &session{launcher: l, browser: br}
+// newSessionCore wraps an already-connected browser and its first page in a
+// session: it tracks the page, attaches the per-page behaviors, and starts
+// the background listener that tracks every page the browser opens later.
+// l is nil for a remote browser (cfg.remote is then set).
+func newSessionCore(br *rod.Browser, l *launcher.Launcher, pg *rod.Page, cfg sessionConfig) *session {
+	s := &session{
+		launcher: l, browser: br, dialogs: &dialogPolicy{},
+		pageInit: cfg.pageInit, proxyAuth: cfg.proxyAuth, remote: cfg.remote,
+	}
 	tp, _ := s.trackPage(pg.TargetID, pg)
 	attachPageCapture(pg, tp)
 
@@ -325,35 +410,26 @@ func launchSessionMode(ctx context.Context, bin, profileDir string, headless boo
 		s.untrackPage(e.TargetID)
 	})()
 
-	return s, nil
+	return s
 }
 
 // attachPageCapture wires every background behavior a tracked page
-// needs for the rest of its life: auto-dismissing JS dialogs, and
-// buffering its console/network activity into tp for
-// browser_console_logs/browser_network_requests. Callers must only
+// needs for the rest of its life: answering JS dialogs per the session's
+// dialog policy (see handleDialogs), buffering its console/network
+// activity into tp for browser_console_logs/browser_network_requests, and
+// arming the metadata-endpoint floor on its requests. Callers must only
 // invoke this once per page — see trackPage's created return value —
 // since each of these subscribes independently and calling it twice
-// would double-dismiss dialogs and double-record every entry.
+// would double-answer dialogs and double-record every entry.
 func attachPageCapture(pg *rod.Page, tp *trackedPage) {
-	dismissDialogs(pg)
+	if tp.pageInit != nil {
+		tp.pageInit(pg)
+	}
+	handleDialogs(pg, tp)
 	startConsoleCapture(pg, tp)
 	startNetworkCapture(pg, tp)
-}
-
-// dismissDialogs auto-dismisses every JS-initiated dialog
-// (alert/confirm/prompt/beforeunload) on pg. A dialog blocks the page's
-// own execution — and every browser_* call that touches it — until
-// something answers Page.handleJavaScriptDialog. There is no human here
-// to click it, so auto-dismiss every one instead of letting a tool call
-// hang until its timeout. Dismiss (not accept) is the safer default: the
-// triggering click/navigate was already approval-gated, but a confirm()
-// can gate its own separate destructive action, and silently accepting
-// that goes beyond what the click's approval covered.
-func dismissDialogs(pg *rod.Page) {
-	go pg.EachEvent(func(e *proto.PageJavascriptDialogOpening) {
-		_ = proto.PageHandleJavaScriptDialog{Accept: false}.Call(pg)
-	})()
+	armRequestGuard(pg, tp)
+	startOOPIFTracking(pg, tp)
 }
 
 // startConsoleCapture arms the Runtime domain and records every
@@ -444,7 +520,7 @@ func (s *session) trackPage(id proto.TargetTargetID, pg *rod.Page) (tp *trackedP
 			return existing, false
 		}
 	}
-	tp = &trackedPage{id: id, page: pg, openedAt: time.Now()}
+	tp = &trackedPage{id: id, page: pg, openedAt: time.Now(), dialogs: s.dialogs, pageInit: s.pageInit, proxyAuth: s.proxyAuth}
 	s.pages = append(s.pages, tp)
 	return tp, true
 }
@@ -533,9 +609,19 @@ func (s *session) networkRequests(limit int) []NetworkEntry {
 
 func (s *session) close() error {
 	err := s.browser.Close()
-	s.launcher.Kill()
-	s.launcher.Cleanup()
+	if s.launcher != nil {
+		s.launcher.Kill()
+		s.launcher.Cleanup()
+	}
+	if relErr := s.releaseRemote(); relErr != nil && err == nil {
+		err = relErr
+	}
+	s.spills.remove()
 	return err
+}
+
+func (s *session) setDialogPolicy(accept bool, promptText string) {
+	s.dialogs.set(accept, promptText)
 }
 
 // snapshot reads the active page reference and the tab count together
@@ -552,14 +638,6 @@ func (s *session) close() error {
 // remains, which Info()'s own error handling already covers.
 func (s *session) snapshot() (url string, tabCount int) {
 	s.mu.Lock()
-
-	if len(s.pages) == 0 {
-		// The last page closed since the caller last checked alive() (a
-		// window.close(), or the user closing the window). Report "nothing"
-		// rather than indexing an empty registry.
-		s.mu.Unlock()
-		return "", 0
-	}
 	pg := s.pages[s.active].page
 	tabCount = len(s.pages)
 	s.mu.Unlock()
@@ -594,6 +672,14 @@ func (s *session) alive() bool {
 	if !hasPage {
 		return false
 	}
+	if s.launcher == nil {
+		// A remote browser has no local process to probe: ask it something
+		// cheap instead. Bounded so a dead connection can't stall the caller.
+		ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+		defer cancel()
+		_, err := proto.BrowserGetVersion{}.Call(s.browser.Context(ctx))
+		return err == nil
+	}
 	pid := s.launcher.PID()
 	if pid <= 0 {
 		return false
@@ -605,8 +691,12 @@ func (s *session) alive() bool {
 // connection to negotiate a graceful shutdown with — and only reaps the
 // OS process and launcher state.
 func (s *session) forceCleanup() {
-	s.launcher.Kill()
-	s.launcher.Cleanup()
+	if s.launcher != nil {
+		s.launcher.Kill()
+		s.launcher.Cleanup()
+	}
+	_ = s.releaseRemote()
+	s.spills.remove()
 }
 
 // classifyErr wraps a raw rod/CDP error with the taxonomy sentinel that
@@ -634,6 +724,9 @@ func classifyErr(err error, fallback error) error {
 // a single action always acts on one consistent page even though the
 // session may be tracking several.
 func (s *session) element(ctx context.Context, pg *rod.Page, selector string) (*rod.Element, error) {
+	if isRef(selector) {
+		return s.elementByRef(ctx, pg, selector)
+	}
 	el, err := pg.Context(ctx).Element(selector)
 	if err != nil {
 		return nil, classifyErr(err, ErrSelectorNotFound)
@@ -660,16 +753,38 @@ func waitUntilCondition(pg *rod.Page, waitUntil string) error {
 }
 
 func (s *session) navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error) {
-	pg := s.activePage().Context(ctx)
+	tp := s.activeTrackedPage()
+	pg := tp.page.Context(ctx)
+	// The request guard (armRequestGuard) stops a redirect or subresource
+	// aimed at a metadata endpoint mid-navigation, which Chrome reports only
+	// as a page that failed to load. blocked turns that back into the real
+	// cause, whichever step of the navigation noticed the failure first.
+	before := tp.blockedCount()
+	blocked := func(err error) error {
+		if u, ok := tp.blockedSince(before); ok {
+			return fmt.Errorf("%w: a request to %s was stopped by the cloud-metadata block", ErrBlockedURL, u)
+		}
+		return err
+	}
 	if err := pg.Navigate(url); err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
+		return NavigateResult{}, blocked(classifyErr(err, ErrNavigationTimeout))
 	}
 	if err := waitUntilCondition(pg, waitUntil); err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
+		return NavigateResult{}, blocked(classifyErr(err, ErrNavigationTimeout))
 	}
 	info, err := pg.Info()
 	if err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
+		return NavigateResult{}, blocked(classifyErr(err, ErrNavigationTimeout))
+	}
+	if err := blocked(nil); err != nil {
+		return NavigateResult{}, err
+	}
+	// Belt and braces: the guard enumerates known endpoints, but the whole
+	// link-local /16 is refused for a landed URL too. Blank the page before
+	// the model can read anything from it.
+	if err := checkNavigationURL(info.URL); err != nil {
+		_ = pg.Navigate("about:blank")
+		return NavigateResult{}, err
 	}
 	return NavigateResult{URL: info.URL, Title: info.Title}, nil
 }
@@ -693,30 +808,6 @@ func (s *session) screenshot(ctx context.Context, selector string, fullPage bool
 		return nil, fmt.Errorf("browser screenshot: %w", err)
 	}
 	return data, nil
-}
-
-func (s *session) inspect(ctx context.Context, selector string) (string, error) {
-	activePg := s.activePage()
-	pg := activePg.Context(ctx)
-	_ = proto.AccessibilityEnable{}.Call(pg)
-
-	if strings.TrimSpace(selector) == "" {
-		res, err := proto.AccessibilityGetFullAXTree{}.Call(pg)
-		if err != nil {
-			return "", fmt.Errorf("browser inspect: %w", err)
-		}
-		return renderAXTree(res.Nodes), nil
-	}
-
-	el, err := s.element(ctx, activePg, selector)
-	if err != nil {
-		return "", err
-	}
-	res, err := proto.AccessibilityGetPartialAXTree{ObjectID: el.Object.ObjectID, FetchRelatives: true}.Call(pg)
-	if err != nil {
-		return "", fmt.Errorf("browser inspect: %w", err)
-	}
-	return renderAXTree(res.Nodes), nil
 }
 
 // followNewPage runs action, then — if it caused fromPage to open a new
@@ -761,6 +852,12 @@ func (s *session) followNewPage(ctx context.Context, fromPage *rod.Page, action 
 }
 
 func (s *session) click(ctx context.Context, selector string) error {
+	// One snapshot of the active page for both the lookup and the action: the
+	// background tracker can switch it between two separate reads.
+	tp := s.activeTrackedPage()
+	if rt, o, ok := s.crossProcessRef(tp, selector); ok {
+		return s.crossProcessClick(ctx, tp, selector, rt, o)
+	}
 	pg := s.activePage()
 	el, err := s.element(ctx, pg, selector)
 	if err != nil {
@@ -778,6 +875,10 @@ func (s *session) click(ctx context.Context, selector string) error {
 }
 
 func (s *session) typeText(ctx context.Context, selector, text string, submit bool) error {
+	tp := s.activeTrackedPage()
+	if rt, o, ok := s.crossProcessRef(tp, selector); ok {
+		return s.crossProcessType(ctx, tp, selector, text, submit, rt, o)
+	}
 	pg := s.activePage()
 	el, err := s.element(ctx, pg, selector)
 	if err != nil {
@@ -865,9 +966,9 @@ func (s *session) wait(ctx context.Context, selector, text string, networkIdle b
 		}
 	}
 	if strings.TrimSpace(selector) != "" {
-		el, err := pg.Element(selector)
+		el, err := s.element(ctx, pg, selector)
 		if err != nil {
-			return classifyErr(err, ErrSelectorNotFound)
+			return err
 		}
 		if err := el.WaitVisible(); err != nil {
 			return classifyErr(err, ErrSelectorNotFound)
@@ -943,6 +1044,9 @@ func (s *session) closeTab(ctx context.Context, index int) error {
 // than synthesizing mouse/keyboard input, so it works on the common
 // display:none file input pattern too.
 func (s *session) setFiles(ctx context.Context, selector string, paths []string) error {
+	if s.remote != nil {
+		return remoteFileErr("upload")
+	}
 	activePg := s.activePage()
 	el, err := s.element(ctx, activePg, selector)
 	if err != nil {
@@ -955,6 +1059,9 @@ func (s *session) setFiles(ctx context.Context, selector string, paths []string)
 }
 
 func (s *session) downloadViaClick(ctx context.Context, selector, dir string) (*proto.PageDownloadWillBegin, error) {
+	if s.remote != nil {
+		return nil, remoteFileErr("download")
+	}
 	activePg := s.activePage()
 	el, err := s.element(ctx, activePg, selector)
 	if err != nil {
@@ -975,6 +1082,9 @@ func (s *session) downloadViaClick(ctx context.Context, selector, dir string) (*
 }
 
 func (s *session) downloadViaURL(ctx context.Context, url, dir string) (*proto.PageDownloadWillBegin, error) {
+	if s.remote != nil {
+		return nil, remoteFileErr("download")
+	}
 	wait := s.browser.Context(ctx).WaitDownload(dir)
 	// A download response legitimately aborts the page's own navigation
 	// (the response never becomes a loaded document), so the navigate

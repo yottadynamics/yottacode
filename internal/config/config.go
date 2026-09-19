@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,6 +81,11 @@ type Config struct {
 	// media_analyze/media_render/media_compose tools. Absent block falls
 	// through to the conservative defaults below.
 	Media MediaConfig `toml:"media"`
+	// Browser tunes the experimental browser_* tools: which backend drives the
+	// browser, stealth/proxy options for the local one, and the idle timeout.
+	// Inert unless the `browser` experimental feature is on; absent block keeps
+	// the plain local headless browser.
+	Browser BrowserConfig `toml:"browser"`
 	// Attribution controls honest authorship markers on commit messages and PR
 	// bodies drafted through yottacode. The zero value is deliberately enabled;
 	// set Disabled to opt out of both surfaces.
@@ -371,6 +377,132 @@ func (c Config) MediaRenderTimeoutSeconds() int {
 		return c.Media.RenderTimeoutSeconds
 	}
 	return DefaultMediaRenderTimeoutSeconds
+}
+
+// BrowserConfig tunes the experimental browser_* tools (see docs/browser.md).
+// Secrets are never read from this file: API keys come from the environment
+// variable each provider block names.
+type BrowserConfig struct {
+	// Provider selects the backend: "local" (default — a system Chrome/Chromium
+	// launched as a child process), "browserbase" (a rented cloud browser), or
+	// "camofox" (a self-hosted Firefox-fork server). Only the local browser
+	// keeps page content on this machine.
+	Provider string `toml:"provider"`
+	// Stealth (local provider only) launches Chrome without the flags that
+	// announce automation and gives it a self-consistent identity. It hides
+	// the obvious tells; it does not solve challenges.
+	Stealth bool `toml:"stealth"`
+	// ProxyURL (local provider only) routes the browser through a proxy:
+	// http://, https:// or socks5://, with optional user:pass@ for http(s).
+	ProxyURL string `toml:"proxy_url"`
+	// IdleTimeoutMinutes closes a browser left unused that long. 0 means the
+	// default (15); negative disables reaping.
+	IdleTimeoutMinutes int `toml:"idle_timeout_minutes"`
+	// Browserbase configures provider = "browserbase".
+	Browserbase BrowserbaseConfig `toml:"browserbase"`
+	// Camofox configures provider = "camofox".
+	Camofox CamofoxConfig `toml:"camofox"`
+}
+
+// BrowserbaseConfig configures the Browserbase cloud-browser provider.
+type BrowserbaseConfig struct {
+	// APIKeyEnv names the environment variable holding the API key. Empty
+	// falls through to DefaultBrowserbaseAPIKeyEnv.
+	APIKeyEnv string `toml:"api_key_env"`
+	// ProjectID is the Browserbase project; empty falls back to
+	// $BROWSERBASE_PROJECT_ID.
+	ProjectID string `toml:"project_id"`
+	// BaseURL overrides the API endpoint (self-hosted gateways).
+	BaseURL string `toml:"base_url"`
+	// NoProxies turns off residential proxies (on by default; billed).
+	// NoKeepAlive turns off reconnection after a dropped connection.
+	NoProxies   bool `toml:"no_proxies"`
+	NoKeepAlive bool `toml:"no_keep_alive"`
+	// AdvancedStealth requests Browserbase's custom Chromium (Scale plan).
+	AdvancedStealth bool `toml:"advanced_stealth"`
+	// SessionTimeoutSeconds caps a session's lifetime (0 = project default,
+	// max 21600).
+	SessionTimeoutSeconds int `toml:"session_timeout_seconds"`
+}
+
+// CamofoxConfig configures the Camofox provider.
+type CamofoxConfig struct {
+	// URL is the Camofox server's base URL; empty falls back to $CAMOFOX_URL.
+	URL string `toml:"url"`
+	// APIKeyEnv names the environment variable holding the optional bearer
+	// token. Empty falls through to DefaultCamofoxAPIKeyEnv.
+	APIKeyEnv string `toml:"api_key_env"`
+}
+
+// Browser provider names. Kept as plain strings here so this package does not
+// import the browser package (and, through it, the CDP client).
+const (
+	BrowserProviderLocal       = "local"
+	BrowserProviderBrowserbase = "browserbase"
+	BrowserProviderCamofox     = "camofox"
+)
+
+// ValidBrowserProviders lists the accepted `[browser] provider` values.
+var ValidBrowserProviders = []string{BrowserProviderLocal, BrowserProviderBrowserbase, BrowserProviderCamofox}
+
+const (
+	// DefaultBrowserbaseAPIKeyEnv is the environment variable read for the
+	// Browserbase API key when `api_key_env` is unset.
+	DefaultBrowserbaseAPIKeyEnv = "BROWSERBASE_API_KEY"
+	// DefaultCamofoxAPIKeyEnv is the environment variable read for the
+	// optional Camofox bearer token when `api_key_env` is unset.
+	DefaultCamofoxAPIKeyEnv = "CAMOFOX_API_KEY"
+	// MaxBrowserbaseSessionTimeoutSeconds is Browserbase's documented ceiling
+	// (six hours).
+	MaxBrowserbaseSessionTimeoutSeconds = 21600
+)
+
+// validateBrowser enforces the `[browser]` block: a known provider, options
+// that make sense for it, and well-formed URLs. It never contacts anything.
+func validateBrowser(b BrowserConfig) error {
+	if b.Provider != "" && !inSlice(ValidBrowserProviders, b.Provider) {
+		return fmt.Errorf("browser.provider = %q invalid (expected one of %s)",
+			b.Provider, strings.Join(ValidBrowserProviders, ", "))
+	}
+	local := b.Provider == "" || b.Provider == BrowserProviderLocal
+	if !local && b.Stealth {
+		return fmt.Errorf("browser.stealth applies to the local browser only; provider %q does its own fingerprinting", b.Provider)
+	}
+	if proxy := strings.TrimSpace(b.ProxyURL); proxy != "" {
+		if !local {
+			return fmt.Errorf("browser.proxy_url applies to the local browser only; provider %q brings its own network path", b.Provider)
+		}
+		u, err := url.Parse(proxy)
+		if err != nil || u.Hostname() == "" {
+			return errors.New("browser.proxy_url is not a valid URL (expected scheme://host[:port])")
+		}
+		switch u.Scheme {
+		case "http", "https", "socks5":
+		default:
+			return fmt.Errorf("browser.proxy_url scheme %q invalid (expected http, https or socks5)", u.Scheme)
+		}
+		if u.Scheme == "socks5" && u.User != nil {
+			return errors.New("browser.proxy_url: Chrome cannot authenticate to a SOCKS proxy; use an http(s) proxy for credentials")
+		}
+	}
+	if b.Browserbase.SessionTimeoutSeconds < 0 || b.Browserbase.SessionTimeoutSeconds > MaxBrowserbaseSessionTimeoutSeconds {
+		return fmt.Errorf("browser.browserbase.session_timeout_seconds = %d out of range (0–%d)",
+			b.Browserbase.SessionTimeoutSeconds, MaxBrowserbaseSessionTimeoutSeconds)
+	}
+	for name, raw := range map[string]string{
+		"browser.browserbase.base_url": b.Browserbase.BaseURL,
+		"browser.camofox.url":          b.Camofox.URL,
+	} {
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			// The value is not echoed: a URL can carry credentials.
+			return fmt.Errorf("%s invalid (expected an http:// or https:// URL)", name)
+		}
+	}
+	return nil
 }
 
 // SkillsConfig declares persistent Agent Skills behavior. DefaultOn
@@ -1400,6 +1532,9 @@ func Validate(cfg Config) error {
 		// resolvability at actual use, where agentruntime.Build's caller
 		// already treats a failure as a non-fatal "pair unresolved"
 		// warning instead of losing the whole session.
+	}
+	if err := validateBrowser(cfg.Browser); err != nil {
+		return err
 	}
 	if cfg.Sandbox.Backend != "" && !inSlice(ValidSandboxBackends, cfg.Sandbox.Backend) {
 		return fmt.Errorf("sandbox.backend = %q invalid (expected one of %s)",

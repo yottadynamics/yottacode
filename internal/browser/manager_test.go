@@ -30,6 +30,11 @@ type fakeSession struct {
 	navigateErr error
 	closeErr    error
 
+	// evalResult/evalErr/backErr are returned verbatim by eval/back.
+	evalResult string
+	evalErr    error
+	backErr    error
+
 	// blockUntilDone, when set, makes navigate ignore navigateErr and
 	// instead block until ctx is done — simulating a hung page/action so
 	// tests can prove Manager's timeout actually bounds it.
@@ -85,9 +90,28 @@ func (f *fakeSession) screenshot(context.Context, string, bool) ([]byte, error) 
 	f.record("screenshot")
 	return []byte("png"), nil
 }
-func (f *fakeSession) inspect(context.Context, string) (string, error) {
-	f.record("inspect")
+func (f *fakeSession) inspect(_ context.Context, _ string, opts InspectOptions) (string, error) {
+	f.record(fmt.Sprintf("inspect:interactive=%t", opts.InteractiveOnly))
 	return "tree", nil
+}
+
+func (f *fakeSession) eval(_ context.Context, expression string) (string, error) {
+	f.record("eval:" + expression)
+	return f.evalResult, f.evalErr
+}
+
+func (f *fakeSession) screenshotAnnotated(_ context.Context, fullPage bool) (AnnotatedShot, error) {
+	f.record(fmt.Sprintf("screenshotAnnotated:full=%t", fullPage))
+	return AnnotatedShot{PNG: []byte("png"), Labeled: 2, Skipped: 1}, nil
+}
+
+func (f *fakeSession) back(context.Context) (NavigateResult, error) {
+	f.record("back")
+	return NavigateResult{URL: f.url}, f.backErr
+}
+
+func (f *fakeSession) setDialogPolicy(accept bool, promptText string) {
+	f.record(fmt.Sprintf("dialogPolicy:%t:%s", accept, promptText))
 }
 func (f *fakeSession) click(context.Context, string) error {
 	f.record("click")
@@ -527,7 +551,7 @@ func TestManager_ConcurrentActionsSerialize(t *testing.T) {
 	actions := []func(){
 		func() { _, _ = m.Navigate(ctx, "https://example.com", "") },
 		func() { _, _ = m.Screenshot(ctx, "", false) },
-		func() { _, _ = m.Inspect(ctx, "") },
+		func() { _, _ = m.Inspect(ctx, "", InspectOptions{}) },
 		func() { _ = m.Click(ctx, "#go") },
 		func() { _ = m.Type(ctx, "#q", "hi", false) },
 		func() { _ = m.Hotkey(ctx, "Enter") },

@@ -184,7 +184,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		t.Errorf("Screenshot did not return PNG data (len=%d)", len(png))
 	}
 
-	tree, err := m.Inspect(ctx, "")
+	tree, err := m.Inspect(ctx, "", InspectOptions{})
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}

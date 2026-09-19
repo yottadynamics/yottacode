@@ -7,9 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/go-rod/rod/lib/proto"
@@ -29,25 +26,20 @@ type Status struct {
 	// TabCount is the number of tracked pages (main page plus any
 	// popup/tab opened since launch). 0 when no session is active.
 	TabCount int
-
-	// Headed reports whether the active session is showing a visible
-	// window (after browser_handoff). False for a headless session and
-	// when no session is active.
-	Headed bool
-}
-
-// HandoffResult is the outcome of a successful browser_handoff call.
-type HandoffResult struct {
-	// URL is the page the visible window is showing (or was asked to show).
-	// Empty when there was no earlier page to carry over.
-	URL string
-	// AlreadyVisible is true when the session was already headed, so
-	// nothing was relaunched.
-	AlreadyVisible bool
-	// LoadWarning is non-empty when the visible window opened but the page
-	// didn't finish loading before the action deadline. The window is still
-	// there and the human can usually proceed anyway.
-	LoadWarning string
+	// Provider names the backend ("local", "browserbase"); Remote is true
+	// for a browser hosted by a third party, whose pages are processed off
+	// this machine. Degraded lists paid provider features that were
+	// requested but dropped because the account's plan lacks them.
+	Provider string
+	Remote   bool
+	// Endpoint is the external server's URL for a provider that has one
+	// (Camofox); empty otherwise.
+	Endpoint string
+	Degraded []string
+	// ReapedIdle is true when the last session was closed for sitting idle
+	// (see idle.go) and no new one has launched since — the tabs and page
+	// state it held are gone, and the next action starts a fresh browser.
+	ReapedIdle bool
 }
 
 // DownloadResult is the outcome of a successful browser_download call —
@@ -85,12 +77,6 @@ type Manager struct {
 	binPath    string
 	profileDir string
 	closed     bool
-	// headed is true once Handoff has swapped the session for a visible
-	// window. It resets to false whenever that session dies (see
-	// discardDeadSessionLocked): a closed window or crash degrades back to
-	// the default headless session rather than popping a window nobody
-	// asked for on the next action.
-	headed bool
 
 	// actionTimeout overrides defaultActionTimeout when positive — see
 	// the timeout method. Tests set this to something short to exercise
@@ -98,6 +84,20 @@ type Manager struct {
 	// (including every Manager literal that predates this field) falls
 	// back to defaultActionTimeout, so existing callers are unaffected.
 	actionTimeout time.Duration
+
+	// dialogAccept/dialogPrompt are the JS-dialog policy (see dialog.go),
+	// kept here so it survives a relaunch after a crash and can be set
+	// before the first launch. ensureLocked applies it to every new session.
+	dialogAccept bool
+	dialogPrompt string
+
+	// idleTimeout, when positive, closes a browser left unused that long
+	// (see idle.go); lastUsed/idleTimer/reapedIdle are its bookkeeping. A
+	// zero value disables reaping, so Manager literals in tests are unaffected.
+	idleTimeout time.Duration
+	lastUsed    time.Time
+	idleTimer   *time.Timer
+	reapedIdle  bool
 
 	// newSession, findBinary, and mkProfileDir are overridable so unit
 	// tests can exercise lifecycle/serialization/error-mapping without
@@ -108,18 +108,14 @@ type Manager struct {
 	findBinary   func() (string, error)
 	mkProfileDir func() (string, error)
 
-	// newHeadedSession and hasDisplay back Handoff only. A Manager literal
-	// that leaves newHeadedSession nil simply can't hand off (Handoff
-	// reports it as unsupported), so every existing test literal keeps
-	// working unchanged.
-	newHeadedSession func(ctx context.Context, bin, profileDir string) (pageSession, error)
-	hasDisplay       func() bool
-
-	// sweepStale removes profile directories a killed session left behind (see
-	// sweepStaleProfiles); it runs once, before the first launch. nil (every
-	// test literal) means no sweep, so unit tests never touch the real temp dir.
-	sweepStale func(keep string)
-	swept      bool
+	// newRemote, when set, replaces the whole local launch (binary discovery,
+	// temp profile, child process) with a connection to a browser hosted
+	// elsewhere — see remote.go. provider names the backend for Status.
+	newRemote func(ctx context.Context) (pageSession, error)
+	provider  string
+	// endpoint is where an external provider's server lives (Camofox), shown
+	// in Status. Credentials are stripped.
+	endpoint string
 }
 
 // NewManager returns an unlaunched Manager. The browser process starts
@@ -127,12 +123,13 @@ type Manager struct {
 // browser_status and browser_wait never trigger a launch.
 func NewManager() *Manager {
 	return &Manager{
-		newSession:       launchSession,
-		findBinary:       findChromeBinary,
-		mkProfileDir:     newProfileDir,
-		newHeadedSession: launchHeadedSession,
-		hasDisplay:       displayAvailable,
-		sweepStale:       defaultSweep,
+		newSession: func(ctx context.Context, bin, profileDir string) (pageSession, error) {
+			return launchSession(ctx, bin, profileDir, launchOptions{})
+		},
+		findBinary:   findChromeBinary,
+		mkProfileDir: newProfileDir,
+		idleTimeout:  defaultIdleTimeout,
+		provider:     ProviderLocal,
 	}
 }
 
@@ -165,11 +162,22 @@ func (m *Manager) ensureLocked(ctx context.Context) (pageSession, error) {
 	}
 	if m.sess != nil {
 		if m.sess.alive() {
+			m.touchLocked()
 			return m.sess, nil
 		}
 		m.discardDeadSessionLocked()
 	}
-	m.sweepOnceLocked()
+	if m.newRemote != nil {
+		sess, err := m.newRemote(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.sess = sess
+		m.reapedIdle = false
+		sess.setDialogPolicy(m.dialogAccept, m.dialogPrompt)
+		m.touchLocked()
+		return sess, nil
+	}
 	bin, err := m.findBinary()
 	if err != nil {
 		return nil, err
@@ -186,6 +194,9 @@ func (m *Manager) ensureLocked(ctx context.Context) (pageSession, error) {
 	m.binPath = bin
 	m.profileDir = dir
 	m.sess = sess
+	m.reapedIdle = false
+	sess.setDialogPolicy(m.dialogAccept, m.dialogPrompt)
+	m.touchLocked()
 	return sess, nil
 }
 
@@ -201,7 +212,6 @@ func (m *Manager) ensureLocked(ctx context.Context) (pageSession, error) {
 func (m *Manager) discardDeadSessionLocked() {
 	m.sess.forceCleanup()
 	m.sess = nil
-	m.headed = false
 	if m.profileDir != "" {
 		_ = os.RemoveAll(m.profileDir)
 		m.profileDir = ""
@@ -235,6 +245,7 @@ func (m *Manager) ensureAliveNoLaunchLocked() (sess pageSession, ok bool, err er
 		m.discardDeadSessionLocked()
 		return nil, false, errors.New("browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it")
 	}
+	m.touchLocked()
 	return m.sess, true, nil
 }
 
@@ -242,8 +253,8 @@ func (m *Manager) ensureAliveNoLaunchLocked() (sess pageSession, ok bool, err er
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	st := Status{BinaryPath: m.binPath, ProfileDir: m.profileDir}
-	if st.BinaryPath == "" {
+	st := Status{BinaryPath: m.binPath, ProfileDir: m.profileDir, ReapedIdle: m.reapedIdle, Provider: m.provider, Remote: m.newRemote != nil, Endpoint: m.endpoint}
+	if st.BinaryPath == "" && !st.Remote {
 		if bin, err := m.findBinary(); err == nil {
 			st.BinaryPath = bin
 		}
@@ -256,110 +267,11 @@ func (m *Manager) Status() Status {
 	if m.sess != nil && m.sess.alive() {
 		st.Active = true
 		st.CurrentURL, st.TabCount = m.sess.snapshot()
-
-		st.Headed = m.headed
+		if d, ok := m.sess.(interface{ degradedFeatures() []string }); ok {
+			st.Degraded = d.degradedFeatures()
+		}
 	}
 	return st
-}
-
-// Handoff swaps the headless session for a visible one so a human can
-// complete a step the headless browser can't show them — typically a
-// bot-verification challenge ("Press & Hold"). It never solves or bypasses
-// anything: it only makes the same kind of isolated session visible and
-// reopens the current page in it.
-//
-// The visible session is a fresh isolated profile, not a copy of the
-// headless one. Chrome can't switch modes in place, and carrying the
-// headless session's cookies across would also carry whatever "this client
-// is automated" verdict the site already attached to them — the human
-// needs a clean start. Only the current URL carries over.
-//
-// The new browser is launched before the old one is torn down, so a launch
-// failure (no display, Chrome won't start) leaves the existing headless
-// session exactly as it was. Once headed, the session stays headed for the
-// rest of its life: the site's verification is tied to that browser, so
-// dropping back to headless afterwards would just re-trigger it.
-func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.closed {
-		return HandoffResult{}, ErrActionDenied
-	}
-	if m.newHeadedSession == nil {
-		return HandoffResult{}, fmt.Errorf("%w: visible sessions are not supported by this manager", ErrLaunchFailed)
-	}
-	if m.sess != nil && !m.sess.alive() {
-		m.discardDeadSessionLocked()
-	}
-	if m.sess != nil && m.headed {
-		url, _ := m.sess.snapshot()
-		return HandoffResult{URL: url, AlreadyVisible: true}, nil
-	}
-	if m.hasDisplay != nil && !m.hasDisplay() {
-		return HandoffResult{}, fmt.Errorf("%w (no DISPLAY or WAYLAND_DISPLAY: an SSH, container, or CI host?); ask the user to open the page in their own browser and paste what you need", ErrNoDisplay)
-	}
-
-	ctx, cancel := m.withActionTimeout(ctx)
-	defer cancel()
-
-	// Read the page to carry over now, before the launch below rather than
-	// after it. The launch takes seconds, and the old session's last page can
-	// close in that time (a window.close(), a crash in progress); the URL
-	// has to come from a session we've just confirmed is alive.
-	var url string
-	if m.sess != nil {
-		url, _ = m.sess.snapshot()
-	}
-
-	m.sweepOnceLocked()
-	bin, err := m.findBinary()
-	if err != nil {
-		return HandoffResult{}, err
-	}
-	dir, err := m.mkProfileDir()
-	if err != nil {
-		return HandoffResult{}, err
-	}
-	next, err := m.newHeadedSession(ctx, bin, dir)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return HandoffResult{}, err
-	}
-
-	res := HandoffResult{}
-	if isWebURL(url) {
-		res.URL = url
-		if _, err := next.navigate(ctx, url, ""); err != nil {
-			res.LoadWarning = err.Error()
-		}
-	}
-
-	if m.sess != nil {
-		// Best-effort: the superseded headless session is being discarded
-		// either way, so a failed graceful close has nothing left to
-		// protect. It may also have died while the new one was launching;
-		// same alive/forceCleanup split as Close.
-		if m.sess.alive() {
-			_ = m.sess.close()
-		} else {
-			m.sess.forceCleanup()
-		}
-		m.sess = nil
-	}
-	if m.profileDir != "" && m.profileDir != dir {
-		_ = os.RemoveAll(m.profileDir)
-	}
-	m.sess = next
-	m.profileDir = dir
-	m.binPath = bin
-	m.headed = true
-	return res, nil
-}
-
-// isWebURL reports whether u is worth carrying into the visible window —
-// about:blank and chrome-error pages are not.
-func isWebURL(u string) bool {
-	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
 }
 
 // Tabs never launches the browser, like Status — an unlaunched session
@@ -473,12 +385,8 @@ func (m *Manager) Upload(ctx context.Context, selector string, paths []string) e
 // arm/wait (session's downloadViaClick/downloadViaURL), then moving the
 // result to destPath and cleaning up the temp dir.
 func (m *Manager) Download(ctx context.Context, selector, url, destPath string) (DownloadResult, error) {
-
-	// The url form navigates the browser, so it gets the same scheme policy
-	// as Navigate (a file:// download would copy any readable file into the
-	// workspace). The click form has no URL of its own to check here.
-	if selector == "" {
-		if err := checkNavigableURL(url); err != nil {
+	if url != "" {
+		if err := checkNavigationTarget(ctx, url); err != nil {
 			return DownloadResult{}, err
 		}
 	}
@@ -531,22 +439,12 @@ func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
-
-	return copyThenRemove(src, dst)
-}
-
-// copyThenRemove is moveFile's cross-filesystem fallback. O_NOFOLLOW makes it
-// refuse to write through a symlink planted at dst after the caller validated
-// the path (os.Rename above replaces a symlink rather than following it, so
-// only this path needed the guard).
-func copyThenRemove(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o644)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -563,9 +461,9 @@ func copyThenRemove(src, dst string) error {
 }
 
 func (m *Manager) Navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error) {
-	// Refuse a blocked URL before anything is launched or locked: there is
-	// nothing to clean up, and no browser process is ever started for it.
-	if err := checkNavigableURL(url); err != nil {
+	// Checked before locking or launching: a refused URL must not cost a
+	// Chrome launch, and needs no session to refuse.
+	if err := checkNavigationTarget(ctx, url); err != nil {
 		return NavigateResult{}, err
 	}
 	m.mu.Lock()
@@ -576,7 +474,9 @@ func (m *Manager) Navigate(ctx context.Context, url, waitUntil string) (Navigate
 	if err != nil {
 		return NavigateResult{}, err
 	}
-	return s.navigate(ctx, url, waitUntil)
+	res, err := s.navigate(ctx, url, waitUntil)
+	res.Provider, res.Remote = m.provider, m.newRemote != nil
+	return res, err
 }
 
 func (m *Manager) Screenshot(ctx context.Context, selector string, fullPage bool) ([]byte, error) {
@@ -591,7 +491,7 @@ func (m *Manager) Screenshot(ctx context.Context, selector string, fullPage bool
 	return s.screenshot(ctx, selector, fullPage)
 }
 
-func (m *Manager) Inspect(ctx context.Context, selector string) (string, error) {
+func (m *Manager) Inspect(ctx context.Context, selector string, opts InspectOptions) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	ctx, cancel := m.withActionTimeout(ctx)
@@ -600,7 +500,7 @@ func (m *Manager) Inspect(ctx context.Context, selector string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return s.inspect(ctx, selector)
+	return s.inspect(ctx, selector, opts)
 }
 
 func (m *Manager) Click(ctx context.Context, selector string) error {
@@ -678,6 +578,7 @@ func (m *Manager) Wait(ctx context.Context, selector, text string, networkIdle b
 	if timeout <= 0 {
 		timeout = m.timeout()
 	}
+	m.touchLocked()
 	return m.sess.wait(ctx, selector, text, networkIdle, timeout)
 }
 
@@ -693,6 +594,7 @@ func (m *Manager) Close(_ context.Context) error {
 		return nil
 	}
 	m.closed = true
+	m.stopIdleTimerLocked()
 	var err error
 	if m.sess != nil {
 		if m.sess.alive() {

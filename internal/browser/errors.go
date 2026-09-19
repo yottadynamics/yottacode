@@ -56,4 +56,27 @@ var (
 	// before the action deadline — the click/navigate that should have
 	// started it didn't, or the browser never reported completion.
 	ErrDownloadFailed = errors.New("download did not complete before deadline")
+
+	// ErrStaleRef means an @eN element ref no longer resolves: it was never
+	// issued, or the page changed since the browser_inspect that produced
+	// it and the element is gone. The fix is always to inspect again.
+	ErrStaleRef = errors.New("element ref is stale or unknown")
+
+	// ErrBlockedURL means a navigation target is on the always-blocked
+	// floor (cloud instance-metadata endpoints) — see checkNavigationURL.
+	ErrBlockedURL = errors.New("blocked URL")
+
+	// ErrEvalFailed means browser_eval's JavaScript threw, or could not be
+	// evaluated at all.
+	ErrEvalFailed = errors.New("javascript evaluation failed")
+
+	// ErrNoHistory means browser_back had no earlier history entry to
+	// return to.
+	ErrNoHistory = errors.New("no earlier page in history")
+
+	// ErrCrossProcessFrame means an action other than click/type targeted a
+	// control inside a cross-process iframe (site isolation), which is driven
+	// through raw session-scoped CDP rather than a full element handle — see
+	// oopif.go.
+	ErrCrossProcessFrame = errors.New("not supported inside a cross-process iframe")
 )

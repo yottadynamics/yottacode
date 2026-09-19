@@ -158,71 +158,82 @@ top of the normal approval model:
   any site you're signed into, and there is no flag to opt into your
   real profile in v1. `browser_close` (explicit, or automatic at
   session shutdown) removes the profile directory.
-- **Headless by default; visible only by handoff.** The session never
-  shows a window on its own, so behavior doesn't silently degrade on a
-  headless remote host or CI box. `browser_handoff` is the one way to get
-  a visible window, so a human can complete a verification challenge the
-  agent can't and shouldn't: it always prompts, fails cleanly when there's
-  no display, and reopens the page in a *fresh* isolated profile rather
-  than carrying cookies across. The agent is told not to attempt the
-  challenge itself — the human does it. The tools add no stealth or
-  evasion of their own (no hiding of automation flags, no fingerprint
-  patching), and this doesn't change that. One thing to know: the
-  headless session inherits go-rod's default device emulation — a fixed
-  1280×800 viewport and a Mac Chrome user-agent string — which is a
-  library default, not an evasion measure, and it does not match the real
-  browser. The visible handoff window turns that emulation off and reports
-  Chrome's real viewport and user agent.
+- **Headless only.** No visible window in v1, so behavior doesn't
+  silently degrade on a headless remote host or CI box.
 - **Approval on every action that reads or changes page state** —
-  `browser_navigate`, `browser_screenshot`, `browser_inspect`,
-  `browser_click`, `browser_type`, `browser_hotkey`,
-  `browser_scroll`, and `browser_handoff` all prompt. This includes the two read-only tools:
+  `browser_navigate`, `browser_screenshot` (plain or annotated),
+  `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
+  `browser_scroll`, `browser_back`, and `browser_eval` all prompt, and so
+  does `browser_dialog` when it sets the policy to `accept`. This includes the two read-only tools:
   a screenshot or an accessibility-tree snapshot can surface on-screen
   private data (an inbox, a logged-in dashboard, a form someone else
   left filled in) even though nothing was clicked. `browser_status`,
   `browser_wait`, `browser_close`, `browser_tabs`, `browser_switch_tab`,
-  and `browser_close_tab` are the exceptions — they report existing
+  `browser_close_tab`, and `browser_dialog` set to `dismiss` are the
+  exceptions — they report existing
   state, block on an already-visible condition, change which tracked
   page later calls target without reading or changing its content, or
   only reduce capability, so none of them can expose anything an
   already-approved call hasn't already shown.
+- **`browser_eval` is the widest tool, and is treated that way.** Page
+  JavaScript runs with the page origin's authority: it can read cookies
+  and storage and act on the page exactly as a click would. It prompts
+  on every call, shows the expression **in full** in the prompt
+  (expressions over 4000 characters are refused rather than shown
+  truncated, so nothing runs that the approver didn't see), is one of the
+  tools `/auto` mode never approves for you (the same floor as
+  `debug_eval`), and is meant never to be covered by a blanket allow rule.
+  Accepting JavaScript dialogs needs approval for the same reason
+  `confirm()` can gate a destructive action the triggering click's
+  approval never covered; the default is to dismiss.
+- **Cloud instance-metadata endpoints are always refused.** A browser on
+  a cloud VM can reach the metadata service, which hands out IAM
+  credentials to anything that asks. `browser_navigate` (and
+  `browser_download` by URL) refuse `169.254.0.0/16`, `100.100.100.200`,
+  `168.63.129.16`, `fd00:ec2::254`, and the well-known metadata
+  hostnames — including the decimal/hex/octal spellings browsers
+  accept — *before* launching anything, and every page's requests are
+  intercepted so a redirect, subresource or script `fetch()` to one is
+  stopped too (and a navigation that lands on one is blanked). Iframes
+  are covered as well: one that runs in its own process (site isolation)
+  is paused on attach, guarded, and only then resumed, so a hostile
+  iframe can't win a race to the endpoint. This is unconditional, so it
+  holds under `--yolo` and auto mode, which skip the approval that would
+  otherwise catch it. Loopback and private ranges are deliberately *not*
+  blocked: `localhost:3000` is the main use case.
 
-- **`/auto` keeps the risky browser calls gated.** Auto mode approves
-  the other browser tools (inspect, screenshot, console/network reads,
-  click, type, …) without a prompt so a web app can be verified end to
-  end, but two things stay in the auto-mode safety floor and always ask:
-  - `browser_upload` and `browser_download` — an upload sends a local
-    file's bytes to a site and a download writes to local disk.
-  - `browser_navigate` to anywhere but **this machine**. `localhost`,
-    `127.x.x.x` and `::1` open unprompted (testing a dev server is what
-    `/auto` is for); any other host — a real site, a private-range
-    address, a cloud metadata address like `169.254.169.254`, a name
-    that only looks local such as `localhost.evil.com`, or any URL with
-    something unusual in it — stops and shows you the URL first. A page
-    the agent has opened can contain instructions, and an auto-approved
-    navigation would be a way to act on them: a URL with secrets in it
-    sends them to whoever runs the site. Saving a per-site rule from the
-    prompt (`Browser(navigate example.com)`) skips it for that site.
-
-  Only `/yolo` (the explicit approve-everything mode) skips these
-  prompts, and a deny rule still beats both.
-- **Approvals can be remembered — narrowly.** The prompt offers the same
-  `[S]` session / `[A]` always / `[D]` never choices as other tools, via
-  `Browser(...)` rules (see
-  [Creating allow and deny rules](#creating-allow-and-deny-rules-from-approvals)).
-  The rule is per *verb*, not per selector: `[S]` on a `browser_inspect`
-  saves `Browser(inspect)`, covering every later inspect but nothing else.
-  `browser_navigate` is per *site*: `Browser(navigate streeteasy.com)`
-  covers that exact host only — no subdomains, and never a blanket "any
-  site". `browser_upload` and `browser_download` never get an allow
-  shortcut (they move local file bytes across the write-path boundary),
-  though `[D]` can block them. A URL with anything unusual in its host
-  (userinfo, a backslash, `*`, non-ASCII, a non-http(s) scheme such as
-  `file:`) is never turned into an allow rule and keeps prompting —
-  including under a hand-written `Browser(navigate *)`, which only covers
-  plain web hosts. The no-approval tools (`browser_close` and friends) sit
-  outside the rules, so even a `Browser(*)` deny can't stop you closing
-  the browser.
+  **What this does not cover.** The address checks are on the literal
+  host. A *hostname* that resolves to a metadata address is also refused,
+  but only for a direct `browser_navigate`/`browser_download` URL, and only
+  as a best-effort lookup done just before launch: a name that fails to
+  resolve is let through (the browser then fails on it itself), DNS can
+  answer differently when the browser asks a moment later (rebinding), and
+  a redirect target or subresource reached through a DNS alias — rather
+  than by its literal address — is not caught. Requests made by web
+  workers are not intercepted. If the machine running the browser can
+  reach a metadata service, network-level egress control is the real
+  boundary; this is defense in depth against the attempts a page or a
+  prompt-injected model would actually make.
+- **Stealth and proxies don't widen the trust boundary.** `stealth`
+  changes how the local browser presents itself, not what it may do:
+  it never solves a challenge and adds no capability. A proxy URL's
+  credentials answer *the proxy's* 407 only — never a site's own login
+  prompt — and never appear in `browser_status` or error messages.
+- **Remote backends send page content off this machine.** With
+  `provider = "browserbase"` every page is rendered by Browserbase; with
+  `"camofox"`, by your Camofox server. Nothing changes about approvals,
+  but the isolation story does: the browser isn't a local process with a
+  temp profile you delete, and `browser_upload`/`browser_download` are
+  refused (a CDP file path names the *browser's* filesystem). API keys
+  are read from environment variables, never the config file, and are
+  sent only in the provider's auth header. A cloud session bills until
+  released, so it is released on `browser_close`, session exit, idle
+  reap, crash, and a failed connect. See
+  [browser.md](browser.md#backends).
+- **Idle browsers are closed.** After `idle_timeout_minutes` (default
+  15) without a call the browser is closed; the next action relaunches
+  it with a fresh profile. This bounds how long a forgotten session keeps
+  a browser — and its in-memory page state — alive.
 - **One browser, one *active* page, no parallelism.** The session
   tracks every tab it has opened (so `browser_tabs`/`browser_switch_tab`
   can list/switch among them, and a click that opens a
@@ -231,43 +242,14 @@ top of the normal approval model:
   page. The tools don't implement `ParallelSafeTool`, so calls always
   serialize through the same approval queue as everything else
   regardless of how many tabs are tracked.
-
-- **Upload/download reuse the existing path boundaries.**
+- **Upload/download reuse the write-path trust boundary.**
   `browser_upload`'s local file paths and `browser_download`'s
   destination path both go through the same `ValidateWritePath` check
   as `write_file` — inside the session workspace or an `--allow-paths`
-  root, no symlink writes. An upload also has to pass the credential
-  **read** deny list that `read_file` enforces (`.env`, `~/.ssh`, …):
-  an upload hands a local file's bytes to a web page, so a file the
-  model can't read is a file it can't upload either. The download's
-  final copy refuses to write through a symlink planted at the
-  destination.
-- **Only web URLs.** `browser_navigate` and `browser_download`'s `url`
-  accept `http://`, `https://` and `about:blank` only. `file://` would
-  let the browser read anything the user can — including the files the
-  read tools deny — and `browser_inspect` would return it to the model;
-  `chrome://`, `view-source:` and `devtools:` expose browser internals;
-  `javascript:` would be a run-script primitive. It is an allowlist, so
-  a scheme nobody thought of is refused too, and the check runs before a
-  browser is launched. A web page's own links, redirects and
-  `window.open` can't reach `file:` either — Chrome refuses that, and a
-  real-browser test pins it.
-- **The approval prompt shows what is being approved.** `browser_type`
-  shows the text typed, `browser_upload` the files, and
-  `browser_download` the source as well as the destination — bounded in
-  length, with the true length shown, and with control characters
-  escaped so an argument can't reflow the prompt to look like something
-  else.
-- **The browser keeps Chrome's process isolation.** rod's launch
-  defaults turn site isolation off and run the network service inside the
-  browser process; both are turned back on. Chrome's own sandbox is never
-  disabled (nothing passes `--no-sandbox`). rod's "leakless" guard is a
-  helper binary it extracts to a predictable `/tmp` path and runs without
-  checking who owns it — on a shared machine another user could plant a
-  program there. The helper is only used if it and its directory belong
-  to you and nobody else can write them; otherwise the browser launches
-  without the guard (a hard-killed yottacode may then leave an orphaned
-  browser process behind).
+  root, no symlink writes. An upload hands a local file's bytes to
+  whatever origin the active page is on, which is at least as sensitive
+  as a local write, so it gets the same boundary rather than a looser
+  one.
 - **Console/network capture is buffered continuously, and reading it
   needs approval.** `browser_console_logs`/`browser_network_requests`
   read from a per-page bounded buffer (`Runtime`/`Network` domain
@@ -286,55 +268,6 @@ top of the normal approval model:
   sandbox doesn't apply here — rod launches the Chromium process
   directly, not via a shell command. Containerizing the browser itself
   is a possible future addition, not a v1 guarantee.
-
-### Browser automation: what it does not protect against
-
-The safeguards above narrow the browser tools; they do not make an agent
-that is browsing untrusted pages safe. Know these before using it that
-way:
-
-- **Prompt injection.** Anything on a page — text, console output,
-  network URLs, a screenshot — goes to the model, and a hostile page can
-  contain instructions. Approval prompts and the `/auto` safety floor are
-  the mitigations. In `/auto` the agent can't open a new site without
-  asking (see above), which closes the main way an injected instruction
-  could send data out. What is still open: `click` and `type` are
-  auto-approved, so a page on `localhost` that links out to a hostile
-  site, or a redirect, can still take the browser somewhere unprompted,
-  and text typed into a form there goes with it. Prefer normal approval
-  mode when the browser visits pages you don't control.
-- **Internal network access.** Unlike `fetch_url`, which refuses
-  loopback, private and link-local addresses, the browser can reach them
-  — `localhost` dev servers are its main use, and a cloud instance's
-  `169.254.169.254` metadata endpoint or an internal admin page is
-  reachable the same way. The control is the approval prompt, which shows
-  the URL: it applies to every navigation in normal mode, and to every
-  non-loopback navigation in `/auto`. Redirects, links followed after the
-  page loads, and DNS names that resolve to an internal address are not
-  checked — the prompt shows a hostname, not where it resolves. On a
-  cloud or internal-network host, treat browser access as network
-  access.
-- **Site scoping is a speed bump, not a boundary.** A saved
-  `Browser(navigate example.com)` rule covers that exact host only, but
-  an allowed `Browser(click)` can follow links anywhere and rules are
-  per host, not per port.
-- **The debugging port is unauthenticated on loopback.** Chrome is driven
-  over a local DevTools port with no credentials, so any local process —
-  or, on a shared machine, any local *user* — can drive your browser
-  session. A web page cannot: a page's `fetch` and WebSocket to that port
-  are refused and DNS-rebinding is rejected by Chrome (both checked
-  against a live browser). Don't run this on a machine with local users
-  you don't trust.
-- **The temp profile can briefly outlive a crash.** Cookies and site
-  data live in a `0700` directory under your temp dir, removed on
-  `browser_close` and at shutdown. If yottacode is killed with `SIGKILL`
-  it is left behind, and the next browser launch removes it — provided
-  it is at least an hour old, owned by you, and Chrome's own lock file
-  shows no live browser holds it (a directory it can't prove is dead is
-  never touched; at most 20 are removed per launch). Until then it sits
-  in your temp dir.
-- **Downloads have a time limit, not a size limit.** A download is
-  bounded by the 60-second action timeout only.
 
 ## Write-path validation
 
@@ -408,7 +341,7 @@ When an approval modal appears, use the keyboard: press **`Y`** to approve once,
 
 `[S]` session and `[A]` always derive the identical pattern and share the same suppression rules (see below) — the only difference is where the rule lives. `[A]` appends it to `permissions.local.json`, so it survives restarts and is visible to `/permissions`. `[S]` keeps it in memory only, for the rest of the current process: nothing is written to disk, so it can't outlive the session, leak into a teammate's checkout, or need cleaning up later. Use `[S]` for a rule you only want for this one exploratory session; use `[A]` for one you'd make again next time.
 
-`[A]`/`[S]` are suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow, temporarily or not. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash`, `git` and the approval-gated `browser_*` tools. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow (persisted or session-scoped) for the same pattern.
+`[A]`/`[S]` are suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow, temporarily or not. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash` and `git`. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow (persisted or session-scoped) for the same pattern.
 
 Examples:
 
@@ -418,11 +351,10 @@ Examples:
 - `Edit(internal/**)` — allow edits under one source tree.
 - `Write(docs/**)` — allow new/overwritten files under docs.
 - `Document(xlsx reports/**)` — allow generated spreadsheets in a reports directory.
-- `Browser(inspect)` — stop asking before every `browser_inspect`; `Browser(navigate streeteasy.com)` — allow navigating to that one site. Hand-write `Browser(navigate *.example.com)` for subdomains.
 - `MCP(filesystem/read_*)` — allow filesystem MCP server's read tools (see [MCP](mcp.md)).
 - `MCP(github/*)` — allow every tool from the GitHub MCP server; prefer narrower server/tool rules when possible. Note: a glob like this can never auto-allow a tool the server marked destructive — only an exact `MCP(github/create_issue)`-style rule can, so a destructive call still prompts even under a broad allow rule.
 
-`/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, `Browser(*)` / `Browser(navigate *)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written. Persisting `MCP(*)` from an interactive "always allow" prompt requires an explicit second confirmation, since it covers every server and tool.
+`/permissions` also highlights risky-but-valid rules, such as broad `Bash(gh *)`, `Bash(python*)`, `Git(-C *)`, namespace-wide `Github(*)` / `MCP(*)`, repo-wide delete allows, and allow rules shadowed by deny rules. Warnings are advisory only: yottacode still honors the policy file exactly as written. Persisting `MCP(*)` from an interactive "always allow" prompt requires an explicit second confirmation, since it covers every server and tool.
 
 MCP tool trust decisions (`approval_mode = "allow-readonly"`, `trust_annotations`) rely on server-declared annotations, which are advisory and unverified, not a guarantee — see [MCP](mcp.md#global-mcp-policy).
 

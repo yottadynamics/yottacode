@@ -29,7 +29,8 @@ the project uses semantic versioning once it's past `1.0.0`.
   prompts for approval,
   including the two read-only ones (screenshot, inspect), since either
   can surface on-screen private data. JS-initiated dialogs
-  (`alert`/`confirm`/`prompt`/`beforeunload`) are auto-dismissed so a
+  (`alert`/`confirm`/`prompt`/`beforeunload`) are answered automatically —
+  dismissed by default, see `browser_dialog` — so a
   page that pops one can't hang a tool call, and every action is
   bounded by a default 60s timeout so a single hung page can't wedge
   the whole session (including `browser_close`) forever. If the
@@ -73,6 +74,40 @@ the project uses semantic versioning once it's past `1.0.0`.
   integration suite on every change to this surface. See
   [`tools.md`](docs/tools.md#browser_status),
   [`experimental.md`](docs/experimental.md), and
+  [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#browser-automation).
+
+- **Browser tools: element refs, JavaScript, iframes, and swappable backends
+  (experimental).** `browser_inspect` now tags every interactive element with
+  an `@eN` ref that `browser_click`, `browser_type`, `browser_scroll`,
+  `browser_wait`, `browser_screenshot`, `browser_upload` and `browser_download`
+  accept anywhere they accept a CSS selector — the agent clicks what it saw
+  instead of guessing selectors. `interactive_only` gives a compact list of
+  just the controls; controls inside same- and cross-origin iframes are listed
+  (and clickable) too; an oversized snapshot is spilled in full to a scratch
+  file instead of silently cut, and its refs stay valid; a stale ref fails
+  clearly rather than acting on something else. `browser_screenshot` with
+  `annotate` boxes every control with its ref number. Three new tools:
+  `browser_eval` (evaluate a JavaScript expression; approval on every call),
+  `browser_back`, and `browser_dialog` (accept or dismiss `alert`/`confirm`/
+  `prompt`; dismiss stays the default, accepting needs approval; every dialog
+  is now recorded in `browser_console_logs`). Cloud instance-metadata
+  endpoints (`169.254.0.0/16`, `metadata.google.internal`, …) are refused —
+  by navigation, redirect, or a page's own requests, and even under
+  `--yolo` (a hostname that resolves to one is refused for a direct
+  navigation too; best-effort, not a network boundary). `browser_eval` and
+  accepting dialogs are never auto-approved by `/auto`, and an approval
+  prompt shows a `browser_eval` expression in full. An idle browser is closed after 15 minutes
+  (`idle_timeout_minutes`). A new `[browser]` config block selects the
+  backend: `local` (default), `browserbase` (a rented cloud browser reached
+  over CDP; stealth, residential proxies and CAPTCHA solving are Browserbase's
+  server-side features, and page content leaves your machine), or `camofox` (a
+  self-hosted Firefox-fork server over REST, with a smaller tool surface);
+  `stealth` (automation flags removed, a self-consistent user agent, client
+  hints and language list — and no injected JavaScript) and `proxy_url`
+  (including authenticating http(s) proxies) apply to the local browser. API
+  keys are read from environment variables, never the config file. See
+  [`browser.md`](docs/browser.md),
+  [`configuration.md`](docs/configuration.md#browser), and
   [`security-and-allow-lists.md`](docs/security-and-allow-lists.md#browser-automation).
 
 - **Explicit Code Map context assembly.** Experimental `/map here` now ranks up to eight high-signal changed or related files, labels each suggestion, and lets `a` attach them as explicit `@path` references. `/context` shows the latest turn working set, and stale references are cleared across turns, `/clear`, and session resume.

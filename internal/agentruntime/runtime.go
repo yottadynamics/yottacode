@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -452,8 +453,16 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// browser.NewManager is cheap and side-effect-free — same posture as
 	// the ghClient construction below: no process is spawned, no binary
 	// discovery happens, until the first browser_* tool call actually
-	// needs it (see Manager.ensureLocked).
-	browserMgr := browser.NewManager()
+	// needs it (see Manager.ensureLocked). The [browser] config only takes
+	// effect when the feature is on: a bad block must not break a session
+	// that never uses the browser.
+	browserMgr, err := browser.NewManagerWithOptions(browserOptions(fileCfg.Browser, os.Getenv))
+	if err != nil {
+		if expSet.IsEnabled(experimental.Browser) {
+			return nil, fmt.Errorf("[browser] config: %w", err)
+		}
+		browserMgr = browser.NewManager()
+	}
 
 	reg := agent.NewRegistry()
 	rt.Registry = reg
