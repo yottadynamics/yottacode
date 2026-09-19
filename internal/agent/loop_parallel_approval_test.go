@@ -77,7 +77,7 @@ func TestExecuteToolCallsParallel_AskRoutesDecisionsCorrectly(t *testing.T) {
 		[]byte(`{"permissions":{"ask":["Read(*)","Grep(*)"]}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	perms, err := permissions.Load(cwd)
+	perms, err := permissions.LoadWithSystemPath(cwd, "")
 	if err != nil {
 		t.Fatalf("permissions.Load: %v", err)
 	}

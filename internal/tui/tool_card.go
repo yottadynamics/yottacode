@@ -1996,22 +1996,32 @@ func (m Model) renderApprovalAutoNotice(e agent.ApprovalAuto) string {
 }
 
 func (m Model) permissionRuleDisplayPath(source string) string {
-	if m.perms == nil {
-		if source == "" {
-			return "permissions"
-		}
-		return source
-	}
-	switch source {
-	case "permissions.local.json":
-		return displayPath(m.perms.LocalPath(), m.cwd)
-	case "permissions.json":
-		return displayPath(m.perms.SharedPath(), m.cwd)
-	case "":
+	if source == "" {
 		return "permissions"
-	default:
+	}
+	if m.perms == nil {
 		return source
 	}
+	if source == "permissions.json" {
+		return displayPath(m.perms.SharedPath(), m.cwd)
+	}
+	if source == "permissions.local.json" {
+		return displayPath(m.perms.LocalPath(), m.cwd)
+	}
+	paths := []struct {
+		name string
+		path string
+	}{
+		{name: "system", path: m.perms.SystemPath()},
+		{name: "shared", path: m.perms.SharedPath()},
+		{name: "local", path: m.perms.LocalPath()},
+	}
+	for _, candidate := range paths {
+		if source == candidate.path || source == candidate.name {
+			return displayPath(candidate.path, m.cwd)
+		}
+	}
+	return source
 }
 
 func autoApprovalNoticeTitle(source string) string {

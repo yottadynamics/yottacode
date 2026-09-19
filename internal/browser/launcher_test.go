@@ -5,8 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
 )
 
 func TestFindChromeBinary_Found(t *testing.T) {
@@ -53,6 +57,32 @@ func TestFindChromeBinary_UnsupportedOS(t *testing.T) {
 	}
 }
 
+// TestBrowserSearchPaths_DarwinCoversRealInstalls is a regression test
+// for a real gap found in review: the darwin list used to carry
+// /usr/bin/google-chrome and /usr/bin/chromium — Linux install
+// locations that never exist on macOS — while having no PATH fallback
+// or Homebrew CLI formula paths at all, unlike the linux list. Pins that
+// the dead entries are gone and the real ones (an app bundle, both
+// Homebrew prefixes, a PATH fallback) are present.
+func TestBrowserSearchPaths_DarwinCoversRealInstalls(t *testing.T) {
+	darwin := browserSearchPaths["darwin"]
+	for _, dead := range []string{"/usr/bin/google-chrome", "/usr/bin/chromium"} {
+		if slices.Contains(darwin, dead) {
+			t.Errorf("darwin search list still contains dead Linux path %q", dead)
+		}
+	}
+	for _, want := range []string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/opt/homebrew/bin/chromium",
+		"/usr/local/bin/chromium",
+		"chromium",
+	} {
+		if !slices.Contains(darwin, want) {
+			t.Errorf("darwin search list missing %q: %v", want, darwin)
+		}
+	}
+}
+
 func TestNewProfileDir_IsolatedAndRemovable(t *testing.T) {
 	dir, err := newProfileDir()
 	if err != nil {
@@ -78,5 +108,54 @@ func TestNewProfileDir_IsolatedAndRemovable(t *testing.T) {
 	defer os.RemoveAll(dir2)
 	if dir == dir2 {
 		t.Error("two calls returned the same profile dir")
+	}
+}
+
+func TestDisplayAvailableFor(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
+	}
+	cases := []struct {
+		name string
+		goos string
+		env  map[string]string
+		want bool
+	}{
+		{"darwin always has a window server", "darwin", nil, true},
+		{"linux with X11", "linux", map[string]string{"DISPLAY": ":0"}, true},
+		{"linux with Wayland", "linux", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, true},
+		{"linux over ssh with no display", "linux", map[string]string{"SSH_CONNECTION": "1 2 3 4"}, false},
+		{"linux empty display vars", "linux", map[string]string{"DISPLAY": "", "WAYLAND_DISPLAY": ""}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := displayAvailableFor(tc.goos, env(tc.env)); got != tc.want {
+				t.Errorf("displayAvailableFor(%q, %v) = %t, want %t", tc.goos, tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+// rod's launch defaults switch site isolation off and run the network service
+// inside the browser process. Pin both undone, and that the automation flags
+// the tools rely on are left alone.
+func TestHardenBrowserFlags(t *testing.T) {
+	l := hardenBrowserFlags(launcher.New())
+	for _, gone := range []string{"disable-site-isolation-trials", "enable-features"} {
+		if l.Has(flags.Flag(gone)) {
+			t.Errorf("flag --%s should be removed (it weakens process isolation)", gone)
+		}
+	}
+	if got := l.Get("disable-features"); strings.Contains(got, "site-per-process") {
+		t.Errorf("--disable-features=%q must not disable site isolation", got)
+	}
+	// Not a security flag: must survive, or the tools stop working.
+	for _, kept := range []string{"remote-debugging-port", "user-data-dir", "no-first-run"} {
+		if !l.Has(flags.Flag(kept)) {
+			t.Errorf("flag --%s should be left in place", kept)
+		}
+	}
+	if l.Has(flags.Flag("no-sandbox")) {
+		t.Error("nothing here may pass --no-sandbox; Chrome's own sandbox must stay on")
 	}
 }

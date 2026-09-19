@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,15 @@ type browserSession interface {
 	Scroll(ctx context.Context, selector string, deltaX, deltaY float64) error
 	Wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error
 	Close(ctx context.Context) error
+
+	Handoff(ctx context.Context) (browser.HandoffResult, error)
+	Tabs(ctx context.Context) ([]browser.TabInfo, error)
+	SwitchTab(ctx context.Context, index int) error
+	CloseTab(ctx context.Context, index int) error
+	Upload(ctx context.Context, selector string, paths []string) error
+	Download(ctx context.Context, selector, url, destPath string) (browser.DownloadResult, error)
+	ConsoleLogs(ctx context.Context, limit int) ([]browser.ConsoleEntry, error)
+	NetworkRequests(ctx context.Context, limit int) ([]browser.NetworkEntry, error)
 }
 
 // browserToolBase is embedded by every browser_* tool struct. Enabled
@@ -52,7 +62,7 @@ type BrowserStatusTool struct{ browserToolBase }
 
 func (t *BrowserStatusTool) Name() string { return "browser_status" }
 func (t *BrowserStatusTool) Description() string {
-	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, its current URL, and its isolated profile directory. Never launches a browser."
+	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, whether it is headless (invisible to the user) or headed (visible after browser_handoff), its current URL, and its isolated profile directory. Never launches a browser."
 }
 func (t *BrowserStatusTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -76,7 +86,11 @@ func (t *BrowserStatusTool) Execute(context.Context, string) (string, error) {
 	if profile == "" {
 		profile = "(none)"
 	}
-	return fmt.Sprintf("binary: %s\nactive: %t\nurl: %s\nprofile_dir: %s", binary, st.Active, url, profile), nil
+	mode := "headless"
+	if st.Headed {
+		mode = "headed"
+	}
+	return fmt.Sprintf("binary: %s\nactive: %t\nmode: %s\nurl: %s\nprofile_dir: %s", binary, st.Active, mode, url, profile), nil
 }
 
 // BrowserNavigateTool navigates the single active page to a URL, lazily
@@ -85,7 +99,7 @@ type BrowserNavigateTool struct{ browserToolBase }
 
 func (t *BrowserNavigateTool) Name() string { return "browser_navigate" }
 func (t *BrowserNavigateTool) Description() string {
-	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning."
+	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning. The session is invisible to the user: if the page shows a human-verification challenge (\"Press & Hold\", CAPTCHA), do not tell the user to look for a browser window — call browser_handoff so they can complete it themselves."
 }
 func (t *BrowserNavigateTool) Schema() map[string]any {
 	return map[string]any{
@@ -273,8 +287,12 @@ func (t *BrowserClickTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := t.Session.Click(ctx, a.Selector); err != nil {
 		return "", fmt.Errorf("browser_click: %w", err)
 	}
+	// tabs is reported so a click that opened a new tab (target="_blank",
+	// window.open) is visible without a separate browser_tabs call — the
+	// session auto-follows a newly opened tab, so current url already
+	// reflects it too; see browser.Manager/session's newTabDetectWindow.
 	st := t.Session.Status()
-	return fmt.Sprintf("clicked %q (current url: %s)", a.Selector, st.CurrentURL), nil
+	return fmt.Sprintf("clicked %q (current url: %s, tabs: %d)", a.Selector, st.CurrentURL, st.TabCount), nil
 }
 
 // BrowserTypeTool fills an input/textarea/contenteditable element,
@@ -300,9 +318,18 @@ func (t *BrowserTypeTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserTypeTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Selector string `json:"selector"`
+		Text     string `json:"text"`
+		Submit   bool   `json:"submit"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("browser_type(%s)", a.Selector)
+	// The typed text is the point of the call — into a hostile page's field
+	// it is also a way to send data out — so the prompt must show it, not
+	// just the selector.
+	submit := ""
+	if a.Submit {
+		submit = ", submit"
+	}
+	return fmt.Sprintf("browser_type(%s, text=%s%s)", a.Selector, previewQuote(a.Text, previewTextMax), submit)
 }
 func (t *BrowserTypeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -322,8 +349,10 @@ func (t *BrowserTypeTool) Execute(ctx context.Context, argsJSON string) (string,
 	if err := t.Session.Type(ctx, a.Selector, a.Text, a.Submit); err != nil {
 		return "", fmt.Errorf("browser_type: %w", err)
 	}
+	// See BrowserClickTool.Execute: a submit that opens a new tab (a form
+	// with target="_blank") is auto-followed and visible via tabs/current url.
 	st := t.Session.Status()
-	return fmt.Sprintf("typed into %q (current url: %s)", a.Selector, st.CurrentURL), nil
+	return fmt.Sprintf("typed into %q (current url: %s, tabs: %d)", a.Selector, st.CurrentURL, st.TabCount), nil
 }
 
 // BrowserHotkeyTool sends a key or key combo to the page (e.g. "Enter",
@@ -505,6 +534,50 @@ func (t *BrowserWaitTool) Execute(ctx context.Context, argsJSON string) (string,
 	return "wait condition satisfied", nil
 }
 
+// BrowserHandoffTool makes the isolated session visible so the human can
+// complete a step the headless browser can't show them — typically a
+// bot-verification challenge. It never solves or bypasses anything itself.
+type BrowserHandoffTool struct{ browserToolBase }
+
+func (t *BrowserHandoffTool) Name() string { return "browser_handoff" }
+func (t *BrowserHandoffTool) Description() string {
+	return "Hand the isolated browser to the user so they can complete a step only a person can do — such as a human-verification challenge (\"Press & Hold\", CAPTCHA). Reopens the isolated session as a visible window on the current URL (a fresh isolated profile; earlier cookies do not carry over) and keeps it visible for the rest of the session. This does not solve, click through, or bypass anything: the user does it. After calling it, tell the user what to do in the window and wait for their reply before continuing. Fails on hosts with no display (SSH, containers, CI); then ask the user to open the page in their own browser and paste what you need."
+}
+func (t *BrowserHandoffTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t *BrowserHandoffTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserHandoffTool) PreviewCall(string) string {
+	// This string is the whole approval prompt, so it has to say what
+	// approving does: it opens a window for the user to act in. It does not
+	// approve, pass, or validate any check itself.
+	return "browser_handoff() — open the browser window so you can complete the verification yourself"
+}
+func (t *BrowserHandoffTool) Execute(ctx context.Context, _ string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	res, err := t.Session.Handoff(ctx)
+	if err != nil {
+		return "", fmt.Errorf("browser_handoff: %w", err)
+	}
+	where := res.URL
+	if where == "" {
+		where = "a blank page (there was no earlier page to reopen)"
+	}
+	var b strings.Builder
+	if res.AlreadyVisible {
+		fmt.Fprintf(&b, "the browser window is already visible, showing %s.", where)
+	} else {
+		fmt.Fprintf(&b, "opened a visible window of the isolated browser, showing %s.", where)
+	}
+	b.WriteString(" The user must complete the verification themselves in that window — do not try to solve or click through it yourself. Tell them what to do, then wait for their reply. Once they confirm, check the page with browser_inspect or browser_screenshot before continuing.")
+	if res.LoadWarning != "" {
+		fmt.Fprintf(&b, " Note: the page had not finished loading (%s); the window is still open.", res.LoadWarning)
+	}
+	return b.String(), nil
+}
+
 // BrowserCloseTool tears down the browser process and its isolated temp
 // profile. Also runs automatically via CleanupTool.Cleanup at session
 // exit, so an agent that forgets to call it explicitly still doesn't
@@ -538,5 +611,426 @@ func (t *BrowserCloseTool) Cleanup(ctx context.Context) error {
 	return t.Session.Close(ctx)
 }
 
+// BrowserTabsTool lists every tracked page (main page plus any popup or
+// target="_blank" tab opened since launch). Read-only, never launches —
+// an unlaunched session has no tabs to report.
+type BrowserTabsTool struct{ browserToolBase }
+
+func (t *BrowserTabsTool) Name() string { return "browser_tabs" }
+func (t *BrowserTabsTool) Description() string {
+	return `List every tracked browser tab (main page plus any popup or target="_blank" tab opened since launch), with each one's index, title, URL, and whether it's the active tab. Never launches the browser.`
+}
+func (t *BrowserTabsTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t *BrowserTabsTool) RequiresApproval(string) bool { return false }
+func (t *BrowserTabsTool) PreviewCall(string) string    { return "browser_tabs()" }
+func (t *BrowserTabsTool) Execute(ctx context.Context, _ string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	tabs, err := t.Session.Tabs(ctx)
+	if err != nil {
+		return "", fmt.Errorf("browser_tabs: %w", err)
+	}
+	if len(tabs) == 0 {
+		return "no tabs (browser not launched yet)", nil
+	}
+	var b strings.Builder
+	for _, tb := range tabs {
+		marker := " "
+		if tb.Active {
+			marker = "*"
+		}
+		fmt.Fprintf(&b, "%s [%d] %s — %s\n", marker, tb.Index, tb.Title, tb.URL)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// BrowserSwitchTabTool changes which tracked tab subsequent browser_*
+// actions act on. Never launches, and doesn't itself read or change any
+// page content — it only changes which page later calls target — so it
+// needs no approval, same reasoning as browser_wait.
+type BrowserSwitchTabTool struct{ browserToolBase }
+
+func (t *BrowserSwitchTabTool) Name() string { return "browser_switch_tab" }
+func (t *BrowserSwitchTabTool) Description() string {
+	return "Switch which tracked tab subsequent browser_* actions act on, by the index reported by browser_tabs."
+}
+func (t *BrowserSwitchTabTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"index": map[string]any{"type": "integer", "description": "Tab index, as reported by browser_tabs"},
+		},
+		"required": []string{"index"},
+	}
+}
+func (t *BrowserSwitchTabTool) RequiresApproval(string) bool { return false }
+func (t *BrowserSwitchTabTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Index int `json:"index"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("browser_switch_tab(%d)", a.Index)
+}
+func (t *BrowserSwitchTabTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_switch_tab: invalid args: %w", err)
+	}
+	if err := t.Session.SwitchTab(ctx, a.Index); err != nil {
+		return "", fmt.Errorf("browser_switch_tab: %w", err)
+	}
+	st := t.Session.Status()
+	return fmt.Sprintf("switched to tab %d (current url: %s)", a.Index, st.CurrentURL), nil
+}
+
+// BrowserCloseTabTool closes one tracked tab without tearing down the
+// whole session — the narrower counterpart to browser_close. No
+// approval, same reasoning as browser_close: it only ever reduces
+// capability (an isolated, disposable headless tab going away, nothing
+// outside the browser session is touched) and never surfaces anything
+// an already-approved call hasn't already shown.
+type BrowserCloseTabTool struct{ browserToolBase }
+
+func (t *BrowserCloseTabTool) Name() string { return "browser_close_tab" }
+func (t *BrowserCloseTabTool) Description() string {
+	return "Close one tracked tab by the index browser_tabs reports, without closing the browser session. Refuses to close the only remaining tab — use browser_close for that."
+}
+func (t *BrowserCloseTabTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"index": map[string]any{"type": "integer", "description": "Tab index, as reported by browser_tabs"},
+		},
+		"required": []string{"index"},
+	}
+}
+func (t *BrowserCloseTabTool) RequiresApproval(string) bool { return false }
+func (t *BrowserCloseTabTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Index int `json:"index"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	return fmt.Sprintf("browser_close_tab(%d)", a.Index)
+}
+func (t *BrowserCloseTabTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_close_tab: invalid args: %w", err)
+	}
+	if err := t.Session.CloseTab(ctx, a.Index); err != nil {
+		return "", fmt.Errorf("browser_close_tab: %w", err)
+	}
+	st := t.Session.Status()
+	return fmt.Sprintf("closed tab %d (tabs remaining: %d, current url: %s)", a.Index, st.TabCount, st.CurrentURL), nil
+}
+
+// BrowserUploadTool sets a file input element's files from local paths.
+// Always requires approval and reuses the write-path trust boundary
+// (ValidateWritePath) even though it's technically a read: uploading a
+// local file hands its bytes to whatever origin the active page is on,
+// which is at least as sensitive as writing it — the same cwd/
+// --allow-paths boundary write_file enforces applies here too.
+type BrowserUploadTool struct {
+	browserToolBase
+	Cwd       *CwdRef
+	WriteOpts WritePathOptions
+
+	// DenyReadPaths is the credential-bearing read deny list every read tool
+	// enforces (see DefaultDenyReadPaths). Uploading is a read of the file —
+	// its bytes leave the machine — so the same list applies; without it an
+	// upload could hand ./.env to a web page even though read_file refuses it.
+	DenyReadPaths []string
+}
+
+func (t *BrowserUploadTool) Name() string { return "browser_upload" }
+func (t *BrowserUploadTool) Description() string {
+	return "Set a <input type=file> element's files from local paths. Every path must be inside the session workspace (same boundary as write_file) — uploading a file hands its bytes to whatever origin the active page is on."
+}
+func (t *BrowserUploadTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"selector": map[string]any{"type": "string", "description": "CSS selector of the file input element"},
+			"paths":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Local file paths to upload"},
+		},
+		"required": []string{"selector", "paths"},
+	}
+}
+func (t *BrowserUploadTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserUploadTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Selector string   `json:"selector"`
+		Paths    []string `json:"paths"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	// Which files are leaving the machine is exactly what the user is being
+	// asked to approve, so list them (bounded, with the true count).
+	const maxShown = 5
+	shown := make([]string, 0, maxShown)
+	for i, p := range a.Paths {
+		if i == maxShown {
+			break
+		}
+		shown = append(shown, previewQuote(p, previewPathMax))
+	}
+	more := ""
+	if len(a.Paths) > maxShown {
+		more = fmt.Sprintf(" +%d more", len(a.Paths)-maxShown)
+	}
+	return fmt.Sprintf("browser_upload(%s, files=[%s]%s)", a.Selector, strings.Join(shown, ", "), more)
+}
+func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Selector string   `json:"selector"`
+		Paths    []string `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_upload: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Selector) == "" {
+		return "", fmt.Errorf("browser_upload: selector is required")
+	}
+	if len(a.Paths) == 0 {
+		return "", fmt.Errorf("browser_upload: paths is required")
+	}
+	cwd := t.Cwd.Get()
+	resolved := make([]string, len(a.Paths))
+	for i, p := range a.Paths {
+		rp := resolvePath(cwd, p)
+		if err := ValidateWritePath(rp, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("browser_upload: %w", err)
+		}
+
+		if err := ValidateReadPath(rp, t.DenyReadPaths); err != nil {
+			return "", fmt.Errorf("browser_upload: %w", err)
+		}
+		resolved[i] = rp
+	}
+	if err := t.Session.Upload(ctx, a.Selector, resolved); err != nil {
+		return "", fmt.Errorf("browser_upload: %w", err)
+	}
+	return fmt.Sprintf("uploaded %d file(s) to %q", len(resolved), a.Selector), nil
+}
+
+// BrowserDownloadTool triggers a download — by clicking selector, or by
+// navigating directly to url (exactly one must be given) — and saves it
+// to path, validated the same way write_file validates its destination.
+type BrowserDownloadTool struct {
+	browserToolBase
+	Cwd       *CwdRef
+	WriteOpts WritePathOptions
+}
+
+func (t *BrowserDownloadTool) Name() string { return "browser_download" }
+func (t *BrowserDownloadTool) Description() string {
+	return "Trigger a download — by clicking an element (selector), or by navigating directly to a downloadable url — and save it to a local path. Exactly one of selector/url is required. path must be inside the session workspace, same boundary as write_file."
+}
+func (t *BrowserDownloadTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"selector": map[string]any{"type": "string", "description": "CSS selector of an element (e.g. a download link/button) to click to trigger the download"},
+			"url":      map[string]any{"type": "string", "description": "URL to navigate to directly to trigger the download"},
+			"path":     map[string]any{"type": "string", "description": "Local destination path for the downloaded file"},
+		},
+		"required": []string{"path"},
+	}
+}
+func (t *BrowserDownloadTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserDownloadTool) PreviewCall(argsJSON string) string {
+	var a struct {
+		Selector string `json:"selector"`
+		URL      string `json:"url"`
+		Path     string `json:"path"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	// Show where the bytes come from as well as where they land: the
+	// destination alone says nothing about what is being fetched.
+	from := "click " + a.Selector
+	if strings.TrimSpace(a.URL) != "" {
+		from = a.URL
+	}
+	return fmt.Sprintf("browser_download(from=%s, to=%s)", previewQuote(from, previewPathMax), previewQuote(a.Path, previewPathMax))
+}
+func (t *BrowserDownloadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Selector string `json:"selector"`
+		URL      string `json:"url"`
+		Path     string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_download: invalid args: %w", err)
+	}
+	hasSelector := strings.TrimSpace(a.Selector) != ""
+	hasURL := strings.TrimSpace(a.URL) != ""
+	if hasSelector == hasURL {
+		return "", fmt.Errorf("browser_download: exactly one of selector or url is required")
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("browser_download: path is required")
+	}
+	dest := resolvePath(t.Cwd.Get(), a.Path)
+	if err := ValidateWritePath(dest, t.WriteOpts); err != nil {
+		return "", fmt.Errorf("browser_download: %w", err)
+	}
+	res, err := t.Session.Download(ctx, a.Selector, a.URL, dest)
+	if err != nil {
+		return "", fmt.Errorf("browser_download: %w", err)
+	}
+	return fmt.Sprintf("downloaded %q to %s (%d bytes)", res.SuggestedFilename, res.Path, res.SizeBytes), nil
+}
+
+// browserLogLimitDefault caps how many entries browser_console_logs and
+// browser_network_requests return when the caller omits limit — the
+// underlying buffer (see browser.maxBufferedEntries) holds more, but a
+// smaller default keeps a routine call token-cheap.
+const browserLogLimitDefault = 50
+
+// BrowserConsoleLogsTool returns recently buffered console.* calls and
+// uncaught exceptions from the active page — captured continuously
+// since the page was tracked, not just during this call, since a
+// console message can happen at any time (page load, async JS) not only
+// while a tool call is in flight. Always requires approval: console
+// output can carry private data (a logged token, PII) even though
+// nothing was clicked to produce it — same rationale as
+// browser_screenshot/browser_inspect.
+type BrowserConsoleLogsTool struct{ browserToolBase }
+
+func (t *BrowserConsoleLogsTool) Name() string { return "browser_console_logs" }
+func (t *BrowserConsoleLogsTool) Description() string {
+	return "Return recently buffered console.* calls and uncaught JS exceptions from the active page, most recent last. Captured continuously since the page was tracked, not just during this call."
+}
+func (t *BrowserConsoleLogsTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"limit": map[string]any{"type": "integer", "description": "Max entries to return, most recent first. Defaults to 50."},
+		},
+	}
+}
+func (t *BrowserConsoleLogsTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserConsoleLogsTool) PreviewCall(string) string    { return "browser_console_logs()" }
+func (t *BrowserConsoleLogsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_console_logs: invalid args: %w", err)
+	}
+	if a.Limit <= 0 {
+		a.Limit = browserLogLimitDefault
+	}
+	entries, err := t.Session.ConsoleLogs(ctx, a.Limit)
+	if err != nil {
+		return "", fmt.Errorf("browser_console_logs: %w", err)
+	}
+	if len(entries) == 0 {
+		return "no console output buffered", nil
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		fmt.Fprintf(&b, "[%s] %s %s\n", e.Level, e.At.Format("15:04:05.000"), e.Text)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// BrowserNetworkRequestsTool returns recently buffered requests the
+// active page has made — metadata only (method/url/status), never
+// response bodies. Always requires approval: request URLs can carry
+// private data (a session token in a query param) and reveal what
+// backend APIs a page talks to, even though nothing was clicked to
+// produce them — same rationale as browser_console_logs.
+type BrowserNetworkRequestsTool struct{ browserToolBase }
+
+func (t *BrowserNetworkRequestsTool) Name() string { return "browser_network_requests" }
+func (t *BrowserNetworkRequestsTool) Description() string {
+	return "Return recently buffered network requests the active page has made — method, URL, status, and failures — most recent last. Metadata only, never response bodies."
+}
+func (t *BrowserNetworkRequestsTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"limit": map[string]any{"type": "integer", "description": "Max entries to return, most recent first. Defaults to 50."},
+		},
+	}
+}
+func (t *BrowserNetworkRequestsTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserNetworkRequestsTool) PreviewCall(string) string    { return "browser_network_requests()" }
+func (t *BrowserNetworkRequestsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_network_requests: invalid args: %w", err)
+	}
+	if a.Limit <= 0 {
+		a.Limit = browserLogLimitDefault
+	}
+	entries, err := t.Session.NetworkRequests(ctx, a.Limit)
+	if err != nil {
+		return "", fmt.Errorf("browser_network_requests: %w", err)
+	}
+	if len(entries) == 0 {
+		return "no requests buffered", nil
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		status := "PENDING"
+		switch {
+		case e.Failed:
+			status = "FAILED: " + e.ErrorText
+		case e.Status != 0:
+			status = fmt.Sprintf("%d %s", e.Status, e.StatusText)
+		}
+		fmt.Fprintf(&b, "%s %s %s (%s)\n", e.Method, status, e.URL, e.MIMEType)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
 var _ MultimodalTool = (*BrowserScreenshotTool)(nil)
 var _ CleanupTool = (*BrowserCloseTool)(nil)
+
+// Bounds for what an approval preview echoes back. Long enough to read what is
+// being approved, short enough that one huge argument can't push the rest of
+// the prompt off screen.
+const (
+	previewTextMax = 120
+	previewPathMax = 160
+)
+
+// previewQuote renders s for an approval prompt: quoted, so control
+// characters and newlines show up as escapes instead of silently reflowing the
+// prompt, and truncated with the real length shown so a hidden tail is never
+// invisible.
+func previewQuote(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(string(r[:max])) + fmt.Sprintf("… (%d chars)", len(r))
+}

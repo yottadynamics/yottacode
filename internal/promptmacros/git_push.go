@@ -7,10 +7,10 @@ package promptmacros
 func GitPushDirective() string {
 	return `Push the current branch to origin.
 
-Step 1 — call git_push (no arguments). The tool detects whether
-the current branch already tracks an upstream and adds
-"-u origin HEAD" only on first push. The approval modal fires
-showing the resolved command; user approves or denies.
+Step 1 — call git_push (no arguments). The tool verifies that any existing
+upstream is exactly origin/<current branch>. If a worktree has stale or
+mismatched tracking, it uses "-u origin HEAD" to repair it. The approval
+modal fires showing the resolved command; user approves or denies.
 
 Step 2 — surface the result envelope verbatim:
 - "pushed=true" with "pr_url=<url>" → emit:

@@ -72,8 +72,8 @@ type CoreToolDeps struct {
 	// EnableBrowser gates the browser_* tools behind the experimental
 	// `browser` feature. Deliberately left false in dispatch's
 	// buildWorktreeChildRegistry call so worktree-child workers never get
-	// this surface — see roadmap/v0.5.0/j1-browser-automation-rod.md's
-	// dispatch-exclusion scope note.
+	// this surface — see docs/security-and-allow-lists.md's "Browser
+	// automation" section for the dispatch-exclusion rationale.
 	EnableBrowser bool
 
 	// BrowserSession is the shared, session-scoped browser manager the
@@ -193,7 +193,16 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&BrowserHotkeyTool{browserToolBase: base})
 		reg.Register(&BrowserScrollTool{browserToolBase: base})
 		reg.Register(&BrowserWaitTool{browserToolBase: base})
+		reg.Register(&BrowserHandoffTool{browserToolBase: base})
 		reg.Register(&BrowserCloseTool{browserToolBase: base})
+		reg.Register(&BrowserTabsTool{browserToolBase: base})
+		reg.Register(&BrowserSwitchTabTool{browserToolBase: base})
+		reg.Register(&BrowserCloseTabTool{browserToolBase: base})
+
+		reg.Register(&BrowserUploadTool{browserToolBase: base, Cwd: cwd, WriteOpts: wo, DenyReadPaths: deps.DenyReads})
+		reg.Register(&BrowserDownloadTool{browserToolBase: base, Cwd: cwd, WriteOpts: wo})
+		reg.Register(&BrowserConsoleLogsTool{browserToolBase: base})
+		reg.Register(&BrowserNetworkRequestsTool{browserToolBase: base})
 	}
 	if deps.EnableLSP {
 		base := lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}

@@ -80,8 +80,10 @@ type LoopConfig struct {
 	// auto startup flag. When active, the loop auto-approves
 	// non-safety-floor tool calls (no modal) so the model can
 	// implement a multi-step plan without per-edit friction.
-	// run_bash and git mutations remain in the safety floor — see
-	// IsAutoModeSafetyFloor.
+	// run_bash, git mutations, the browser file-boundary tools
+	// (browser_upload/browser_download), and browser_navigate to anywhere
+	// but loopback remain in the safety floor — see
+	// IsAutoModeSafetyFloor / IsAutoModeSafetyFloorCall.
 	AutoMode *AutoModeState
 
 	// YoloMode is the unrestricted toggle — auto-approves ALL tool
@@ -1039,10 +1041,10 @@ func shouldContinueIncomplete(final *adapter.Message) bool {
 
 // executeToolCall handles one tool invocation. Layered approval flow:
 //
-//  1. Permissions evaluation (Deny > Allow > Ask) — explicit user
-//     rules from .yottacode/permissions{,.local}.json. Deny wins
-//     even under BypassPermissions; Allow skips the prompt; Ask
-//     forces a prompt even if the tool would normally auto-execute.
+//  1. Permissions evaluation (Deny > Ask > Allow) — explicit user
+//     rules from the system policy and project permission files. Deny wins
+//     even under BypassPermissions; Allow skips the prompt; Ask forces a
+//     prompt even if the tool would normally auto-execute.
 //  2. BypassPermissions — auto-approve everything else (announced
 //     in scrollback so audits stay honest).
 //  3. Tool's own RequiresApproval — the pre-existing policy
@@ -1243,7 +1245,7 @@ func executeToolCallImpl(
 			return "", nil, false, "", err
 		}
 		approvalSource = "auto-mode-safe-bash"
-	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
+	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {

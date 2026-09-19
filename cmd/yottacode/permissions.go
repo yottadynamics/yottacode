@@ -10,11 +10,11 @@ import (
 	"github.com/yottadynamics/yottacode/internal/permissions"
 )
 
-// newPermissionsCmd builds the `yottacode permissions` subcommand tree.
-//
-// Permission rules live project-locally in .yottacode/permissions.json and
-// .yottacode/permissions.local.json (see internal/permissions and
-// docs/security-and-allow-lists.md). The matching semantics — per-segment
+var loadPermissions = permissions.Load
+
+// Permission rules may come from the machine-wide system policy or the two
+// project-local files. Matching rules retain their absolute source path for
+// diagnostics; automatic writes remain restricted to the project-local file.
 // Bash splitting, doublestar path globs vs. free-form string globs,
 // ratcheted multi-target evaluation for batch calls — are non-obvious
 // enough that a hand-written rule is easy to get subtly wrong. `test` runs
@@ -23,9 +23,10 @@ import (
 func newPermissionsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "permissions",
-		Short: "Inspect and test project permission rules",
-		Long: `Permission rules live in .yottacode/permissions.json (team-shared) and
-.yottacode/permissions.local.json (personal). See docs/security-and-allow-lists.md
+		Short: "Inspect and test permission rules",
+		Long: `Permission rules may come from /etc/yottacode/permissions.json, the
+current directory's .yottacode/permissions.json, and
+current directory's .yottacode/permissions.local.json. See docs/security-and-allow-lists.md
 for rule syntax.
 
   test      dry-run a hypothetical tool call against the loaded rules`,
@@ -39,8 +40,9 @@ func newPermissionsTestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "test <tool> [args-json]",
 		Short: "Show the permission verdict for a hypothetical tool call",
-		Long: `Loads .yottacode/permissions.json and permissions.local.json from the
-current directory and evaluates a hypothetical call against them —
+		Long: `Loads the optional system policy at /etc/yottacode/permissions.json and the
+current directory's .yottacode/permissions.json and
+current directory's .yottacode/permissions.local.json and evaluates a hypothetical call against them —
 without executing anything — using the same Evaluate the agent loop
 calls on every real tool call.
 
@@ -61,7 +63,7 @@ argument may be a bare command string instead of JSON:
 			if err != nil {
 				return err
 			}
-			perms, err := permissions.Load(cwd)
+			perms, err := loadPermissions(cwd)
 			if err != nil {
 				return err
 			}

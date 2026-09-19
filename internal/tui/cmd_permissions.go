@@ -8,17 +8,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// permissionsRowCount is the number of rows in the /permissions picker
-// (shared, local). Centralized so the picker's cursor clamp and any
-// future tests stay in sync if a third file ever joins the layout.
-const permissionsRowCount = 2
+// permissionsRowCount is the number of policy sources shown in the picker.
+const permissionsRowCount = 3
 
-// cmdPermissions opens the inline /permissions picker below the
-// cmdline. Two rows — `shared` (~/.yottacode/permissions.json) and
-// `local` (./.yottacode/permissions.local.json) — Up/Down navigates,
-// Enter suspends to vim on the chosen file, Esc closes. The store
-// reloads both files every time the picker opens, so edits made in vim
-// are reflected the next time the user runs /permissions.
+// cmdPermissions opens the inline /permissions picker below the cmdline.
+// The system policy is read-only; project-shared and project-local files are
+// shown separately so scope and ownership are explicit.
 func cmdPermissions(m Model, _ []string) (Model, tea.Cmd) {
 	if m.perms == nil {
 		m.appendLine(styleError.Render("[permissions] permissions store unavailable in this session"))
@@ -36,10 +31,9 @@ func cmdPermissions(m Model, _ []string) (Model, tea.Cmd) {
 }
 
 // updatePermissionsPicker handles keystrokes while the /permissions
-// picker is the foreground modal. Mirrors updateMemoryPicker — Esc
-// closes, ↑/↓ navigates the two rows, Enter dispatches to vim on the
-// highlighted file. Unknown keys are no-ops (the textarea is hidden
-// underneath).
+// picker is the foreground modal. Esc closes, ↑/↓ navigates the three
+// policy sources, and Enter opens an editable project file in vim. The
+// system policy row is read-only.
 func (m Model) updatePermissionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	switch msg.Code {
 	case tea.KeyEsc:
@@ -58,17 +52,20 @@ func (m Model) updatePermissionsPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
-		path := m.permissionsRowPath(m.permissionsCursor)
+		row := m.permissionsCursor
+		path := m.permissionsRowPath(row)
 		m.permissionsOpen = false
 		m.permissionsCursor = 0
 		if path == "" {
 			m.appendLine(styleError.Render("[permissions] file path unavailable"))
 			return m, nil
 		}
-		// Seed both files with the full {allow, ask, deny} skeleton before
-		// vim opens, so a missing or 0-byte file (left behind by an earlier
-		// "open and quit") never reappears as an empty buffer — and never
-		// crashes the next startup on empty-JSON parse.
+		if row == 0 {
+			m.appendLine(styleNoticeWarn.Render("[permissions] system policy is administrator-managed and read-only"))
+			return m, nil
+		}
+		// Seed the writable project files before vim opens. The system policy
+		// is intentionally never created or modified here.
 		if err := m.perms.EnsureFiles(); err != nil {
 			m.appendLine(styleError.Render("[permissions] init: " + err.Error()))
 		}
@@ -86,8 +83,10 @@ func (m Model) permissionsRowPath(idx int) string {
 	}
 	switch idx {
 	case 0:
-		return m.perms.SharedPath()
+		return m.perms.SystemPath()
 	case 1:
+		return m.perms.SharedPath()
+	case 2:
 		return m.perms.LocalPath()
 	}
 	return ""
@@ -105,10 +104,12 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 	if len(hits) > 0 {
 		h = hits[0]
 	}
+	global := ""
 	shared := ""
 	local := ""
 	if m.perms != nil {
-		shared = tildeifyHome(m.perms.SharedPath())
+		global = tildeifyHome(m.perms.SystemPath())
+		shared = dotifyCwd(m.perms.SharedPath(), m.cwd)
 		local = dotifyCwd(m.perms.LocalPath(), m.cwd)
 	}
 
@@ -116,6 +117,7 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 		Label string
 		Path  string
 	}{
+		{Label: "system", Path: global},
 		{Label: "shared", Path: shared},
 		{Label: "local", Path: local},
 	}
@@ -123,7 +125,7 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Permissions",
-		"Edit a rule file in vim. Rules reload each time this picker opens.", width))
+		"View system policy; edit project shared or local rules in vim. Rules reload each time this picker opens.", width))
 	b.WriteString("\n")
 	warnings := m.permissionsWarnings()
 	if len(warnings) > 0 {
@@ -148,7 +150,7 @@ func renderPermissionsOverlay(m Model, hits ...*pickerHits) string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("↵ open in vim · esc back · ↑↓ navigate"))
+	b.WriteString(styleFooter.Render("↵ open project file in vim · system is read-only · esc back · ↑↓ navigate"))
 	return strings.TrimRight(b.String(), "\n")
 }
 

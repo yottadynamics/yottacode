@@ -151,7 +151,7 @@ func permissionsLoadHelper(t *testing.T, cwd string, allow, ask, deny []string) 
 	if err := os.WriteFile(filepath.Join(cwd, ".yottacode", "permissions.json"), b, 0o644); err != nil {
 		return nil, err
 	}
-	return permissions.Load(cwd)
+	return permissions.LoadWithSystemPath(cwd, "")
 }
 
 // typeAndEnter types each rune of input then sends Enter, returning the
@@ -288,11 +288,12 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	v := m.View().Content
 	for _, want := range []string{
 		"Permissions",
+		"system",
 		"shared",
 		"local",
 		"permissions.json",
 		"permissions.local.json",
-		"↵ open in vim",
+		"↵ open project file in vim",
 		"esc back",
 		"↑↓ navigate",
 	} {
@@ -332,7 +333,7 @@ func TestSlash_PermissionsOpensPickerWithBothRows(t *testing.T) {
 	// footer UI, not scrollback. The startup card may embed the test's
 	// temp-dir name (which contains "Permissions"), so assert against the
 	// picker's hotkey footer instead, which is unique to the live overlay.
-	if got := m.transcript.String(); strings.Contains(got, "↵ open in vim") {
+	if got := m.transcript.String(); strings.Contains(got, "↵ open project file in vim") {
 		t.Errorf("/permissions should not write the picker to scrollback; got %q", got)
 	}
 }
@@ -348,20 +349,25 @@ func TestSlash_PermissionsPickerNavigatesAndEscDismisses(t *testing.T) {
 	if !m.permissionsOpen {
 		t.Fatalf("/permissions should open the inline picker")
 	}
-	// Down moves to the local row.
+	// Down moves to the project-shared row.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	if m.permissionsCursor != 1 {
-		t.Errorf("Down should move cursor to row 1 (local); got %d", m.permissionsCursor)
+		t.Errorf("Down should move cursor to row 1 (project-shared); got %d", m.permissionsCursor)
 	}
-	// Down at the bottom row clamps — no third row.
+	// Down moves to the project-local row.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
-	if m.permissionsCursor != 1 {
-		t.Errorf("Down at bottom should clamp at 1; got %d", m.permissionsCursor)
+	if m.permissionsCursor != 2 {
+		t.Errorf("second Down should move cursor to row 2 (project-local); got %d", m.permissionsCursor)
 	}
-	// Up returns to the shared row.
+	// Down at the bottom row clamps.
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.permissionsCursor != 2 {
+		t.Errorf("Down at bottom should clamp at 2; got %d", m.permissionsCursor)
+	}
+	// Up returns to the project-shared row.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp})
-	if m.permissionsCursor != 0 {
-		t.Errorf("Up should move cursor back to row 0 (shared); got %d", m.permissionsCursor)
+	if m.permissionsCursor != 1 {
+		t.Errorf("Up should move cursor back to row 1 (project-shared); got %d", m.permissionsCursor)
 	}
 	// Random keystrokes don't dismiss anymore — only Esc does.
 	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})

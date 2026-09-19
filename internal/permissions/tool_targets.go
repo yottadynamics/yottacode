@@ -30,11 +30,12 @@ type Target struct {
 	// vacuously match Edit(*) style rules.
 	Descriptors []string
 	// Multi is set on tools whose evaluation must iterate Descriptors
-	// even when the slice is empty. apply_diff is the canonical case:
-	// a malformed or headerless diff yields zero descriptors but must
-	// still avoid matching single-descriptor "" rules.
+	// even when the slice is empty.
 	Multi bool
-	// IsPath flags path-typed targets so matchPattern can route them
+	// Unparseable means the command could not be structurally matched with
+	// confidence; permission evaluation must fall back to normal approval.
+	Unparseable bool
+
 	// through doublestar instead of the free-form glob matcher.
 	IsPath bool
 }
@@ -53,6 +54,10 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	if strings.HasPrefix(toolName, "mcp/") {
 		return Target{PermName: "MCP", Descriptor: strings.TrimPrefix(toolName, "mcp/")}
 	}
+	// browser_* tools: see browser.go for which ones are mapped and why.
+	if strings.HasPrefix(toolName, "browser_") {
+		return browserTarget(toolName, argsJSON)
+	}
 	switch toolName {
 	case "run_bash":
 		// Per-segment descriptors so a Bash allow-rule must match EVERY
@@ -65,7 +70,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		// and the [a]lways-allow rule derivation (which only fires for
 		// single-segment commands anyway).
 		cmd := extractCommand(argsJSON)
-		return Target{PermName: "Bash", Descriptor: cmd, Descriptors: shellseg.Texts(cmd), Multi: true}
+		texts, balanced := shellseg.SafeTexts(cmd)
+		return Target{PermName: "Bash", Descriptor: cmd, Descriptors: texts, Multi: true, Unparseable: !balanced}
 	case "read_file":
 		return Target{PermName: "Read", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "read_many_files":
