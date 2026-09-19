@@ -111,7 +111,7 @@ Approval prompts can be answered once or turned into a reusable allow rule. Auto
 
 Tool calls flow through layered gates in this order:
 
-1. **`Deny` rules** in `permissions.json` and `permissions.local.json` always win.
+1. **`Deny` rules** in the system, project-shared, and project-local policy files always win.
 2. **Plan-mode block** (only when plan mode is active) — blocks every mutating tool except `todo_write`, `exit_plan_mode`, and writes to the resolved plan file. Returns a structured error to the model so it can switch to a read-only or plan-file alternative. Beats an `Ask` rule too: plan mode's read-only invariant isn't something a confirm-and-proceed prompt should be able to soften.
 3. **Unattended background-worker policy** (only for background subagents) — allows worktree-confined file edits but denies host shell, tests, git commits, and network-facing mutations unless that worker is running inside the command sandbox. Background workers have no human to answer a prompt, so they're routed to this deterministic policy before `Ask` or any mode overlay ever applies.
 4. **`Ask` rules** force a prompt even on tools that would normally auto-execute, and even when yolo, auto mode, or plan-mode's plan-file auto-allow is on. An explicit `Ask` rule is a standing "always confirm this" policy, not a default the active mode gets to override — the same footing as `Deny`, just for a prompt instead of a refusal.
@@ -381,6 +381,8 @@ Use:
 
 - `permissions.json` for team-shared rules that can be committed
 - `permissions.local.json` for personal rules that should be gitignored
+
+The optional machine-wide administrator policy is `/etc/yottacode/permissions.json`. It is read-only to yottacode and is evaluated together with the project files. Rules use `deny > ask > allow` precedence.
 
 Add this to `.gitignore`:
 

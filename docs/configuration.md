@@ -380,14 +380,18 @@ Per-repo state lives under `<repo>/.yottacode/`:
 
 ```text
 <repo>/.yottacode/
-  YOTTACODE.md                  optional per-repo project memory (human-seeded;
-                              the agent keeps it fresh through approval-gated
-                              writes)
-  permissions.json            committable team-shared permission rules
-  permissions.local.json      gitignored personal additions (where the
-                              modal's [a]lways-allow path writes to)
+  YOTTACODE.md                  optional per-repo project memory
+  permissions.json               committable project-shared permission rules
+  permissions.local.json         gitignored personal additions
 ```
 
+An optional machine-wide administrator policy is read from:
+
+```text
+/etc/yottacode/permissions.json
+```
+
+The system policy is never created or modified by yottacode. Automatic permission decisions write only to the project-local `permissions.local.json`. All loaded rules use `deny > ask > allow > session allow > normal approval` precedence.
 See [`memory.md`](memory.md) for how the agent-managed memory layer
 works and how to inspect or prune it.
 
@@ -475,7 +479,7 @@ remote. The roadmap tracks per-repo scoping for the cloud bot work
 The default skeleton ships with empty arrays — yottacode is unopinionated
 about which rules a project wants. The set below is a curated starting
 point you can paste into `<repo>/.yottacode/permissions.json` and prune
-to taste. Decision precedence is `Deny > Allow > Ask > Default`, so the
+to taste. Decision precedence is `Deny > Ask > Allow > Default`, so the
 `deny` block always wins even if a broader `allow` is added later.
 
 ```json

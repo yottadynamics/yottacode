@@ -1,10 +1,11 @@
-// Package permissions implements the project-local permissions layer that
-// gates tool calls. Two files carry the rules:
+// Package permissions implements the permissions layer that gates tool calls. Three files carry the rules:
 //
-//   - .yottacode/permissions.json        committable, team-shared rules
-//   - .yottacode/permissions.local.json  gitignored, personal additions
+//   - /etc/yottacode/permissions.json       optional machine-wide administrator rules
+//   - .yottacode/permissions.json           committable, project-shared rules
+//   - .yottacode/permissions.local.json     gitignored, personal additions
 //
-// Both files merge at load time. Each file holds three pattern lists:
+// The system file is read-only to yottacode. All three files merge at load time;
+// deny rules are checked before ask rules, which are checked before allows.
 //
 //	{
 //	  "permissions": {
@@ -115,8 +116,8 @@ func (d Decision) String() string {
 type Rule struct {
 	Tool    string // e.g. "Bash", "Edit"
 	Pattern string // e.g. "go test *", "internal/**"
-	// Source is "permissions.json" or "permissions.local.json" — used
-	// only for diagnostics in /permissions.
+	// Source identifies the policy file that supplied the rule. It is the
+	// absolute path for loaded files and "session" for in-memory grants.
 	Source string
 }
 
@@ -142,11 +143,11 @@ type Permissions struct {
 	// actively relying on).
 	sessionAllow []Rule
 	// localPath is .yottacode/permissions.local.json — the only file
-	// AddAllow ever writes to. The shared permissions.json is never
-	// touched by the agent so a team's committable file stays under
-	// version control.
+	// AddAllow and AddDeny ever write to. The system and shared policy
+	// files remain administrator/project-owned.
 	localPath  string
 	sharedPath string
+	systemPath string
 }
 
 // fileShape mirrors the on-disk JSON exactly.
@@ -158,25 +159,34 @@ type fileShape struct {
 	} `json:"permissions"`
 }
 
-// Load reads <cwd>/.yottacode/permissions.json and
-// .yottacode/permissions.local.json (both optional), merges their rule
-// lists, and returns a usable Permissions value. Missing files are not
-// errors. Malformed files are surfaced so the user can fix them rather
-// than silently running with stale rules.
+// Load reads the optional system policy and the two project policy files.
 func Load(cwd string) (*Permissions, error) {
+	return LoadWithSystemPath(cwd, "/etc/yottacode/permissions.json")
+}
+
+// LoadWithSystemPath loads permissions using an explicit system-policy path.
+// An empty systemPath disables the system source, which is useful for isolated
+// callers and tests that must not depend on the host administrator policy.
+func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	if cwd == "" {
 		return nil, errors.New("permissions: cwd is required")
 	}
 	dir := filepath.Join(cwd, ".yottacode")
 	p := &Permissions{
 		cwd:        cwd,
+		systemPath: systemPath,
 		sharedPath: filepath.Join(dir, "permissions.json"),
 		localPath:  filepath.Join(dir, "permissions.local.json"),
 	}
-	if err := p.loadFile(p.sharedPath, "permissions.json"); err != nil {
+	if systemPath != "" {
+		if err := p.loadFile(p.systemPath, p.systemPath); err != nil {
+			return nil, err
+		}
+	}
+	if err := p.loadFile(p.sharedPath, p.sharedPath); err != nil {
 		return nil, err
 	}
-	if err := p.loadFile(p.localPath, "permissions.local.json"); err != nil {
+	if err := p.loadFile(p.localPath, p.localPath); err != nil {
 		return nil, err
 	}
 	return p, nil
@@ -244,7 +254,7 @@ func (p *Permissions) loadFile(path, source string) error {
 func (p *Permissions) Reload() error {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
-	fresh, err := Load(p.cwd)
+	fresh, err := LoadWithSystemPath(p.cwd, p.systemPath)
 	if err != nil {
 		return err
 	}
@@ -527,10 +537,10 @@ func (p *Permissions) EnsureFiles() error {
 	if p == nil {
 		return errors.New("permissions: nil store")
 	}
-	for _, path := range []string{p.sharedPath, p.localPath} {
-		if err := ensureSkeleton(path); err != nil {
-			return err
-		}
+	// Only the project-local policy is writable by approval flows. The system
+	// policy is administrator-owned and the shared policy is repository-owned.
+	if err := ensureSkeleton(p.localPath); err != nil {
+		return err
 	}
 	return nil
 }
@@ -569,7 +579,15 @@ func (p *Permissions) Snapshot() (deny, allow, ask []Rule) {
 	return dup(p.deny), dup(p.allow), dup(p.ask)
 }
 
-// SharedPath returns the path to permissions.json for /permissions UX.
+// SystemPath returns the machine-wide administrator policy path.
+func (p *Permissions) SystemPath() string {
+	if p == nil {
+		return ""
+	}
+	return p.systemPath
+}
+
+// SharedPath returns the path to the project-shared permissions file for /permissions UX.
 func (p *Permissions) SharedPath() string {
 	if p == nil {
 		return ""
