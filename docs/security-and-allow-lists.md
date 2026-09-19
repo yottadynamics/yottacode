@@ -1,6 +1,8 @@
 # Security and allow lists
 
-yottacode is designed to be explicit about risk. It can inspect, edit, test, and run commands in your project, so approval and path policy matter.
+Bash permission hardening is documented in the **Bash rule matching** section below.
+
+Yottacode is designed to be explicit about risk. It can inspect, edit, test, and run commands in your project, so approval and path policy matter.
 
 ## Folder trust
 
@@ -368,7 +370,13 @@ Read tools do not prompt, so yottacode blocks common secret-bearing paths from s
 
 If you truly need to inspect a protected file, do it through an explicit shell command that prompts for approval.
 
-## Permission files
+## Bash rule matching
+
+Bash allow rules are evaluated per command segment. Compound commands separated by `&&`, `||`, `;`, `|`, `&`, or a newline are not approved by an allow rule that matches only the first command. Commands inside `$(...)` and backtick substitutions are also evaluated independently.
+
+For example, `Bash(go test *)` does not approve `go test ./... && rm -rf tmp`, and `Bash(echo *)` does not approve `echo $(curl https://example.com)`. The outer command is allowed only when every extracted command target is covered by an allow rule and no extracted target matches an ask or deny rule.
+
+This parser is intentionally conservative and is not an operating-system security boundary. Absolute executable paths, scripts, aliases, and indirect subprocess file/network access still require the sandbox or other host controls for complete enforcement.
 
 Project-local permission rules live in:
 

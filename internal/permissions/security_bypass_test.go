@@ -54,7 +54,29 @@ func TestEvaluate_Bash_AllowDoesNotSpanChainedCommands(t *testing.T) {
 	}
 }
 
-// TestEvaluate_Bash_DenySegmentBlocksWholeCommand: a deny rule on any
+func TestEvaluate_Bash_NestedCommandsRequireTheirOwnAllow(t *testing.T) {
+	cwd := t.TempDir()
+	p := newPerms(t, cwd, nil, []string{"Bash(echo *)"}, nil)
+	if got := p.Evaluate("run_bash", `{"command":"echo $(rm -rf /tmp/x)"}`); got == Allow {
+		t.Fatalf("nested denied command was auto-allowed: %v", got)
+	}
+	if got := p.Evaluate("run_bash", `{"command":"echo $(rm -rf /tmp/x)"}`); got != Default {
+		t.Fatalf("nested unallowed command should fall through to default, got %v", got)
+	}
+	p = newPerms(t, cwd, []string{"Bash(rm *)"}, []string{"Bash(echo *)"}, nil)
+	if got := p.Evaluate("run_bash", `{"command":"echo $(rm -rf /tmp/x)"}`); got != Deny {
+		t.Fatalf("nested deny should block outer command: %v", got)
+	}
+}
+
+func TestEvaluate_Bash_MalformedRequiresApproval(t *testing.T) {
+	cwd := t.TempDir()
+	p := newPerms(t, cwd, nil, []string{"Bash(echo *)"}, nil)
+	if got := p.Evaluate("run_bash", `{"command":"echo $(date"}`); got != Ask {
+		t.Fatalf("malformed shell should require approval, got %v", got)
+	}
+}
+
 // segment denies the whole compound command.
 func TestEvaluate_Bash_DenySegmentBlocksWholeCommand(t *testing.T) {
 	cwd := t.TempDir()

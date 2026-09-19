@@ -303,6 +303,11 @@ func (p *Permissions) EvaluateWithRule(toolName, argsJSON string) (Decision, Rul
 	if target.PermName == "" {
 		return Default, Rule{}
 	}
+	if target.Unparseable {
+		// An unparseable shell command must never be auto-approved, including
+		// under yolo. Ask preserves the normal interactive safety fallback.
+		return Ask, Rule{}
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if target.Multi {
