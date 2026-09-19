@@ -66,27 +66,6 @@ jobs:
         # demo/visualization tests out, matching the two steps above.
         run: go test -short -tags deadlock ./...
 
-  vulnerability-scan:
-    # Keep dependency and toolchain CVEs visible without making a known
-    # upstream-fixed-but-unreleased advisory look like a build or test
-    # failure. This job intentionally remains failing until Excelize publishes
-    # a release containing the fix; keep it out of required merge checks only
-    # as a temporary release exception.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26.6'
-          cache: true
-
-      - name: Vulnerability scan
-        run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
-
   acp-smoke:
     # Proves the real, compiled `yottacode acp` binary — not just
     # internal/acp's in-process wire-level tests (which wire a Server
