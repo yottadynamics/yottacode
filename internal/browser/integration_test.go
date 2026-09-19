@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -36,13 +37,112 @@ const alertFixturePage = `<!DOCTYPE html>
   <div id="out"></div>
 </body></html>`
 
+const popupFixturePage = `<!DOCTYPE html>
+<html><head><title>Popup Opener</title></head>
+<body>
+  <a id="popup-link" href="/popup-target" target="_blank">Open</a>
+</body></html>`
+
+const popupTargetFixturePage = `<!DOCTYPE html>
+<html><head><title>Popup Target</title></head>
+<body>popup landed</body></html>`
+
+const popupAutoCloseFixturePage = `<!DOCTYPE html>
+<html><head><title>Popup Opener (Autoclose)</title></head>
+<body>
+  <a id="popup-link" href="/popup-target-autoclose" target="_blank">Open</a>
+</body></html>`
+
+const popupTargetAutoCloseFixturePage = `<!DOCTYPE html>
+<html><head><title>Popup Target (Autoclose)</title></head>
+<body>
+<script>setTimeout(function() { window.close(); }, 100);</script>
+closing soon
+</body></html>`
+
+const uploadFixturePage = `<!DOCTYPE html>
+<html><head><title>Upload Fixture</title></head>
+<body>
+  <input id="file-input" type="file" style="display:none" onchange="document.getElementById('out').textContent = 'file:' + this.files[0].name">
+  <div id="out"></div>
+</body></html>`
+
+const uploadMultipleFixturePage = `<!DOCTYPE html>
+<html><head><title>Upload Multiple Fixture</title></head>
+<body>
+  <input id="file-input" type="file" multiple style="display:none" onchange="document.getElementById('out').textContent = 'files:' + Array.from(this.files).map(f => f.name).sort().join(',')">
+  <div id="out"></div>
+</body></html>`
+
+const downloadFixturePage = `<!DOCTYPE html>
+<html><head><title>Download Fixture</title></head>
+<body>
+  <a id="dl-link" href="/download-file">Download</a>
+</body></html>`
+
+const downloadFileContent = "download fixture contents\n"
+
+const consoleFixturePage = `<!DOCTYPE html>
+<html><head><title>Console Fixture</title></head>
+<body>
+<script>
+  console.log('hello', 'world');
+  console.error('boom');
+  setTimeout(function() { nonExistentFunction(); }, 0);
+</script>
+</body></html>`
+
+const networkFixturePage = `<!DOCTYPE html>
+<html><head><title>Network Fixture</title></head>
+<body>
+<div id="out"></div>
+<script>
+  Promise.allSettled([fetch('/api/ping'), fetch('/api/missing')])
+    .then(function() { document.getElementById('out').textContent = 'done'; });
+</script>
+</body></html>`
+
 func newFixtureServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/download-file":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Disposition", `attachment; filename="report.txt"`)
+			_, _ = w.Write([]byte(downloadFileContent))
+			return
+		case "/api/ping":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		case "/api/missing":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+			return
+		}
 		w.Header().Set("Content-Type", "text/html")
 		page := fixturePage
-		if r.URL.Path == "/alert" {
+		switch r.URL.Path {
+		case "/alert":
 			page = alertFixturePage
+		case "/popup":
+			page = popupFixturePage
+		case "/popup-target":
+			page = popupTargetFixturePage
+		case "/popup-autoclose":
+			page = popupAutoCloseFixturePage
+		case "/popup-target-autoclose":
+			page = popupTargetAutoCloseFixturePage
+		case "/upload":
+			page = uploadFixturePage
+		case "/upload-multiple":
+			page = uploadMultipleFixturePage
+		case "/download":
+			page = downloadFixturePage
+		case "/console":
+			page = consoleFixturePage
+		case "/network":
+			page = networkFixturePage
 		}
 		_, _ = w.Write([]byte(page))
 	}))
@@ -232,5 +332,355 @@ func TestIntegration_CleanupLeavesNoProcessOrTempDir(t *testing.T) {
 	// whether it (or its PID, reused by the OS) is still alive.
 	if err := syscall.Kill(pid, syscall.Signal(0)); err == nil {
 		t.Errorf("pid %d is still alive after Close", pid)
+	}
+}
+
+// TestIntegration_ClickFollowsNewTab proves the real gap this feature set
+// closes: clicking a target="_blank" link against a real browser actually
+// switches the active page, not just leaves the original page's URL
+// unchanged while a popup silently opens in the background.
+func TestIntegration_ClickFollowsNewTab(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/popup", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if st := m.Status(); st.TabCount != 1 {
+		t.Fatalf("TabCount before click = %d, want 1", st.TabCount)
+	}
+
+	if err := m.Click(ctx, "#popup-link"); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+
+	st := m.Status()
+	if st.TabCount != 2 {
+		t.Fatalf("TabCount after click = %d, want 2", st.TabCount)
+	}
+	if !strings.Contains(st.CurrentURL, "/popup-target") {
+		t.Errorf("active page did not follow the new tab: CurrentURL = %q", st.CurrentURL)
+	}
+
+	tabs, err := m.Tabs(ctx)
+	if err != nil {
+		t.Fatalf("Tabs: %v", err)
+	}
+	if len(tabs) != 2 {
+		t.Fatalf("Tabs returned %d entries, want 2: %+v", len(tabs), tabs)
+	}
+	if !tabs[0].Active && !tabs[1].Active {
+		t.Errorf("no tab reported Active: %+v", tabs)
+	}
+
+	// SwitchTab back to the original page should work too.
+	if err := m.SwitchTab(ctx, 0); err != nil {
+		t.Fatalf("SwitchTab: %v", err)
+	}
+	if st := m.Status(); !strings.Contains(st.CurrentURL, "/popup") || strings.Contains(st.CurrentURL, "/popup-target") {
+		t.Errorf("SwitchTab(0) did not restore the original page: CurrentURL = %q", st.CurrentURL)
+	}
+}
+
+// TestIntegration_Upload proves Upload actually sets a real file input's
+// files via CDP against a real browser, including the common
+// display:none pattern the fixture uses.
+func TestIntegration_Upload(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/upload", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "hello.txt")
+	if err := os.WriteFile(tmpFile, []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write fixture upload file: %v", err)
+	}
+
+	if err := m.Upload(ctx, "#file-input", []string{tmpFile}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := m.Wait(ctx, "#out", "file:hello.txt", false, 5*time.Second); err != nil {
+		t.Fatalf("page did not observe the uploaded file: %v", err)
+	}
+}
+
+// TestIntegration_DownloadViaClick proves Download drives a real
+// Chrome-initiated download (a Content-Disposition: attachment response)
+// through to a file at the caller's requested destination, with the
+// scratch temp dir cleaned up afterward.
+func TestIntegration_DownloadViaClick(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/download", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "saved", "report.txt")
+	res, err := m.Download(ctx, "#dl-link", "", dest)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.Path != dest {
+		t.Errorf("DownloadResult.Path = %q, want %q", res.Path, dest)
+	}
+	if res.SuggestedFilename != "report.txt" {
+		t.Errorf("SuggestedFilename = %q, want %q", res.SuggestedFilename, "report.txt")
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("downloaded file missing at %s: %v", dest, err)
+	}
+	if string(data) != downloadFileContent {
+		t.Errorf("downloaded content = %q, want %q", data, downloadFileContent)
+	}
+}
+
+// TestIntegration_DownloadViaURL covers the other trigger path
+// (navigating directly to a downloadable URL rather than clicking an
+// element) — TestIntegration_DownloadViaClick only exercises the
+// click-triggered variant.
+func TestIntegration_DownloadViaURL(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	dest := filepath.Join(t.TempDir(), "report.txt")
+	res, err := m.Download(ctx, "", srv.URL+"/download-file", dest)
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if res.SuggestedFilename != "report.txt" {
+		t.Errorf("SuggestedFilename = %q, want %q", res.SuggestedFilename, "report.txt")
+	}
+	data, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("downloaded file missing at %s: %v", dest, err)
+	}
+	if string(data) != downloadFileContent {
+		t.Errorf("downloaded content = %q, want %q", data, downloadFileContent)
+	}
+}
+
+// TestIntegration_UploadMultipleFiles covers the multi-file case —
+// TestIntegration_Upload only exercises a single file.
+func TestIntegration_UploadMultipleFiles(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/upload-multiple", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	dir := t.TempDir()
+	fileA := filepath.Join(dir, "a.txt")
+	fileB := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(fileA, []byte("a"), 0o644); err != nil {
+		t.Fatalf("write fixture file a: %v", err)
+	}
+	if err := os.WriteFile(fileB, []byte("b"), 0o644); err != nil {
+		t.Fatalf("write fixture file b: %v", err)
+	}
+
+	if err := m.Upload(ctx, "#file-input", []string{fileA, fileB}); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := m.Wait(ctx, "#out", "files:a.txt,b.txt", false, 5*time.Second); err != nil {
+		t.Fatalf("page did not observe both uploaded files: %v", err)
+	}
+}
+
+// TestIntegration_BackgroundTabSelfCloseFallsBackToRemainingTab is the
+// end-to-end proof for the untrackPage fix: open a popup (auto-followed,
+// so it becomes the active tab), let it close itself via window.close()
+// (a real Chrome-permitted self-close since it's a script-opened
+// window), and confirm the active tab falls back to the original page
+// rather than being left pointing at a page that no longer exists.
+func TestIntegration_BackgroundTabSelfCloseFallsBackToRemainingTab(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/popup-autoclose", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.Click(ctx, "#popup-link"); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	if st := m.Status(); st.TabCount != 2 || !strings.Contains(st.CurrentURL, "/popup-target-autoclose") {
+		t.Fatalf("expected the click to follow the new tab, got %+v", st)
+	}
+
+	// The popup closes itself ~100ms after load; poll until the manager
+	// observes it, bounded well above that.
+	deadline := time.Now().Add(5 * time.Second)
+	var st Status
+	for time.Now().Before(deadline) {
+		st = m.Status()
+		if st.TabCount == 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if st.TabCount != 1 {
+		t.Fatalf("popup tab never closed (TabCount stuck at %d)", st.TabCount)
+	}
+	if !strings.Contains(st.CurrentURL, "/popup-autoclose") || strings.Contains(st.CurrentURL, "/popup-target-autoclose") {
+		tabs, _ := m.Tabs(ctx)
+		t.Errorf("active tab did not fall back to the remaining page: CurrentURL = %q, tabs = %+v", st.CurrentURL, tabs)
+	}
+
+	// The session must still be fully usable against the surviving page.
+	if _, err := m.Screenshot(ctx, "", false); err != nil {
+		t.Fatalf("session unusable after popup self-close: %v", err)
+	}
+}
+
+// TestIntegration_CloseTab proves CloseTab actually closes the real CDP
+// target (not just the local registry entry) and that the session stays
+// usable against the remaining page afterward, using an explicit
+// browser_close_tab call rather than the page closing itself.
+func TestIntegration_CloseTab(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/popup", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.Click(ctx, "#popup-link"); err != nil {
+		t.Fatalf("Click: %v", err)
+	}
+	if st := m.Status(); st.TabCount != 2 {
+		t.Fatalf("expected 2 tabs after the popup opened, got %d", st.TabCount)
+	}
+
+	// The popup is active (index 1, auto-followed by the click); close it
+	// explicitly rather than switching back first, to prove closing the
+	// *active* tab correctly falls back too.
+	if err := m.CloseTab(ctx, 1); err != nil {
+		t.Fatalf("CloseTab: %v", err)
+	}
+
+	st := m.Status()
+	if st.TabCount != 1 {
+		t.Fatalf("TabCount after CloseTab = %d, want 1", st.TabCount)
+	}
+	if !strings.Contains(st.CurrentURL, "/popup") || strings.Contains(st.CurrentURL, "/popup-target") {
+		t.Errorf("active tab did not fall back to the remaining page: CurrentURL = %q", st.CurrentURL)
+	}
+	if _, err := m.Screenshot(ctx, "", false); err != nil {
+		t.Fatalf("session unusable after CloseTab: %v", err)
+	}
+
+	// Closing the last remaining tab must be refused, not silently leave
+	// the session with zero tracked pages.
+	if err := m.CloseTab(ctx, 0); err == nil {
+		t.Error("expected CloseTab to refuse closing the only remaining tab")
+	}
+}
+
+// TestIntegration_ConsoleLogsCaptured proves console capture is wired
+// against a real page: console.log/console.error calls and an uncaught
+// exception (fired via setTimeout, so it happens after the page has
+// already loaded — proving capture isn't a one-shot "read at load time"
+// but a continuous subscription) all show up in ConsoleLogs.
+func TestIntegration_ConsoleLogsCaptured(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/console", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+
+	var entries []ConsoleEntry
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		entries, err = m.ConsoleLogs(ctx, 0)
+		if err != nil {
+			t.Fatalf("ConsoleLogs: %v", err)
+		}
+		if len(entries) >= 3 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(entries) < 3 {
+		t.Fatalf("got %d console entries, want at least 3: %+v", len(entries), entries)
+	}
+
+	var sawLog, sawError, sawException bool
+	for _, e := range entries {
+		switch {
+		case e.Level == "log" && strings.Contains(e.Text, "hello") && strings.Contains(e.Text, "world"):
+			sawLog = true
+		case e.Level == "error" && strings.Contains(e.Text, "boom"):
+			sawError = true
+		case e.Level == "exception" && strings.Contains(e.Text, "nonExistentFunction"):
+			sawException = true
+		}
+	}
+	if !sawLog || !sawError || !sawException {
+		t.Errorf("missing expected entries (log=%t error=%t exception=%t): %+v", sawLog, sawError, sawException, entries)
+	}
+}
+
+// TestIntegration_NetworkRequestsCaptured proves network capture is
+// wired against a real page: a successful fetch and a failed (404)
+// fetch both show up with the right method/status.
+func TestIntegration_NetworkRequestsCaptured(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/network", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.Wait(ctx, "#out", "done", false, 5*time.Second); err != nil {
+		t.Fatalf("page's fetches never settled: %v", err)
+	}
+
+	entries, err := m.NetworkRequests(ctx, 0)
+	if err != nil {
+		t.Fatalf("NetworkRequests: %v", err)
+	}
+
+	var sawOK, sawNotFound bool
+	for _, e := range entries {
+		switch {
+		case strings.HasSuffix(e.URL, "/api/ping") && e.Status == 200:
+			sawOK = true
+		case strings.HasSuffix(e.URL, "/api/missing") && e.Status == 404:
+			sawNotFound = true
+		}
+	}
+	if !sawOK || !sawNotFound {
+		t.Errorf("missing expected entries (ok=%t notFound=%t): %+v", sawOK, sawNotFound, entries)
 	}
 }

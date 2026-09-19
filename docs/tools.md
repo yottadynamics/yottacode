@@ -125,6 +125,13 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_scroll`](#browser_scroll) | required | Experimental behind `browser`; scroll an element into view, or scroll the page by direction/delta |
 | [`browser_wait`](#browser_wait) | none | Experimental behind `browser`; wait for a selector/text/network-idle condition |
 | [`browser_close`](#browser_close) | none | Experimental behind `browser`; close the browser session and remove its temp profile |
+| [`browser_tabs`](#browser_tabs) | none | Experimental behind `browser`; list every tracked tab and which one is active |
+| [`browser_switch_tab`](#browser_switch_tab) | none | Experimental behind `browser`; switch which tracked tab later calls act on |
+| [`browser_close_tab`](#browser_close_tab) | none | Experimental behind `browser`; close one tracked tab without closing the session |
+| [`browser_upload`](#browser_upload) | required | Experimental behind `browser`; set a file input's files from local paths |
+| [`browser_download`](#browser_download) | required | Experimental behind `browser`; trigger a download (via click or url) and save it to a local path |
+| [`browser_console_logs`](#browser_console_logs) | required | Experimental behind `browser`; return buffered console.* calls and uncaught exceptions from the active page |
+| [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2168,9 +2175,11 @@ Experimental behind `browser` (see [experimental.md](experimental.md)).
 The `browser_*` tools drive a real, headless Chrome/Chromium instance
 over the Chrome DevTools Protocol via
 [`go-rod/rod`](https://github.com/go-rod/rod) — no Node.js, no
-Playwright. The manager is session-scoped: at most one browser process
-and one active page, launched lazily on the first call that needs it,
-sharing one isolated temp profile directory for the whole session. See
+Playwright. The manager is session-scoped: at most one browser process,
+launched lazily on the first call that needs it, sharing one isolated
+temp profile directory for the whole session. See
+[browser.md](browser.md) for what to use this for and worked examples,
+and
 [security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
 for the full safety posture.
 
@@ -2306,17 +2315,132 @@ never called explicitly.
 
 No approval — it only ever reduces capability.
 
+## browser_tabs
+
+List every tab the session has seen — the main page plus any popup or
+`target="_blank"` tab opened since launch — with each one's index,
+title, URL, and whether it's the currently active tab. Indexes are for
+the current listing; closing a tab can shift later indexes, so list
+again before acting on a stale index. Never launches the browser.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+No approval.
+
+## browser_switch_tab
+
+Switch which tracked tab subsequent `browser_*` actions act on, by the
+index `browser_tabs` reports. The index refers to the current listing;
+closing another tab can shift it, so list again before switching.
+
+| Param | Type | Default |
+|---|---|---|
+| `index` | integer | — (required) |
+
+No approval.
+
+## browser_close_tab
+
+Close one tracked tab by the index `browser_tabs` reports, without
+closing the browser session — the narrower counterpart to
+`browser_close`. The index refers to the current listing; closing another
+tab can shift it, so list again before closing a stale index. Refuses to
+close the only remaining tab.
+
+| Param | Type | Default |
+|---|---|---|
+| `index` | integer | — (required) |
+
+No approval — same reasoning as `browser_close`: it only ever reduces
+capability.
+
+## browser_upload
+
+Set a `<input type=file>` element's files from local paths, lazily
+launching the browser like every other mutating action.
+
+| Param | Type | Default |
+|---|---|---|
+| `selector` | string | — (required) |
+| `paths` | array of string | — (required) |
+
+Always prompts for approval. Every path is resolved and validated the
+same way `write_file` validates its destination (inside the session
+workspace or an `--allow-paths` root, no symlink writes) — uploading a
+file hands its bytes to whatever origin the active page is on, which is
+at least as sensitive as writing it locally.
+
+## browser_download
+
+Trigger a download and save it to a local path. Exactly one of
+`selector` (click an element, e.g. a download link/button) or `url`
+(navigate directly to a downloadable resource) is required.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | Click this element to trigger the download |
+| `url` | string | — | Navigate directly to this URL to trigger the download |
+| `path` | string | — | Required. Local destination path |
+
+Always prompts for approval. `path` goes through the identical
+write-path validation as `browser_upload`/`write_file`. Reports the
+site's suggested filename and byte size alongside the path it actually
+saved to.
+
+## browser_console_logs
+
+Return recently buffered `console.*` calls and uncaught JS exceptions
+from the active page, most recent last. Capture is continuous from the
+moment a page is tracked — not a one-shot read triggered by this call —
+so it catches messages logged at any point (page load, an async
+callback, a later click), not just ones produced during this call.
+
+| Param | Type | Default |
+|---|---|---|
+| `limit` | integer | `50` |
+
+Always prompts for approval — console output can carry private data (a
+logged token, PII) even though nothing was clicked to produce it, same
+rationale as `browser_screenshot`/`browser_inspect`.
+
+## browser_network_requests
+
+Return recently buffered requests the active page has made — method,
+URL, status, and failures — most recent last. Metadata only: never
+response bodies, and no request blocking/mocking (out of scope for v1).
+
+| Param | Type | Default |
+|---|---|---|
+| `limit` | integer | `50` |
+
+Always prompts for approval — request URLs can carry private data (a
+session token in a query param) and reveal what backend APIs a page
+talks to, same rationale as `browser_console_logs`.
+
 ---
 
 v1 scope for the whole `browser_*` family: headless only (no visible
-window), one browser/one page per session (no multi-tab, no
-`ParallelSafeTool`), a fresh isolated profile per session (never your
-real, logged-in Chrome — no cookies, history, or saved logins), and no
-`dispatch` worker access. With `--experimental browser` unset, every
-`browser_*` tool call returns an explanatory message and takes no
-action. With it set but no system Chrome/Chromium found, the first
-call fails with an actionable error naming the paths searched — the
-same "detect, don't download" posture `read_document` uses for
+window), a fresh isolated profile per session (never your real,
+logged-in Chrome — no cookies, history, or saved logins), and no
+`dispatch` worker access. The session tracks every tab it has opened,
+but only ever acts on one **active** tab at a time — the tools don't
+implement `ParallelSafeTool`, so calls always serialize through the
+same approval queue as everything else regardless of how many tabs are
+tracked. Tab indexes are point-in-time listing indexes and can shift
+when a tab closes; list again before using a stale index. `browser_click` and `browser_type` (with `submit: true`)
+auto-follow a tab opened as a direct result of that action (a
+`target="_blank"` link, `window.open()`) within a fixed ~2s
+detection window — the tool's result message reports the resulting
+`current url` and `tabs` count either way, and `browser_tabs`/
+`browser_switch_tab`/`browser_close_tab` cover every other case (an
+already-open tab, switching back, more than one new tab, cleaning up a
+popup once you're done with it). With `--experimental browser`
+unset, every `browser_*` tool call returns an explanatory message and
+takes no action. With it set but no system Chrome/Chromium found, the
+first call fails with an actionable error naming the paths searched —
+the same "detect, don't download" posture `read_document` uses for
 `pdftotext`/`pandoc`.
 
 A JS-initiated dialog (`alert`/`confirm`/`prompt`/`beforeunload`) is

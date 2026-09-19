@@ -1,0 +1,75 @@
+# Real-Chrome coverage for the experimental browser_* tools
+# (internal/browser/). The `integration` build tag suite
+# (internal/browser/integration_test.go) skips cleanly with no browser
+# present, so go.yml's plain `go test ./...` never exercises the real
+# go-rod/CDP path — this workflow is what actually runs it. Matrixed
+# across ubuntu-latest and macos-latest (matching go.yml's build matrix)
+# rather than Linux-only: browser_* ships linux+darwin, and the darwin
+# Chrome-discovery path (findChromeBinary's macOS search list) is
+# otherwise only ever exercised by code review, never by actually
+# running it on real Apple hardware.
+name: Browser integration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "internal/browser/**"
+      - "internal/agent/browser_tools*.go"
+      - ".github/workflows/browser-integration.yml"
+  pull_request:
+    paths:
+      - "internal/browser/**"
+      - "internal/agent/browser_tools*.go"
+      - ".github/workflows/browser-integration.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      # Both runner images already ship a usable Chrome for
+      # browser-testing workflows; these are fallbacks for when they
+      # don't (a runner image change, a self-hosted runner), not the
+      # common path.
+      - name: Ensure a system Chrome is available (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Ensure a system Chrome is available (macOS)
+        if: runner.os == 'macOS'
+        # Checks the exact .app bundle path findChromeBinary's darwin
+        # search list looks for first, so this step doubles as a sanity
+        # check that the discovery path and the install path actually
+        # agree.
+        run: |
+          if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+            exit 0
+          fi
+          brew install --cask google-chrome
+
+      - name: Browser integration tests
+        run: go test -tags integration ./internal/browser/... -v -timeout 120s

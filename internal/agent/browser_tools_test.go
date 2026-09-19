@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,19 @@ type fakeBrowserSession struct {
 	scrollErr      error
 	waitErr        error
 	closeErr       error
+
+	tabsResult     []browser.TabInfo
+	tabsErr        error
+	switchTabErr   error
+	closeTabErr    error
+	uploadErr      error
+	downloadResult browser.DownloadResult
+	downloadErr    error
+
+	consoleLogsResult     []browser.ConsoleEntry
+	consoleLogsErr        error
+	networkRequestsResult []browser.NetworkEntry
+	networkRequestsErr    error
 
 	calls []string
 }
@@ -74,10 +88,38 @@ func (f *fakeBrowserSession) Close(ctx context.Context) error {
 	f.calls = append(f.calls, "close")
 	return f.closeErr
 }
+func (f *fakeBrowserSession) Tabs(ctx context.Context) ([]browser.TabInfo, error) {
+	f.calls = append(f.calls, "tabs")
+	return f.tabsResult, f.tabsErr
+}
+func (f *fakeBrowserSession) SwitchTab(ctx context.Context, index int) error {
+	f.calls = append(f.calls, fmt.Sprintf("switch_tab:%d", index))
+	return f.switchTabErr
+}
+func (f *fakeBrowserSession) CloseTab(ctx context.Context, index int) error {
+	f.calls = append(f.calls, fmt.Sprintf("close_tab:%d", index))
+	return f.closeTabErr
+}
+func (f *fakeBrowserSession) Upload(ctx context.Context, selector string, paths []string) error {
+	f.calls = append(f.calls, fmt.Sprintf("upload:%s:%v", selector, paths))
+	return f.uploadErr
+}
+func (f *fakeBrowserSession) Download(ctx context.Context, selector, url, destPath string) (browser.DownloadResult, error) {
+	f.calls = append(f.calls, fmt.Sprintf("download:%s:%s:%s", selector, url, destPath))
+	return f.downloadResult, f.downloadErr
+}
+func (f *fakeBrowserSession) ConsoleLogs(ctx context.Context, limit int) ([]browser.ConsoleEntry, error) {
+	f.calls = append(f.calls, fmt.Sprintf("console_logs:%d", limit))
+	return f.consoleLogsResult, f.consoleLogsErr
+}
+func (f *fakeBrowserSession) NetworkRequests(ctx context.Context, limit int) ([]browser.NetworkEntry, error) {
+	f.calls = append(f.calls, fmt.Sprintf("network_requests:%d", limit))
+	return f.networkRequestsResult, f.networkRequestsErr
+}
 
 var _ browserSession = (*fakeBrowserSession)(nil)
 
-// browserToolCases enumerates all 10 browser_* tools against a shared
+// browserToolCases enumerates every browser_* tool against a shared
 // fake session, for the approval-gating and disabled-message tables.
 func browserToolCases(fake *fakeBrowserSession) []struct {
 	name   string
@@ -102,6 +144,13 @@ func browserToolCases(fake *fakeBrowserSession) []struct {
 		{"browser_scroll", &BrowserScrollTool{browserToolBase: base}, `{"direction":"down"}`, true},
 		{"browser_wait", &BrowserWaitTool{browserToolBase: base}, `{}`, false},
 		{"browser_close", &BrowserCloseTool{browserToolBase: base}, `{}`, false},
+		{"browser_tabs", &BrowserTabsTool{browserToolBase: base}, `{}`, false},
+		{"browser_switch_tab", &BrowserSwitchTabTool{browserToolBase: base}, `{"index":0}`, false},
+		{"browser_close_tab", &BrowserCloseTabTool{browserToolBase: base}, `{"index":0}`, false},
+		{"browser_upload", &BrowserUploadTool{browserToolBase: base}, `{"selector":"#f","paths":["a.txt"]}`, true},
+		{"browser_download", &BrowserDownloadTool{browserToolBase: base}, `{"selector":"#dl","path":"out.bin"}`, true},
+		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: base}, `{}`, true},
+		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: base}, `{}`, true},
 	}
 }
 
@@ -139,6 +188,13 @@ func TestBrowserTools_DisabledMessage(t *testing.T) {
 		{"browser_scroll", &BrowserScrollTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"direction":"down"}`},
 		{"browser_wait", &BrowserWaitTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_close", &BrowserCloseTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_tabs", &BrowserTabsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_switch_tab", &BrowserSwitchTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"index":0}`},
+		{"browser_close_tab", &BrowserCloseTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"index":0}`},
+		{"browser_upload", &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#f","paths":["a.txt"]}`},
+		{"browser_download", &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#dl","path":"out.bin"}`},
+		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 	}
 	for _, tc := range disabledCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,10 +229,12 @@ func TestRegisterCoreCwdTools_BrowserGate(t *testing.T) {
 	names := []string{
 		"browser_status", "browser_navigate", "browser_screenshot", "browser_inspect",
 		"browser_click", "browser_type", "browser_hotkey", "browser_scroll",
-		"browser_wait", "browser_close",
+		"browser_wait", "browser_close", "browser_tabs", "browser_switch_tab",
+		"browser_close_tab", "browser_upload", "browser_download",
+		"browser_console_logs", "browser_network_requests",
 	}
-	if len(names) != 10 {
-		t.Fatalf("test bug: expected 10 tool names, got %d", len(names))
+	if len(names) != 17 {
+		t.Fatalf("test bug: expected 17 tool names, got %d", len(names))
 	}
 	for _, name := range names {
 		if _, ok := reg2.Get(name); !ok {
@@ -356,6 +414,253 @@ func TestBrowserScreenshotTool_MultimodalGating(t *testing.T) {
 	}
 	if !strings.Contains(res2.Content, "does not support image input") {
 		t.Errorf("expected degrade message, got %q", res2.Content)
+	}
+}
+
+func TestBrowserClickTool_ReportsTabCount(t *testing.T) {
+	fake := &fakeBrowserSession{status: browser.Status{CurrentURL: "https://example.com/popup", TabCount: 2}}
+	tool := &BrowserClickTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{"selector":"#go"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "tabs: 2") {
+		t.Errorf("expected tab count in output, got %q", out)
+	}
+}
+
+func TestBrowserTabsTool_Formatting(t *testing.T) {
+	fake := &fakeBrowserSession{tabsResult: []browser.TabInfo{
+		{Index: 0, Title: "Home", URL: "https://a.example", Active: false},
+		{Index: 1, Title: "Popup", URL: "https://b.example", Active: true},
+	}}
+	tool := &BrowserTabsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"https://a.example", "https://b.example", "Popup"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestBrowserTabsTool_Empty(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	tool := &BrowserTabsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "no tabs") {
+		t.Errorf("expected an empty-tabs message, got %q", out)
+	}
+}
+
+func TestBrowserSwitchTabTool_PropagatesArgsAndError(t *testing.T) {
+	fake := &fakeBrowserSession{switchTabErr: fmt.Errorf("%w: index 3, have 1 tab(s)", browser.ErrTabNotFound)}
+	tool := &BrowserSwitchTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	_, err := tool.Execute(context.Background(), `{"index":3}`)
+	if !errors.Is(err, browser.ErrTabNotFound) {
+		t.Errorf("expected errors.Is(err, ErrTabNotFound), got %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "switch_tab:3" {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestBrowserCloseTabTool_Success(t *testing.T) {
+	fake := &fakeBrowserSession{status: browser.Status{TabCount: 1, CurrentURL: "https://a.example"}}
+	tool := &BrowserCloseTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{"index":1}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "tabs remaining: 1") || !strings.Contains(out, "https://a.example") {
+		t.Errorf("unexpected output: %q", out)
+	}
+	if len(fake.calls) != 2 || fake.calls[0] != "close_tab:1" {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestBrowserCloseTabTool_PropagatesError(t *testing.T) {
+	fake := &fakeBrowserSession{closeTabErr: errors.New("cannot close the only remaining tab; use browser_close to end the session instead")}
+	tool := &BrowserCloseTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	_, err := tool.Execute(context.Background(), `{"index":0}`)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestBrowserUploadTool_RequiresSelectorAndPaths(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	cwd := NewCwdRef(t.TempDir())
+	tool := &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	if _, err := tool.Execute(context.Background(), `{"paths":["a.txt"]}`); err == nil {
+		t.Fatal("expected error for missing selector")
+	}
+	if _, err := tool.Execute(context.Background(), `{"selector":"#f"}`); err == nil {
+		t.Fatal("expected error for missing paths")
+	}
+}
+
+func TestBrowserUploadTool_PathOutsideWorkspaceDenied(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	cwd := NewCwdRef(t.TempDir())
+	tool := &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	_, err := tool.Execute(context.Background(), `{"selector":"#f","paths":["/etc/passwd"]}`)
+	if err == nil {
+		t.Fatal("expected a path-outside-workspace error")
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("session should not have been touched for a denied path: %v", fake.calls)
+	}
+}
+
+func TestBrowserUploadTool_Success(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	dir := t.TempDir()
+	cwd := NewCwdRef(dir)
+	tool := &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	out, err := tool.Execute(context.Background(), `{"selector":"#f","paths":["a.txt","sub/b.txt"]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "2 file(s)") {
+		t.Errorf("unexpected output: %q", out)
+	}
+	wantCall := fmt.Sprintf("upload:#f:[%s %s]", filepath.Join(dir, "a.txt"), filepath.Join(dir, "sub", "b.txt"))
+	if len(fake.calls) != 1 || fake.calls[0] != wantCall {
+		t.Errorf("unexpected calls: %v, want [%s]", fake.calls, wantCall)
+	}
+}
+
+func TestBrowserDownloadTool_RequiresExactlyOneOfSelectorOrURL(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	cwd := NewCwdRef(t.TempDir())
+	tool := &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	if _, err := tool.Execute(context.Background(), `{"path":"out.bin"}`); err == nil {
+		t.Fatal("expected error when neither selector nor url is set")
+	}
+	if _, err := tool.Execute(context.Background(), `{"selector":"#dl","url":"https://x","path":"out.bin"}`); err == nil {
+		t.Fatal("expected error when both selector and url are set")
+	}
+}
+
+func TestBrowserDownloadTool_PathOutsideWorkspaceDenied(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	cwd := NewCwdRef(t.TempDir())
+	tool := &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	_, err := tool.Execute(context.Background(), `{"selector":"#dl","path":"/etc/passwd"}`)
+	if err == nil {
+		t.Fatal("expected a path-outside-workspace error")
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("session should not have been touched for a denied path: %v", fake.calls)
+	}
+}
+
+func TestBrowserDownloadTool_Success(t *testing.T) {
+	dir := t.TempDir()
+	cwd := NewCwdRef(dir)
+	wantPath := filepath.Join(dir, "out.bin")
+	fake := &fakeBrowserSession{downloadResult: browser.DownloadResult{Path: wantPath, SuggestedFilename: "report.bin", SizeBytes: 42}}
+	tool := &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	out, err := tool.Execute(context.Background(), `{"selector":"#dl","path":"out.bin"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"report.bin", wantPath, "42"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != fmt.Sprintf("download:#dl::%s", wantPath) {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestBrowserDownloadTool_ErrorTaxonomy(t *testing.T) {
+	fake := &fakeBrowserSession{downloadErr: fmt.Errorf("%w: no download event", browser.ErrDownloadFailed)}
+	cwd := NewCwdRef(t.TempDir())
+	tool := &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
+	_, err := tool.Execute(context.Background(), `{"url":"https://example.com/x.bin","path":"out.bin"}`)
+	if !errors.Is(err, browser.ErrDownloadFailed) {
+		t.Errorf("expected errors.Is(err, ErrDownloadFailed), got %v", err)
+	}
+}
+
+func TestBrowserConsoleLogsTool_DefaultLimit(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	tool := &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	if _, err := tool.Execute(context.Background(), `{}`); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != fmt.Sprintf("console_logs:%d", browserLogLimitDefault) {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestBrowserConsoleLogsTool_Formatting(t *testing.T) {
+	at := time.Date(2026, 9, 18, 12, 3, 4, 123000000, time.UTC)
+	fake := &fakeBrowserSession{consoleLogsResult: []browser.ConsoleEntry{
+		{Level: "error", Text: "Uncaught TypeError: x is not a function", At: at},
+	}}
+	tool := &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{"limit":10}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"[error]", "12:03:04.123", "Uncaught TypeError"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "console_logs:10" {
+		t.Errorf("unexpected calls: %v", fake.calls)
+	}
+}
+
+func TestBrowserConsoleLogsTool_Empty(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	tool := &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "no console output buffered") {
+		t.Errorf("unexpected output: %q", out)
+	}
+}
+
+func TestBrowserNetworkRequestsTool_Formatting(t *testing.T) {
+	fake := &fakeBrowserSession{networkRequestsResult: []browser.NetworkEntry{
+		{Method: "GET", URL: "https://api.example.com/user", Status: 200, StatusText: "OK", MIMEType: "application/json"},
+		{Method: "POST", URL: "https://api.example.com/x", Failed: true, ErrorText: "net::ERR_CONNECTION_REFUSED"},
+	}}
+	tool := &BrowserNetworkRequestsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"GET", "200 OK", "https://api.example.com/user", "FAILED: net::ERR_CONNECTION_REFUSED"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestBrowserNetworkRequestsTool_Empty(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	tool := &BrowserNetworkRequestsTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "no requests buffered") {
+		t.Errorf("unexpected output: %q", out)
 	}
 }
 

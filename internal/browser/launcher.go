@@ -14,13 +14,26 @@ import (
 // plus PATH names, checked in order, first match wins. yottacode only
 // ships linux and darwin builds (see CLAUDE.md), so those are the only
 // two GOOS keys.
+//
+// darwin covers three real-world install paths, in order of likelihood:
+// the GUI .app bundle (how most users get Chrome/Chromium/Edge — via the
+// browser's own installer or a `brew install --cask`), Homebrew's CLI
+// `chromium` formula (`brew install chromium`, distinct from the cask —
+// common on developer machines) under both its Apple Silicon and Intel
+// default prefixes, and finally a plain PATH lookup as a catch-all for
+// anything installed or symlinked some other way. The two `/usr/bin/...`
+// entries this list carried before were Linux install locations that
+// never exist on macOS — dead weight, not a real fallback.
 var browserSearchPaths = map[string][]string{
 	"darwin": {
 		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		"/Applications/Chromium.app/Contents/MacOS/Chromium",
 		"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium",
+		"/opt/homebrew/bin/chromium",
+		"/usr/local/bin/chromium",
+		"google-chrome",
+		"chromium",
+		"microsoft-edge",
 	},
 	"linux": {
 		"google-chrome",
