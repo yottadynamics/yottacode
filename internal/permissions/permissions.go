@@ -16,7 +16,7 @@
 //
 // Each rule is "<Tool>(<pattern>)". Tool names are capitalized rule
 // prefixes (Bash, Read, Write, Edit, Mkdir, Copy, Move, Delete, List,
-// Glob, Grep, Fetch, Git, Github, Memory, Tests, Rollback) — distinct
+// Glob, Grep, Fetch, Git, Github, Memory, Tests, Rollback, Browser) — distinct
 // from internal tool names (run_bash, read_file, …). The mapping lives
 // in tool_targets.go so per-tool descriptor extraction stays in one
 // place.

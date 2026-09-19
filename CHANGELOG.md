@@ -8,16 +8,16 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
-- **`browser_*` tools (experimental).** Seventeen agent tools —
+- **`browser_*` tools (experimental).** Eighteen agent tools —
   `browser_status`, `browser_navigate`, `browser_screenshot`,
   `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
-  `browser_scroll`, `browser_wait`, `browser_close`, `browser_tabs`,
-  `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
+  `browser_scroll`, `browser_wait`, `browser_handoff`, `browser_close`,
+  `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
   `browser_download`, `browser_console_logs`, `browser_network_requests`
   — drive a real, headless Chrome/Chromium instance over the Chrome
   DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
   dependency. A fresh, isolated temp profile per session (never your
-  real, logged-in browser), headless-only, and not available to
+  real, logged-in browser), headless by default, and not available to
   `dispatch` workers. The session tracks every tab it opens;
   `browser_click`/`browser_type` auto-follow a tab their own action opens; `browser_tabs`/`browser_switch_tab`/`browser_close_tab` cover listing, switching among, and closing the rest (refusing to close the only remaining tab). `browser_upload` and `browser_download`
   reuse `write_file`'s write-path trust boundary for their local file
@@ -34,7 +34,38 @@ the project uses semantic versioning once it's past `1.0.0`.
   the whole session (including `browser_close`) forever. If the
   browser process itself crashes or is killed, the next action
   transparently relaunches a fresh session instead of failing forever
-  with an opaque dead-connection error. Off by default; enable with
+  with an opaque dead-connection error. `browser_handoff` reopens the
+  isolated session as a visible window (same URL, fresh isolated
+  profile) so you can complete a human-verification challenge such as
+  "Press & Hold" yourself; it never solves or bypasses one, needs a
+  display, and always prompts. The approval prompt for browser tools now
+  offers session / always / never (`[S]`/`[A]`/`[D]`) like other tools,
+  via new `Browser(<verb>)` permission rules: per verb (`Browser(inspect)`)
+  and, for `browser_navigate`, per exact site
+  (`Browser(navigate streeteasy.com)`). `browser_upload`/`browser_download`
+  never get an allow shortcut, and a URL with an unusual host never becomes
+  an allow rule. Security hardening from a review of the browser surface:
+  `browser_navigate` / `browser_download(url)` now accept only `http`,
+  `https` and `about:blank` (a `file://` URL previously let the browser read
+  files the read tools deny, e.g. `.env`, and return them to the model);
+  `browser_upload` now honors the same credential read deny list as
+  `read_file`; the approval prompt shows the typed text, the uploaded files
+  and the download source instead of only a selector or destination; Chrome
+  launches with site isolation and an out-of-process network service again
+  (rod turns both off by default); rod's `/tmp` leakless helper is only run
+  if it is owned by you and not writable by others (it used a predictable
+  path and no ownership check); and the download copy refuses to write
+  through a symlink. Known limitations (prompt injection, internal-network
+  access, the unauthenticated loopback debug port) are documented in
+  `docs/security-and-allow-lists.md`. In `/auto`, `browser_upload`,
+  `browser_download`, and `browser_navigate` to any host other than
+  loopback (`localhost`, `127.x.x.x`, `::1`) stay in the safety floor and
+  still prompt, so an injected instruction can't send data to a new site
+  or reach an internal address unattended; the read-only tools and
+  navigation on this machine stay auto-approved. A killed session's temp
+  profile (with its cookies) is now removed by the next browser launch when
+  it is over an hour old, owned by you, and no live browser holds it. Off
+  by default; enable with
   `--experimental browser`. A new CI workflow
   (`.github/workflows/browser-integration.yml`) runs the real-Chrome
   integration suite on every change to this surface. See

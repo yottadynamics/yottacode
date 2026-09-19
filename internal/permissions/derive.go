@@ -49,6 +49,11 @@ type PathNormalizer func(string) string
 //     it shares a server prefix with a tool the user actually meant
 //     to bless; see the destructive-glob-refusal enforcement in
 //     internal/agent/loop.go, which this pairs with.
+//   - Browser: `Browser(<verb>)` for the approval-gated browser_* tools
+//     (e.g. `Browser(inspect)`), and `Browser(navigate <host>)` — one exact
+//     site — for browser_navigate. Not derived for upload/download (local
+//     file bytes cross the write-path boundary) or for navigations that
+//     aren't a plain http(s) host. See browser.go.
 //   - Glob/Grep/Fetch/Rollback: not derived (too varied or too
 //     high-trust to grant blanket on one click).
 //
@@ -72,6 +77,8 @@ func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (
 			return "", false
 		}
 		return "Git(" + first + " *)", true
+	case "Browser":
+		return deriveBrowserAllow(target.Descriptor)
 	case "MCP":
 		// Exact match only — never derive a glob. See the doc comment
 		// above and the destructive-glob-refusal check in loop.go.
@@ -109,9 +116,12 @@ func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (
 // DeriveDenyRule produces a "never allow / block" pattern from a single
 // tool call — the mirror of DeriveAllowRule, used when the user hits the
 // "never" key in the approval modal. Scope is intentionally limited to
-// Bash and Git, the calls a user most wants to block outright; other
-// tools return ok=false so the modal doesn't offer a persistent block for
-// them yet.
+// Bash, Git and Browser, the calls a user most wants to block outright;
+// other tools return ok=false so the modal doesn't offer a persistent block
+// for them yet.
+//
+// Browser tools are covered too (see deriveBrowserDeny): every approval-gated
+// browser_* verb, and one exact site for browser_navigate.
 //
 // Two deliberate differences from DeriveAllowRule:
 //   - It does NOT suppress "dangerous" verbs — a permanent deny on `curl`
@@ -133,6 +143,8 @@ func DeriveDenyRule(toolName, argsJSON, cwd string) (rule string, ok bool) {
 			return "", false
 		}
 		return "Git(" + first + " *)", true
+	case "Browser":
+		return deriveBrowserDeny(target.Descriptor)
 	}
 	return "", false
 }

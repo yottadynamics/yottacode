@@ -20,6 +20,11 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/go-rod/rod/lib/launcher/flags"
+	"github.com/go-rod/rod/lib/proto"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const fixturePage = `<!DOCTYPE html>
@@ -682,5 +687,234 @@ func TestIntegration_NetworkRequestsCaptured(t *testing.T) {
 	}
 	if !sawOK || !sawNotFound {
 		t.Errorf("missing expected entries (ok=%t notFound=%t): %+v", sawOK, sawNotFound, entries)
+	}
+}
+
+// TestIntegration_HandoffOpensVisibleIsolatedSession proves the real
+// headless -> headed swap browser_handoff performs: the visible browser is
+// a genuinely different (non-headless) process on a fresh isolated profile,
+// it reopens the page the headless session was on, the old process and
+// profile are gone, and the session keeps working afterwards. Needs a
+// display, so it skips on hosts without one (run under xvfb-run in CI).
+func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	before, ok := m.sess.(*session)
+	if !ok {
+		t.Fatalf("m.sess is %T, want *session", m.sess)
+	}
+	if !before.launcher.Has(flags.Headless) {
+		t.Fatal("precondition: the initial session should be headless")
+	}
+	oldPID := before.launcher.PID()
+	oldProfile := m.Status().ProfileDir
+
+	res, err := m.Handoff(ctx)
+	if err != nil {
+		t.Fatalf("Handoff: %v", err)
+	}
+	if !strings.HasPrefix(res.URL, srv.URL) {
+		t.Errorf("Handoff reopened %q, want the page the headless session was on (%s)", res.URL, srv.URL)
+	}
+	if res.LoadWarning != "" {
+		t.Errorf("unexpected LoadWarning: %s", res.LoadWarning)
+	}
+
+	after, ok := m.sess.(*session)
+	if !ok {
+		t.Fatalf("m.sess is %T after handoff, want *session", m.sess)
+	}
+	if after.launcher.Has(flags.Headless) {
+		t.Error("session after Handoff is still headless")
+	}
+	st := m.Status()
+	if !st.Headed || !st.Active {
+		t.Errorf("Status = %+v, want Active && Headed", st)
+	}
+	if st.ProfileDir == oldProfile {
+		t.Error("headed session reused the headless profile dir")
+	}
+	if _, err := os.Stat(oldProfile); !os.IsNotExist(err) {
+		t.Errorf("headless profile dir %s still exists (err=%v)", oldProfile, err)
+	}
+	if err := syscall.Kill(oldPID, syscall.Signal(0)); err == nil {
+		t.Errorf("headless browser pid %d is still alive after Handoff", oldPID)
+	}
+	if st.CurrentURL == "" || !strings.HasPrefix(st.CurrentURL, srv.URL) {
+		t.Errorf("visible page URL = %q, want it on %s", st.CurrentURL, srv.URL)
+	}
+
+	// The visible session is a normal session: it keeps serving actions.
+	if err := m.Type(ctx, "#q", "visible", false); err != nil {
+		t.Fatalf("Type in headed session: %v", err)
+	}
+	if err := m.Click(ctx, "#go"); err != nil {
+		t.Fatalf("Click in headed session: %v", err)
+	}
+	if err := m.Wait(ctx, "#out", "clicked:visible", false, 5*time.Second); err != nil {
+		t.Fatalf("Wait in headed session: %v", err)
+	}
+
+	headedProfile := st.ProfileDir
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(headedProfile); !os.IsNotExist(err) {
+		t.Errorf("headed profile dir %s still exists after Close (err=%v)", headedProfile, err)
+	}
+}
+
+// TestIntegration_HandoffStaysIsolatedAndDoesNotShareCookies pins what the
+// handoff window is and isn't. It IS still an isolated yottacode browser (a
+// yottacode-browser-* temp profile, never a real Chrome profile), and it
+// starts from a fresh cookie jar: a cookie the headless session earned is not
+// sent by the visible one. That second half is also the reason solving a
+// challenge in the user's *normal* browser can't unblock the agent — separate
+// profiles never share cookies — and why the challenge has to be completed in
+// this window instead.
+func TestIntegration_HandoffStaysIsolatedAndDoesNotShareCookies(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+
+	// The server records the "sid" cookie each page load arrives with, and
+	// always tries to set one.
+	var mu syncutil.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		got := ""
+		if c, err := r.Cookie("sid"); err == nil {
+			got = c.Value
+		}
+		mu.Lock()
+		seen = append(seen, got)
+		mu.Unlock()
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "earned-in-headless", Path: "/"})
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!DOCTYPE html><title>Cookie Fixture</title><body>ok</body>"))
+	}))
+	t.Cleanup(srv.Close)
+
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	// Twice in the headless session: the second load proves the cookie really
+	// is sent back within one profile, so "no cookie" after handoff means
+	// something.
+	for i := 0; i < 2; i++ {
+		if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+			t.Fatalf("Navigate #%d: %v", i+1, err)
+		}
+	}
+	if _, err := m.Handoff(ctx); err != nil {
+		t.Fatalf("Handoff: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), seen...)
+	mu.Unlock()
+	want := []string{"", "earned-in-headless", ""}
+	if len(got) != len(want) {
+		t.Fatalf("page loads saw cookies %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("load #%d saw cookie %q, want %q (all: %q)", i+1, got[i], want[i], got)
+		}
+	}
+
+	after, ok := m.sess.(*session)
+	if !ok {
+		t.Fatalf("m.sess is %T, want *session", m.sess)
+	}
+	dir := after.launcher.Get(flags.UserDataDir)
+	t.Logf("visible session: headless=%t user-data-dir=%s", after.launcher.Has(flags.Headless), dir)
+	if !strings.HasPrefix(filepath.Base(dir), "yottacode-browser-") {
+		t.Errorf("visible session profile %q is not a yottacode isolated profile", dir)
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(dir, filepath.Join(home, ".config")) {
+		t.Errorf("visible session profile %q is inside the user's real config dir", dir)
+	}
+	if dir != m.Status().ProfileDir {
+		t.Errorf("launcher profile %q != manager profile %q", dir, m.Status().ProfileDir)
+	}
+}
+
+// TestIntegration_HandoffViewportFollowsWindow guards a bug seen on a real
+// desktop: rod emulates a fixed 1280x800 laptop viewport on every page by
+// default, which is right for a headless session but in a visible window
+// leaves the page pinned to the top-left corner with dead space around it.
+// The handoff window must let the page fill the window, so resizing the
+// window has to resize the page's viewport.
+func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if _, err := m.Handoff(ctx); err != nil {
+		t.Fatalf("Handoff: %v", err)
+	}
+	sess, ok := m.sess.(*session)
+	if !ok {
+		t.Fatalf("m.sess is %T, want *session", m.sess)
+	}
+	pg := sess.activePage()
+	win, err := proto.BrowserGetWindowForTarget{TargetID: pg.TargetID}.Call(sess.browser)
+	if err != nil {
+		t.Fatalf("Browser.getWindowForTarget: %v", err)
+	}
+
+	// Both widths differ clearly from the 1280 rod would pin the page to, and
+	// both fit any real screen: a desktop window manager (macOS in
+	// particular) clamps a window to the screen, so anything wider than a
+	// small CI display would make this flaky.
+	for _, want := range []int{700, 1000} {
+		h := 900
+		if err := (proto.BrowserSetWindowBounds{
+			WindowID: win.WindowID,
+			Bounds:   &proto.BrowserBounds{Width: &want, Height: &h},
+		}).Call(sess.browser); err != nil {
+			t.Fatalf("Browser.setWindowBounds(%d): %v", want, err)
+		}
+		var got int
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			res, err := pg.Eval("() => window.innerWidth")
+			if err != nil {
+				t.Fatalf("Eval innerWidth: %v", err)
+			}
+			got = res.Value.Int()
+			if got >= want-40 && got <= want+40 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if got < want-40 || got > want+40 {
+			t.Errorf("window resized to %dpx wide but page viewport is %dpx: the page is not filling the window", want, got)
+		}
 	}
 }

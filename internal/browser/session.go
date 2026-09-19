@@ -249,11 +249,22 @@ const newTabDetectWindow = 300 * time.Millisecond
 // `pg.Context(ctx)`), so tying the long-lived connection itself to one
 // call's short deadline would cancel it out from under every later call.
 func launchSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	l := launcher.New().
+	return launchSessionMode(ctx, bin, profileDir, true)
+}
+
+// launchHeadedSession is launchSession with a visible window, for
+// Manager.Handoff: the human completes a step (a bot-verification
+// challenge) that the headless session can't show them.
+func launchHeadedSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
+	return launchSessionMode(ctx, bin, profileDir, false)
+}
+
+func launchSessionMode(ctx context.Context, bin, profileDir string, headless bool) (pageSession, error) {
+	l := hardenBrowserFlags(launcher.New()).
 		Bin(bin).
-		Headless(true).
+		Headless(headless).
 		UserDataDir(profileDir).
-		Leakless(true).
+		Leakless(leaklessUsable()).
 		Context(ctx)
 
 	u, err := l.Launch()
@@ -263,6 +274,15 @@ func launchSession(ctx context.Context, bin, profileDir string) (pageSession, er
 	}
 
 	br := rod.New().ControlURL(u)
+	if !headless {
+		// rod emulates a fixed 1280x800 Mac-laptop device (viewport and
+		// user agent) on every page it creates. That's a sensible fixed
+		// viewport for a headless session, but in a visible window it pins
+		// the page to the top-left corner with dead space around it and
+		// ignores the window's real size. The window is for a human, so let
+		// the page fill it.
+		br = br.NoDefaultDevice()
+	}
 	if err := br.Connect(); err != nil {
 		l.Kill()
 		l.Cleanup()
@@ -531,6 +551,13 @@ func (s *session) close() error {
 // remains, which Info()'s own error handling already covers.
 func (s *session) snapshot() (url string, tabCount int) {
 	s.mu.Lock()
+	if len(s.pages) == 0 {
+		// The last page closed since the caller last checked alive() (a
+		// window.close(), or the user closing the window). Report "nothing"
+		// rather than indexing an empty registry.
+		s.mu.Unlock()
+		return "", 0
+	}
 	pg := s.pages[s.active].page
 	tabCount = len(s.pages)
 	s.mu.Unlock()

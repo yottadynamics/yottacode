@@ -71,5 +71,20 @@ jobs:
           fi
           brew install --cask google-chrome
 
-      - name: Browser integration tests
+      # browser_handoff opens a visible window, so its integration test
+      # needs a display; it skips (rather than fails) without one. Linux
+      # runners have none, so run that job under Xvfb. macOS always has a
+      # window server.
+      - name: Install Xvfb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Browser integration tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a go test -tags integration ./internal/browser/... -v -timeout 120s
+
+      - name: Browser integration tests (macOS)
+        if: runner.os == 'macOS'
         run: go test -tags integration ./internal/browser/... -v -timeout 120s

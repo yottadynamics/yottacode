@@ -124,6 +124,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_hotkey`](#browser_hotkey) | required | Experimental behind `browser`; send a key or key combo to the page |
 | [`browser_scroll`](#browser_scroll) | required | Experimental behind `browser`; scroll an element into view, or scroll the page by direction/delta |
 | [`browser_wait`](#browser_wait) | none | Experimental behind `browser`; wait for a selector/text/network-idle condition |
+| [`browser_handoff`](#browser_handoff) | required | Experimental behind `browser`; reopen the isolated session as a visible window so the user can complete a human-verification challenge |
 | [`browser_close`](#browser_close) | none | Experimental behind `browser`; close the browser session and remove its temp profile |
 | [`browser_tabs`](#browser_tabs) | none | Experimental behind `browser`; list every tracked tab and which one is active |
 | [`browser_switch_tab`](#browser_switch_tab) | none | Experimental behind `browser`; switch which tracked tab later calls act on |
@@ -2183,9 +2184,25 @@ and
 [security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
 for the full safety posture.
 
+In `/auto` mode the browser tools are auto-approved except
+[`browser_upload`](#browser_upload), [`browser_download`](#browser_download),
+and [`browser_navigate`](#browser_navigate) to any host other than
+`localhost` / `127.x.x.x` / `::1`, which stay in the auto-mode safety floor
+and always prompt (only `/yolo` skips that). A saved per-site rule such as
+`Browser(navigate example.com)` skips the navigate prompt for that site.
+
+Every browser tool that prompts for approval can be remembered from the
+prompt with `[S]` (this session), `[A]` (saved) or `[D]` (block) — see
+[security-and-allow-lists.md](security-and-allow-lists.md#browser-automation)
+for the `Browser(...)` rules those create and what they deliberately don't
+cover (`browser_upload`/`browser_download`, non-web URLs). Where a tool
+below says "Always prompts for approval", read "prompts unless a rule you
+created allows it".
+
 `browser_status` reports the binary path found (if any), whether a
-session is active, its current URL, and its profile directory. It
-never launches a browser.
+session is active, its mode (`headless`, or `headed` after
+[`browser_handoff`](#browser_handoff)), its current URL, and its profile
+directory. It never launches a browser.
 
 | Param | Type | Default |
 |---|---|---|
@@ -2202,10 +2219,15 @@ profile directory) on the first call in a session.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `url` | string | — | Required |
+| `url` | string | — | Required. Only `http://`, `https://` and `about:blank` are accepted |
 | `wait_until` | string | `load` | `load`, `domcontentloaded`, or `networkidle` |
 
-Always prompts for approval.
+Always prompts for approval. Any other scheme — `file:`, `chrome:`,
+`view-source:`, `javascript:`, `data:` — is refused before a browser is
+even launched: a `file://` URL would let the browser read files the read
+tools deny (like `.env`) and hand their contents to the model. To look at
+a local file or built site, serve it from a local web server and open its
+`http://localhost` URL. `browser_download`'s `url` form has the same rule.
 
 ## browser_screenshot
 
@@ -2302,6 +2324,52 @@ No approval — it blocks on an already-visible condition and never
 launches the browser: a session that was never started has nothing to
 wait for yet.
 
+## browser_handoff
+
+Hand the isolated browser to the user so they can complete a step only
+a person can do — typically a human-verification challenge (a "Press &
+Hold" box, a CAPTCHA) that the headless session can't show them. It
+reopens the session as a **visible window** on the current URL, and the
+session stays visible for the rest of its life.
+
+It does not solve, click through, or bypass anything. The user does the
+verification themselves; the tool result tells the agent to say what to
+do, wait for the user's reply, then confirm the real page loaded with
+`browser_inspect`/`browser_screenshot`.
+
+| Param | Type | Default |
+|---|---|---|
+| _(none)_ | | |
+
+Always prompts for approval — it launches a new browser process and
+opens a window on the user's display.
+
+Behavior worth knowing:
+
+- **Fresh isolated profile, not a copy.** Chrome can't switch from
+  headless to headed in place, and carrying the headless session's
+  cookies across would also carry whatever "this client is automated"
+  verdict the site already attached to them. Only the current URL
+  carries over; anything else you did in the headless session (a login,
+  a filled form) has to be redone.
+- **Fills the window.** Unlike the headless session (which emulates a
+  fixed 1280×800 laptop viewport), the visible window uses your
+  display's real window size and Chrome's real user agent, so the page
+  follows the window when you resize or maximize it.
+- **Launch-first, then swap.** The visible browser is started before the
+  headless one is torn down, so a failure leaves the existing session
+  untouched.
+- **Needs a display.** On Linux that means `DISPLAY` or `WAYLAND_DISPLAY`
+  is set; macOS always qualifies. On an SSH, container, or CI host the
+  call fails with an error that tells the agent to ask you to open the
+  page in your own browser and paste what it needs.
+- **Stays headed.** If you close the window or it crashes, the next
+  action relaunches a normal *headless* session rather than popping a
+  window you didn't ask for; call `browser_handoff` again if needed.
+- **Sites may still re-challenge.** The window is a real Chrome under
+  automation control, and a site's bot detection can decide to challenge
+  it again. Nothing here tries to evade that.
+
 ## browser_close
 
 Close the browser session and remove its isolated temp profile
@@ -2366,11 +2434,14 @@ launching the browser like every other mutating action.
 | `selector` | string | — (required) |
 | `paths` | array of string | — (required) |
 
-Always prompts for approval. Every path is resolved and validated the
-same way `write_file` validates its destination (inside the session
-workspace or an `--allow-paths` root, no symlink writes) — uploading a
-file hands its bytes to whatever origin the active page is on, which is
-at least as sensitive as writing it locally.
+Always prompts for approval, and the prompt lists the files being
+uploaded. Every path is resolved and validated the same way `write_file`
+validates its destination (inside the session workspace or an
+`--allow-paths` root, no symlink writes) **and** against the same
+credential read deny list `read_file` uses (`.env`, `~/.ssh`, …) —
+uploading a file hands its bytes to whatever origin the active page is
+on, so a file the model can't read it also can't upload. One denied path
+refuses the whole batch.
 
 ## browser_download
 
@@ -2421,8 +2492,9 @@ talks to, same rationale as `browser_console_logs`.
 
 ---
 
-v1 scope for the whole `browser_*` family: headless only (no visible
-window), a fresh isolated profile per session (never your real,
+v1 scope for the whole `browser_*` family: headless by default (a
+visible window only when the user is handed the session via
+[`browser_handoff`](#browser_handoff)), a fresh isolated profile per session (never your real,
 logged-in Chrome — no cookies, history, or saved logins), and no
 `dispatch` worker access. The session tracks every tab it has opened,
 but only ever acts on one **active** tab at a time — the tools don't

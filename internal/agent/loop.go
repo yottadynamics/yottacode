@@ -80,8 +80,10 @@ type LoopConfig struct {
 	// auto startup flag. When active, the loop auto-approves
 	// non-safety-floor tool calls (no modal) so the model can
 	// implement a multi-step plan without per-edit friction.
-	// run_bash and git mutations remain in the safety floor — see
-	// IsAutoModeSafetyFloor.
+	// run_bash, git mutations, the browser file-boundary tools
+	// (browser_upload/browser_download), and browser_navigate to anywhere
+	// but loopback remain in the safety floor — see
+	// IsAutoModeSafetyFloor / IsAutoModeSafetyFloorCall.
 	AutoMode *AutoModeState
 
 	// YoloMode is the unrestricted toggle — auto-approves ALL tool
@@ -1243,7 +1245,7 @@ func executeToolCallImpl(
 			return "", nil, false, "", err
 		}
 		approvalSource = "auto-mode-safe-bash"
-	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloor(tool.Name()):
+	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {

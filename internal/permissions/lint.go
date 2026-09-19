@@ -41,7 +41,7 @@ func (p *Permissions) LintWarnings() []string {
 var knownPermNames = map[string]struct{}{
 	"Bash": {}, "Read": {}, "Write": {}, "Edit": {}, "Mkdir": {}, "Copy": {}, "Move": {}, "Delete": {},
 	"List": {}, "Glob": {}, "Grep": {}, "Fetch": {}, "Git": {}, "Github": {}, "Memory": {}, "Tests": {},
-	"Rollback": {}, "MCP": {}, "Media": {}, "Document": {},
+	"Rollback": {}, "MCP": {}, "Media": {}, "Document": {}, "Browser": {},
 }
 
 // KnownPermName reports whether name is a permission rule namespace that the
@@ -67,6 +67,13 @@ func riskyAllowWarning(r Rule, cwd string) string {
 	case "Github", "MCP", "Memory":
 		if r.Pattern == "*" {
 			return fmt.Sprintf("%s in %s allows an entire integration namespace; prefer read_* or verb-specific rules", rule, r.Source)
+		}
+	case "Browser":
+		if r.Pattern == "*" {
+			return fmt.Sprintf("%s in %s allows every browser action on every site; prefer per-verb or per-site rules", rule, r.Source)
+		}
+		if r.Pattern == "navigate *" {
+			return fmt.Sprintf("%s in %s allows navigating the browser to any website; prefer per-site rules", rule, r.Source)
 		}
 	case "Delete":
 		if allowsRepoWideDelete(r.Pattern, cwd) {

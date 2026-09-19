@@ -439,6 +439,7 @@ Each rule has the shape `<Tool>(<pattern>)`. Supported tool prefixes:
 | `Github` | native GitHub PR/issue workflow tools (`pr_*`, `issue_*`) | canonical verb name (string) |
 | `Memory` | `memory_save` / `memory_forget` | `op scope:name` (string) |
 | `Tests` / `Rollback` | the same-named tools | empty descriptor (binary allow/deny) |
+| `Browser` | the approval-gated `browser_*` tools | the verb (`inspect`, `click`, `type`, `screenshot`, `hotkey`, `scroll`, `handoff`, `upload`, `download`, `console_logs`, `network_requests`), or `navigate <host>` for `browser_navigate` (exact host, lowercase, no port) |
 
 `Github(...)` descriptors are the canonical verb name extracted from
 the tool name (independent of the resource-first tool naming so the

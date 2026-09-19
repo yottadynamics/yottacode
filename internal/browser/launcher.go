@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/go-rod/rod/lib/launcher"
 )
 
 // browserSearchPaths mirrors the "detect, don't download" convention
@@ -74,6 +76,43 @@ func findChromeBinary() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%w: searched PATH and %s", ErrNoBinaryFound, strings.Join(candidates, ", "))
+}
+
+// displayAvailable reports whether a headed browser window has anywhere to
+// appear: macOS always has a window server for a logged-in user, while
+// Linux needs an X11 or Wayland display in the environment. Chrome launched
+// headed without one fails to start rather than degrading, so Handoff
+// checks this up front instead of waiting out a launch timeout.
+func displayAvailable() bool {
+	return displayAvailableFor(runtime.GOOS, os.Getenv)
+}
+
+func displayAvailableFor(goos string, getenv func(string) string) bool {
+	if goos == "darwin" {
+		return true
+	}
+	return getenv("DISPLAY") != "" || getenv("WAYLAND_DISPLAY") != ""
+}
+
+// hardenBrowserFlags undoes rod's launch defaults that weaken the browser's
+// process isolation. rod ships them for its own convenience (a workaround for
+// its cross-process iframe handling), but this browser is pointed at arbitrary
+// sites by an agent, so it should keep Chrome's normal containment:
+//
+//   - site isolation is turned back on (rod passes
+//     --disable-features=site-per-process and --disable-site-isolation-trials),
+//     so a compromised renderer for one site can't read another site's data;
+//   - the network service runs out of the browser process again (rod passes
+//     --enable-features=NetworkServiceInProcess).
+//
+// Everything else rod sets (automation flags, background-throttling, popup
+// handling) is left alone: those are what make it drivable, not what make it
+// less safe. Chrome's own sandbox is untouched — nothing passes --no-sandbox.
+func hardenBrowserFlags(l *launcher.Launcher) *launcher.Launcher {
+	l.Set("disable-features", "TranslateUI")
+	l.Delete("disable-site-isolation-trials")
+	l.Delete("enable-features")
+	return l
 }
 
 // newProfileDir creates a fresh, isolated temp profile directory for one

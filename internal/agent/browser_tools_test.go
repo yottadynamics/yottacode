@@ -31,6 +31,8 @@ type fakeBrowserSession struct {
 	scrollErr      error
 	waitErr        error
 	closeErr       error
+	handoffResult  browser.HandoffResult
+	handoffErr     error
 
 	tabsResult     []browser.TabInfo
 	tabsErr        error
@@ -92,6 +94,10 @@ func (f *fakeBrowserSession) Tabs(ctx context.Context) ([]browser.TabInfo, error
 	f.calls = append(f.calls, "tabs")
 	return f.tabsResult, f.tabsErr
 }
+func (f *fakeBrowserSession) Handoff(ctx context.Context) (browser.HandoffResult, error) {
+	f.calls = append(f.calls, "handoff")
+	return f.handoffResult, f.handoffErr
+}
 func (f *fakeBrowserSession) SwitchTab(ctx context.Context, index int) error {
 	f.calls = append(f.calls, fmt.Sprintf("switch_tab:%d", index))
 	return f.switchTabErr
@@ -143,6 +149,7 @@ func browserToolCases(fake *fakeBrowserSession) []struct {
 		{"browser_hotkey", &BrowserHotkeyTool{browserToolBase: base}, `{"keys":"Enter"}`, true},
 		{"browser_scroll", &BrowserScrollTool{browserToolBase: base}, `{"direction":"down"}`, true},
 		{"browser_wait", &BrowserWaitTool{browserToolBase: base}, `{}`, false},
+		{"browser_handoff", &BrowserHandoffTool{browserToolBase: base}, `{}`, true},
 		{"browser_close", &BrowserCloseTool{browserToolBase: base}, `{}`, false},
 		{"browser_tabs", &BrowserTabsTool{browserToolBase: base}, `{}`, false},
 		{"browser_switch_tab", &BrowserSwitchTabTool{browserToolBase: base}, `{"index":0}`, false},
@@ -187,6 +194,7 @@ func TestBrowserTools_DisabledMessage(t *testing.T) {
 		{"browser_hotkey", &BrowserHotkeyTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"keys":"Enter"}`},
 		{"browser_scroll", &BrowserScrollTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"direction":"down"}`},
 		{"browser_wait", &BrowserWaitTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_handoff", &BrowserHandoffTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_close", &BrowserCloseTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_tabs", &BrowserTabsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_switch_tab", &BrowserSwitchTabTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"index":0}`},
@@ -229,12 +237,12 @@ func TestRegisterCoreCwdTools_BrowserGate(t *testing.T) {
 	names := []string{
 		"browser_status", "browser_navigate", "browser_screenshot", "browser_inspect",
 		"browser_click", "browser_type", "browser_hotkey", "browser_scroll",
-		"browser_wait", "browser_close", "browser_tabs", "browser_switch_tab",
+		"browser_wait", "browser_handoff", "browser_close", "browser_tabs", "browser_switch_tab",
 		"browser_close_tab", "browser_upload", "browser_download",
 		"browser_console_logs", "browser_network_requests",
 	}
-	if len(names) != 17 {
-		t.Fatalf("test bug: expected 17 tool names, got %d", len(names))
+	if len(names) != 18 {
+		t.Fatalf("test bug: expected 18 tool names, got %d", len(names))
 	}
 	for _, name := range names {
 		if _, ok := reg2.Get(name); !ok {
@@ -671,9 +679,117 @@ func TestBrowserStatusTool_Formatting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	for _, want := range []string{"/usr/bin/google-chrome", "true", "https://example.com", "/tmp/x"} {
+	for _, want := range []string{"/usr/bin/google-chrome", "true", "https://example.com", "/tmp/x", "mode: headless"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestBrowserStatusTool_ReportsHeadedMode(t *testing.T) {
+	fake := &fakeBrowserSession{status: browser.Status{Active: true, Headed: true}}
+	tool := &BrowserStatusTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "mode: headed") {
+		t.Errorf("output %q missing %q", out, "mode: headed")
+	}
+}
+
+func TestBrowserHandoffTool_Success(t *testing.T) {
+	fake := &fakeBrowserSession{handoffResult: browser.HandoffResult{URL: "https://streeteasy.com/for-rent/long-island-city"}}
+	tool := &BrowserHandoffTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "handoff" {
+		t.Errorf("calls = %v, want [handoff]", fake.calls)
+	}
+	// The result is what steers the model's next message to the user: it must
+	// name the page, say the user does the verification, and forbid the model
+	// from attempting the challenge itself.
+	for _, want := range []string{
+		"https://streeteasy.com/for-rent/long-island-city",
+		"user must complete the verification themselves",
+		"do not try to solve or click through it yourself",
+		"wait for their reply",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestBrowserHandoffTool_AlreadyVisibleAndWarning(t *testing.T) {
+	fake := &fakeBrowserSession{handoffResult: browser.HandoffResult{URL: "https://example.com", AlreadyVisible: true, LoadWarning: "navigation timed out"}}
+	tool := &BrowserHandoffTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"already visible", "navigation timed out"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q missing %q", out, want)
+		}
+	}
+}
+
+func TestBrowserHandoffTool_NoEarlierPage(t *testing.T) {
+	fake := &fakeBrowserSession{}
+	tool := &BrowserHandoffTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	out, err := tool.Execute(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "blank page") {
+		t.Errorf("output %q should say the window is blank", out)
+	}
+}
+
+func TestBrowserHandoffTool_NoDisplayErrorIsActionable(t *testing.T) {
+	fake := &fakeBrowserSession{handoffErr: fmt.Errorf("%w (no DISPLAY): paste what you need", browser.ErrNoDisplay)}
+	tool := &BrowserHandoffTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}}
+	_, err := tool.Execute(context.Background(), `{}`)
+	if !errors.Is(err, browser.ErrNoDisplay) {
+		t.Fatalf("err = %v, want it to wrap ErrNoDisplay", err)
+	}
+	if !strings.Contains(err.Error(), "paste") {
+		t.Errorf("error %q should tell the model what to do instead", err)
+	}
+}
+
+// TestBrowserNavigateTool_DescriptionPointsAtHandoff guards the guidance
+// that stops the model telling the user to "look for a browser window": the
+// session is headless, and the only route to a human-solvable challenge is
+// browser_handoff.
+func TestBrowserNavigateTool_DescriptionPointsAtHandoff(t *testing.T) {
+	desc := (&BrowserNavigateTool{}).Description()
+	for _, want := range []string{"invisible to the user", "browser_handoff"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description %q missing %q", desc, want)
+		}
+	}
+}
+
+func TestBrowserHandoffTool_DescriptionForbidsBypass(t *testing.T) {
+	desc := (&BrowserHandoffTool{}).Description()
+	if !strings.Contains(desc, "does not solve, click through, or bypass") {
+		t.Errorf("description %q must state that the tool does not bypass the challenge", desc)
+	}
+}
+
+// TestBrowserHandoffTool_PreviewSaysWhatApprovalDoes: the preview is the
+// entire approval prompt, so it must make clear that approving opens a
+// window for the *user* to complete the check, not that anything is being
+// approved or validated on the agent's behalf.
+func TestBrowserHandoffTool_PreviewSaysWhatApprovalDoes(t *testing.T) {
+	got := (&BrowserHandoffTool{browserToolBase{Enabled: true}}).PreviewCall(`{}`)
+	for _, want := range []string{"browser_handoff", "window", "you can complete the verification yourself"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview %q missing %q", got, want)
 		}
 	}
 }

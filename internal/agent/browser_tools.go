@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,7 @@ type browserSession interface {
 	Scroll(ctx context.Context, selector string, deltaX, deltaY float64) error
 	Wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error
 	Close(ctx context.Context) error
+	Handoff(ctx context.Context) (browser.HandoffResult, error)
 	Tabs(ctx context.Context) ([]browser.TabInfo, error)
 	SwitchTab(ctx context.Context, index int) error
 	CloseTab(ctx context.Context, index int) error
@@ -59,7 +61,7 @@ type BrowserStatusTool struct{ browserToolBase }
 
 func (t *BrowserStatusTool) Name() string { return "browser_status" }
 func (t *BrowserStatusTool) Description() string {
-	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, its current URL, and its isolated profile directory. Never launches a browser."
+	return "Report the browser automation manager's state: whether a system Chrome/Chromium binary was found, whether a browser session is active, whether it is headless (invisible to the user) or headed (visible after browser_handoff), its current URL, and its isolated profile directory. Never launches a browser."
 }
 func (t *BrowserStatusTool) Schema() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
@@ -83,7 +85,11 @@ func (t *BrowserStatusTool) Execute(context.Context, string) (string, error) {
 	if profile == "" {
 		profile = "(none)"
 	}
-	return fmt.Sprintf("binary: %s\nactive: %t\nurl: %s\nprofile_dir: %s", binary, st.Active, url, profile), nil
+	mode := "headless"
+	if st.Headed {
+		mode = "headed"
+	}
+	return fmt.Sprintf("binary: %s\nactive: %t\nmode: %s\nurl: %s\nprofile_dir: %s", binary, st.Active, mode, url, profile), nil
 }
 
 // BrowserNavigateTool navigates the single active page to a URL, lazily
@@ -92,7 +98,7 @@ type BrowserNavigateTool struct{ browserToolBase }
 
 func (t *BrowserNavigateTool) Name() string { return "browser_navigate" }
 func (t *BrowserNavigateTool) Description() string {
-	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning."
+	return "Navigate the browser's single active page to a URL, launching an isolated headless Chrome/Chromium session on first use. Waits for the given lifecycle event before returning. The session is invisible to the user: if the page shows a human-verification challenge (\"Press & Hold\", CAPTCHA), do not tell the user to look for a browser window — call browser_handoff so they can complete it themselves."
 }
 func (t *BrowserNavigateTool) Schema() map[string]any {
 	return map[string]any{
@@ -311,9 +317,18 @@ func (t *BrowserTypeTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserTypeTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Selector string `json:"selector"`
+		Text     string `json:"text"`
+		Submit   bool   `json:"submit"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("browser_type(%s)", a.Selector)
+	// The typed text is the point of the call — into a hostile page's field
+	// it is also a way to send data out — so the prompt must show it, not
+	// just the selector.
+	submit := ""
+	if a.Submit {
+		submit = ", submit"
+	}
+	return fmt.Sprintf("browser_type(%s, text=%s%s)", a.Selector, previewQuote(a.Text, previewTextMax), submit)
 }
 func (t *BrowserTypeTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -518,6 +533,50 @@ func (t *BrowserWaitTool) Execute(ctx context.Context, argsJSON string) (string,
 	return "wait condition satisfied", nil
 }
 
+// BrowserHandoffTool makes the isolated session visible so the human can
+// complete a step the headless browser can't show them — typically a
+// bot-verification challenge. It never solves or bypasses anything itself.
+type BrowserHandoffTool struct{ browserToolBase }
+
+func (t *BrowserHandoffTool) Name() string { return "browser_handoff" }
+func (t *BrowserHandoffTool) Description() string {
+	return "Hand the isolated browser to the user so they can complete a step only a person can do — such as a human-verification challenge (\"Press & Hold\", CAPTCHA). Reopens the isolated session as a visible window on the current URL (a fresh isolated profile; earlier cookies do not carry over) and keeps it visible for the rest of the session. This does not solve, click through, or bypass anything: the user does it. After calling it, tell the user what to do in the window and wait for their reply before continuing. Fails on hosts with no display (SSH, containers, CI); then ask the user to open the page in their own browser and paste what you need."
+}
+func (t *BrowserHandoffTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{}}
+}
+func (t *BrowserHandoffTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserHandoffTool) PreviewCall(string) string {
+	// This string is the whole approval prompt, so it has to say what
+	// approving does: it opens a window for the user to act in. It does not
+	// approve, pass, or validate any check itself.
+	return "browser_handoff() — open the browser window so you can complete the verification yourself"
+}
+func (t *BrowserHandoffTool) Execute(ctx context.Context, _ string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	res, err := t.Session.Handoff(ctx)
+	if err != nil {
+		return "", fmt.Errorf("browser_handoff: %w", err)
+	}
+	where := res.URL
+	if where == "" {
+		where = "a blank page (there was no earlier page to reopen)"
+	}
+	var b strings.Builder
+	if res.AlreadyVisible {
+		fmt.Fprintf(&b, "the browser window is already visible, showing %s.", where)
+	} else {
+		fmt.Fprintf(&b, "opened a visible window of the isolated browser, showing %s.", where)
+	}
+	b.WriteString(" The user must complete the verification themselves in that window — do not try to solve or click through it yourself. Tell them what to do, then wait for their reply. Once they confirm, check the page with browser_inspect or browser_screenshot before continuing.")
+	if res.LoadWarning != "" {
+		fmt.Fprintf(&b, " Note: the page had not finished loading (%s); the window is still open.", res.LoadWarning)
+	}
+	return b.String(), nil
+}
+
 // BrowserCloseTool tears down the browser process and its isolated temp
 // profile. Also runs automatically via CleanupTool.Cleanup at session
 // exit, so an agent that forgets to call it explicitly still doesn't
@@ -687,6 +746,11 @@ type BrowserUploadTool struct {
 	browserToolBase
 	Cwd       *CwdRef
 	WriteOpts WritePathOptions
+	// DenyReadPaths is the credential-bearing read deny list every read tool
+	// enforces (see DefaultDenyReadPaths). Uploading is a read of the file —
+	// its bytes leave the machine — so the same list applies; without it an
+	// upload could hand ./.env to a web page even though read_file refuses it.
+	DenyReadPaths []string
 }
 
 func (t *BrowserUploadTool) Name() string { return "browser_upload" }
@@ -706,10 +770,25 @@ func (t *BrowserUploadTool) Schema() map[string]any {
 func (t *BrowserUploadTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserUploadTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Selector string `json:"selector"`
+		Selector string   `json:"selector"`
+		Paths    []string `json:"paths"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("browser_upload(%s)", a.Selector)
+	// Which files are leaving the machine is exactly what the user is being
+	// asked to approve, so list them (bounded, with the true count).
+	const maxShown = 5
+	shown := make([]string, 0, maxShown)
+	for i, p := range a.Paths {
+		if i == maxShown {
+			break
+		}
+		shown = append(shown, previewQuote(p, previewPathMax))
+	}
+	more := ""
+	if len(a.Paths) > maxShown {
+		more = fmt.Sprintf(" +%d more", len(a.Paths)-maxShown)
+	}
+	return fmt.Sprintf("browser_upload(%s, files=[%s]%s)", a.Selector, strings.Join(shown, ", "), more)
 }
 func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -733,6 +812,9 @@ func (t *BrowserUploadTool) Execute(ctx context.Context, argsJSON string) (strin
 	for i, p := range a.Paths {
 		rp := resolvePath(cwd, p)
 		if err := ValidateWritePath(rp, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("browser_upload: %w", err)
+		}
+		if err := ValidateReadPath(rp, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("browser_upload: %w", err)
 		}
 		resolved[i] = rp
@@ -770,10 +852,18 @@ func (t *BrowserDownloadTool) Schema() map[string]any {
 func (t *BrowserDownloadTool) RequiresApproval(string) bool { return t.Enabled }
 func (t *BrowserDownloadTool) PreviewCall(argsJSON string) string {
 	var a struct {
-		Path string `json:"path"`
+		Selector string `json:"selector"`
+		URL      string `json:"url"`
+		Path     string `json:"path"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return fmt.Sprintf("browser_download(%s)", a.Path)
+	// Show where the bytes come from as well as where they land: the
+	// destination alone says nothing about what is being fetched.
+	from := "click " + a.Selector
+	if strings.TrimSpace(a.URL) != "" {
+		from = a.URL
+	}
+	return fmt.Sprintf("browser_download(from=%s, to=%s)", previewQuote(from, previewPathMax), previewQuote(a.Path, previewPathMax))
 }
 func (t *BrowserDownloadTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	if !t.Enabled {
@@ -921,3 +1011,23 @@ func (t *BrowserNetworkRequestsTool) Execute(ctx context.Context, argsJSON strin
 
 var _ MultimodalTool = (*BrowserScreenshotTool)(nil)
 var _ CleanupTool = (*BrowserCloseTool)(nil)
+
+// Bounds for what an approval preview echoes back. Long enough to read what is
+// being approved, short enough that one huge argument can't push the rest of
+// the prompt off screen.
+const (
+	previewTextMax = 120
+	previewPathMax = 160
+)
+
+// previewQuote renders s for an approval prompt: quoted, so control
+// characters and newlines show up as escapes instead of silently reflowing the
+// prompt, and truncated with the real length shown so a hidden tail is never
+// invisible.
+func previewQuote(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(string(r[:max])) + fmt.Sprintf("… (%d chars)", len(r))
+}

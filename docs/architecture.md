@@ -172,7 +172,9 @@ on top of the base approval flow:
 - **Auto mode** — implementation state. Entered via `/auto`,
   `Shift+Tab`, or `--permission-mode auto`. Mutating tools auto-allow
   except a safety floor (`run_bash`, `git_commit`, `git_checkpoint`,
-  `rollback`). Effective iteration cap is 4× the configured
+  `rollback`, and the browser calls that cross the local boundary:
+  `browser_upload` / `browser_download`, and `browser_navigate` to any
+  host other than loopback). Effective iteration cap is 4× the configured
   `MaxIterations`. State lives on `agent.AutoModeState`.
 - **Yolo mode overlay** — drops permission prompts on *all* tools (no
   safety floor) and removes the iteration cap entirely. Entered via
