@@ -69,9 +69,9 @@ jobs:
   vulnerability-scan:
     # Keep dependency and toolchain CVEs visible without making a known
     # upstream-fixed-but-unreleased advisory look like a build or test
-    # failure. The command below converts the known advisory into a visible
-    # warning until Excelize publishes a release containing the fix.
-    continue-on-error: true
+    # failure. This job intentionally remains failing until Excelize publishes
+    # a release containing the fix; keep it out of required merge checks only
+    # as a temporary release exception.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,9 +85,7 @@ jobs:
       - name: Vulnerability scan
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          if ! govulncheck ./...; then
-            echo "::warning::govulncheck found GO-2026-6452 in Excelize v2.11.0; remove this temporary exception after the upstream fix is released"
-          fi
+          govulncheck ./...
 
   acp-smoke:
     # Proves the real, compiled `yottacode acp` binary — not just
