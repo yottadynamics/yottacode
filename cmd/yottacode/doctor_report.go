@@ -12,6 +12,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/sandboxcache"
 )
 
@@ -38,11 +39,12 @@ type DoctorSectionStatus struct {
 // DoctorSummary is the additive JSON summary matching the human report's first
 // section. Existing top-level provider probe fields remain unchanged.
 type DoctorSummary struct {
-	Provider doctorStatus `json:"provider"`
-	GitHub   doctorStatus `json:"github"`
-	LSP      doctorStatus `json:"lsp"`
-	Media    doctorStatus `json:"media"`
-	Sandbox  doctorStatus `json:"sandbox"`
+	Provider    doctorStatus `json:"provider"`
+	GitHub      doctorStatus `json:"github"`
+	LSP         doctorStatus `json:"lsp"`
+	Media       doctorStatus `json:"media"`
+	Sandbox     doctorStatus `json:"sandbox"`
+	Permissions doctorStatus `json:"permissions"`
 }
 
 // SandboxDoctorResult reports sandbox configuration and Go cache visibility.
@@ -71,13 +73,18 @@ type DoctorPathResource struct {
 	FreeInodes uint64 `json:"free_inodes"`
 }
 
-func newDoctorSummary(provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult) DoctorSummary {
+func newDoctorSummary(provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult, permissionReports ...permissions.ValidationReport) DoctorSummary {
+	permissionStatus := doctorStatusOK
+	if len(permissionReports) > 0 {
+		permissionStatus = doctorStatus(permissionReports[0].Status)
+	}
 	return DoctorSummary{
-		Provider: statusFromIssuesWarnings(provider.Issues, provider.Warnings),
-		GitHub:   github.Status,
-		LSP:      lsp.Status,
-		Media:    media.Status,
-		Sandbox:  sandbox.Status,
+		Provider:    statusFromIssuesWarnings(provider.Issues, provider.Warnings),
+		GitHub:      github.Status,
+		LSP:         lsp.Status,
+		Media:       media.Status,
+		Sandbox:     sandbox.Status,
+		Permissions: permissionStatus,
 	}
 }
 
@@ -275,7 +282,11 @@ func dirSize(path string) (int64, error) {
 	return total, err
 }
 
-func formatDoctorReport(summary DoctorSummary, provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult) string {
+func formatDoctorReport(summary DoctorSummary, provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult, permissionReports ...permissions.ValidationReport) string {
+	var permissionReport permissions.ValidationReport
+	if len(permissionReports) > 0 {
+		permissionReport = permissionReports[0]
+	}
 	var b strings.Builder
 	b.WriteString("yottacode doctor\n\n")
 	renderDoctorSummary(&b, summary)
@@ -284,6 +295,7 @@ func formatDoctorReport(summary DoctorSummary, provider adapter.ProbeResult, git
 	renderLSPSection(&b, lsp)
 	renderMediaSection(&b, media)
 	renderSandboxSection(&b, sandbox)
+	renderPermissionsSection(&b, permissionReport)
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -294,6 +306,21 @@ func renderDoctorSummary(b *strings.Builder, summary DoctorSummary) {
 	fmt.Fprintf(b, "- lsp: %s\n", summary.LSP)
 	fmt.Fprintf(b, "- media: %s\n", summary.Media)
 	fmt.Fprintf(b, "- sandbox: %s\n", summary.Sandbox)
+	fmt.Fprintf(b, "- permissions: %s\n", summary.Permissions)
+}
+
+func renderPermissionsSection(b *strings.Builder, report permissions.ValidationReport) {
+	b.WriteString("\nPermissions:\n")
+	fmt.Fprintf(b, "  status: %s\n", report.Status)
+	for _, file := range report.Files {
+		fmt.Fprintf(b, "  %s: %s (%s)\n", file.Name, file.Status, file.Path)
+		for _, diagnostic := range file.Diagnostics {
+			fmt.Fprintf(b, "    issue: %s\n", diagnostic)
+		}
+		for _, warning := range file.Warnings {
+			fmt.Fprintf(b, "    warning: %s\n", warning)
+		}
+	}
 }
 
 func renderProviderSection(b *strings.Builder, result adapter.ProbeResult, status doctorStatus) {

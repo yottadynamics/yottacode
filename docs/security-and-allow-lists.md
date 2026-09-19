@@ -370,6 +370,11 @@ Read tools do not prompt, so yottacode blocks common secret-bearing paths from s
 
 If you truly need to inspect a protected file, do it through an explicit shell command that prompts for approval.
 
+worktree-doctor-permissions-validation
+## Permission policy diagnostics
+
+`yottacode doctor` and the TUI `/doctor` command validate the machine-wide system policy (`/etc/yottacode/permissions.json`) together with the project shared and local policy files without modifying them. They report whether each source is missing, empty, valid, unreadable, or malformed, and show advisory warnings for risky or shadowed rules. A syntax, read, or rule-format error makes doctor return an issue; advisory lint warnings do not block a run.
+
 ## Bash rule matching
 
 Bash allow rules are evaluated per command segment. Compound commands separated by `&&`, `||`, `;`, `|`, `&`, or a newline are not approved by an allow rule that matches only the first command. Commands inside `$(...)` and backtick substitutions are also evaluated independently.
