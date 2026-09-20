@@ -137,5 +137,5 @@ func defaultSweep(keep string) {
 	if err != nil {
 		return // can't tell which locks are ours; do nothing
 	}
-	sweepStaleProfiles(os.TempDir(), time.Now(), staleProfileAge, os.Getuid(), host, processAlive, keep)
+	sweepStaleProfiles(shortTempRoot(), time.Now(), staleProfileAge, os.Getuid(), host, processAlive, keep)
 }

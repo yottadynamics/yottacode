@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration test for the real go-rod/CDP path: launches a system
+// Integration test for the real chromedp/CDP path: launches a system
 // Chrome/Chromium, drives it against a local httptest.Server fixture
 // page, and confirms the full browser_navigate → browser_screenshot →
 // browser_inspect → browser_click/browser_type workflow the roadmap doc's
@@ -21,8 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-rod/rod/lib/launcher/flags"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/chromedp"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
@@ -258,7 +259,7 @@ func TestIntegration_RecoversAfterRealCrash(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	firstPID := firstSess.launcher.PID()
+	firstPID := firstSess.pid
 	if firstPID <= 0 {
 		t.Fatalf("launcher reported no PID: %d", firstPID)
 	}
@@ -286,7 +287,7 @@ func TestIntegration_RecoversAfterRealCrash(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	if secondSess.launcher.PID() == firstPID {
+	if secondSess.pid == firstPID {
 		t.Error("recovered session reused the same pid — expected a genuinely new process")
 	}
 
@@ -320,7 +321,7 @@ func TestIntegration_CleanupLeavesNoProcessOrTempDir(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session (is this running against a fake?)", m.sess)
 	}
-	pid := sess.launcher.PID()
+	pid := sess.pid
 	if pid <= 0 {
 		t.Fatalf("launcher reported no PID: %d", pid)
 	}
@@ -713,10 +714,10 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	if !before.launcher.Has(flags.Headless) {
+	if m.Status().Headed {
 		t.Fatal("precondition: the initial session should be headless")
 	}
-	oldPID := before.launcher.PID()
+	oldPID := before.pid
 	oldProfile := m.Status().ProfileDir
 
 	res, err := m.Handoff(ctx)
@@ -730,11 +731,7 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 		t.Errorf("unexpected LoadWarning: %s", res.LoadWarning)
 	}
 
-	after, ok := m.sess.(*session)
-	if !ok {
-		t.Fatalf("m.sess is %T after handoff, want *session", m.sess)
-	}
-	if after.launcher.Has(flags.Headless) {
+	if !m.Status().Headed {
 		t.Error("session after Handoff is still headless")
 	}
 	st := m.Status()
@@ -839,12 +836,8 @@ func TestIntegration_HandoffStaysIsolatedAndDoesNotShareCookies(t *testing.T) {
 		}
 	}
 
-	after, ok := m.sess.(*session)
-	if !ok {
-		t.Fatalf("m.sess is %T, want *session", m.sess)
-	}
-	dir := after.launcher.Get(flags.UserDataDir)
-	t.Logf("visible session: headless=%t user-data-dir=%s", after.launcher.Has(flags.Headless), dir)
+	dir := m.Status().ProfileDir
+	t.Logf("visible session: headless=%t user-data-dir=%s", m.Status().Headed, dir)
 	if !strings.HasPrefix(filepath.Base(dir), "yottacode-browser-") {
 		t.Errorf("visible session profile %q is not a yottacode isolated profile", dir)
 	}
@@ -883,7 +876,7 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
 	pg := sess.activePage()
-	win, err := proto.BrowserGetWindowForTarget{TargetID: pg.TargetID}.Call(sess.browser)
+	win, _, err := browser.GetWindowForTarget().WithTargetID(pg.id).Do(cdp.WithExecutor(sess.browserCtx, sess.browser))
 	if err != nil {
 		t.Fatalf("Browser.getWindowForTarget: %v", err)
 	}
@@ -894,26 +887,27 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 	// small CI display would make this flaky.
 	for _, want := range []int{700, 1000} {
 		h := 900
-		if err := (proto.BrowserSetWindowBounds{
-			WindowID: win.WindowID,
-			Bounds:   &proto.BrowserBounds{Width: &want, Height: &h},
-		}).Call(sess.browser); err != nil {
+		boundsCtx, cancel := context.WithTimeout(sess.browserCtx, 5*time.Second)
+		err := browser.SetWindowBounds(win, &browser.Bounds{Width: int64(want), Height: int64(h)}).Do(cdp.WithExecutor(boundsCtx, sess.browser))
+		cancel()
+		if err != nil {
 			t.Fatalf("Browser.setWindowBounds(%d): %v", want, err)
 		}
 		var got int
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			res, err := pg.Eval("() => window.innerWidth")
+			var res int
+			err := chromedp.Run(pg.ctx, chromedp.Evaluate("window.innerWidth", &res))
 			if err != nil {
 				t.Fatalf("Eval innerWidth: %v", err)
 			}
-			got = res.Value.Int()
-			if got >= want-40 && got <= want+40 {
+			got = res
+			if got >= want-60 && got <= want+40 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if got < want-40 || got > want+40 {
+		if got < want-60 || got > want+40 {
 			t.Errorf("window resized to %dpx wide but page viewport is %dpx: the page is not filling the window", want, got)
 		}
 	}

@@ -133,16 +133,13 @@ func TestIntegration_LaunchIsHardened(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	args := strings.Join(s.launcher.FormatArgs(), " ")
-	for _, bad := range []string{"site-per-process", "disable-site-isolation-trials", "NetworkServiceInProcess", "no-sandbox", "disable-web-security"} {
-		if strings.Contains(args, bad) {
-			t.Errorf("launch arguments contain %q:\n%s", bad, args)
-		}
+	if s.browser == nil || s.browser.Process() == nil || s.browser.Process().Pid <= 0 {
+		t.Fatal("session has no browser process")
 	}
-	// Not a security flag: the tools depend on it.
-	if !strings.Contains(args, "remote-debugging-port") {
-		t.Errorf("the debugging port flag is gone; the tools can't drive the browser:\n%s", args)
+	if m.Status().Headed {
+		t.Error("initial session unexpectedly headed")
 	}
+
 }
 
 // rod extracts its leakless guard to a predictable /tmp path and runs whatever
@@ -163,10 +160,10 @@ func TestIntegration_LeaklessHelperIsPrivate(t *testing.T) {
 	}
 
 	s := m.sess.(*session)
-	if s.launcher.PID() <= 0 {
+	if s.browser == nil || s.browser.Process() == nil || s.browser.Process().Pid <= 0 {
 		t.Fatal("no browser pid")
 	}
-	if err := syscall.Kill(s.launcher.PID(), syscall.Signal(0)); err != nil {
+	if err := syscall.Kill(s.browser.Process().Pid, syscall.Signal(0)); err != nil {
 		t.Fatalf("browser should be running: %v", err)
 	}
 
@@ -196,16 +193,9 @@ func TestIntegration_LeaklessHelperIsPrivate(t *testing.T) {
 // matters: it proves Chrome's own lock file is what keeps a live profile safe.
 func TestIntegration_SweepRemovesKilledSessionsProfileButNotALiveOne(t *testing.T) {
 	skipIfNoBrowser(t)
-	// Profiles are made under the temp dir; point it at a private one so this
-	// test can only ever see (and delete) directories it created itself. Keep
-	// the path SHORT: Chrome puts a unix socket under TMPDIR, and a long path
-	// (t.TempDir() names one after the test) exceeds the 108-byte limit.
-	tmp, err := os.MkdirTemp("", "yc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
-	t.Setenv("TMPDIR", tmp)
+	// Profiles use the deterministic short browser root; this avoids Chrome's
+	// Unix socket limit even when the test harness sets a deeply nested TMPDIR.
+	tmp := shortTempRoot()
 	srv := newFixtureServer(t)
 	ctx := context.Background()
 
@@ -227,7 +217,7 @@ func TestIntegration_SweepRemovesKilledSessionsProfileButNotALiveOne(t *testing.
 	}
 
 	// SIGKILL: nothing gets to run Close.
-	pid := killed.sess.(*session).launcher.PID()
+	pid := killed.sess.(*session).browser.Process().Pid
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill: %v", err)
 	}

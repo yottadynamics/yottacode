@@ -4,28 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/input"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/accessibility"
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/runtime"
+	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
-// NavigateResult is the outcome of a successful browser_navigate call.
-type NavigateResult struct {
-	URL   string
-	Title string
-}
-
-// TabInfo is a point-in-time snapshot of one tracked page, returned by
-// browser_tabs. Indexes identify the current point-in-time listing; closing
-// a tab can shift later indexes, so callers should list again before acting
-// on a stale index.
+type NavigateResult struct{ URL, Title string }
 type TabInfo struct {
 	Index  int
 	ID     string
@@ -34,594 +28,413 @@ type TabInfo struct {
 	Active bool
 }
 
-// maxBufferedEntries caps how many console/network entries a single
-// tracked page buffers before evicting the oldest (FIFO) — bounds
-// memory for a long-lived session against a chatty page, and keeps
-// browser_console_logs/browser_network_requests fast to snapshot.
 const maxBufferedEntries = 200
 
-// ConsoleEntry is one captured console.* call or uncaught JS exception,
-// returned by browser_console_logs. At is stamped locally (time.Now())
-// when the event is received rather than taken from CDP's own
-// timestamp fields, which are session-local monotonic values, not
-// wall-clock.
 type ConsoleEntry struct {
-	Level string // "log", "debug", "info", "warning", "error", "exception", ...
-	Text  string
-	At    time.Time
+	Level, Text string
+	At          time.Time
 }
-
-// NetworkEntry is one captured request, returned by
-// browser_network_requests. Status/StatusText/MIMEType stay zero until
-// a response arrives; Failed/ErrorText are set instead if the request
-// never got one. At is stamped locally at request-start, same reasoning
-// as ConsoleEntry.At.
 type NetworkEntry struct {
-	RequestID  string
-	Method     string
-	URL        string
-	Status     int
-	StatusText string
-	MIMEType   string
-	Failed     bool
-	ErrorText  string
-	At         time.Time
+	RequestID, Method, URL string
+	Status                 int
+	StatusText, MIMEType   string
+	Failed                 bool
+	ErrorText              string
+	At                     time.Time
 }
 
-// pageSession is the browser-package-internal surface Manager drives.
-// *session is the real go-rod/CDP implementation; Manager's tests inject a
-// fake to exercise lifecycle/serialization/error-mapping without spawning
-// a real Chrome process.
 type pageSession interface {
-	navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error)
-	screenshot(ctx context.Context, selector string, fullPage bool) ([]byte, error)
-	inspect(ctx context.Context, selector string) (string, error)
-	click(ctx context.Context, selector string) error
-	typeText(ctx context.Context, selector, text string, submit bool) error
-	hotkey(ctx context.Context, keys string) error
-	scroll(ctx context.Context, selector string, deltaX, deltaY float64) error
-	wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error
-	// snapshot atomically reads the active page and the tracked-page count
-	// together (see the session.snapshot doc comment for why this can't
-	// be two separate calls), then resolves the active page's current
-	// URL. Used by Status, which takes no ctx of its own (a deliberate,
-	// pre-existing "stays cheap" property) — same unbound-context
-	// Info() call the original currentURL() made.
-	snapshot() (url string, tabCount int)
+	navigate(context.Context, string, string) (NavigateResult, error)
+	screenshot(context.Context, string, bool) ([]byte, error)
+	inspect(context.Context, string) (string, error)
+	click(context.Context, string) error
+	typeText(context.Context, string, string, bool) error
+	hotkey(context.Context, string) error
+	scroll(context.Context, string, float64, float64) error
+	wait(context.Context, string, string, bool, time.Duration) error
+	snapshot() (string, int)
 	close() error
-	// alive reports whether the underlying browser process is still
-	// running — see Manager.ensureLocked's crash-recovery check.
 	alive() bool
-	// forceCleanup best-effort tears down the OS process and launcher
-	// state without any CDP round-trip — used instead of close() when
-	// alive() is already false, since a graceful Browser.Close() over a
-	// connection to a process that's already dead has nothing to
-	// negotiate with and could hang rather than fail fast.
 	forceCleanup()
-
-	// tabs snapshots every tracked page (main page plus any popup/tab
-	// opened since launch), including each one's live title/URL. Read-only.
-	tabs(ctx context.Context) []TabInfo
-	// switchTab changes which tracked page subsequent actions act on.
-	switchTab(index int) error
-	// closeTab closes one tracked page by index without tearing down the
-	// whole session. Refuses to close the only remaining page.
-	closeTab(ctx context.Context, index int) error
-	// setFiles sets a file input element's files directly via CDP.
-	setFiles(ctx context.Context, selector string, paths []string) error
-	// downloadViaClick/downloadViaURL trigger a download (by clicking an
-	// element, or navigating directly to a downloadable URL) and block
-	// until it completes, saving it under dir. The returned info's GUID
-	// names the saved file within dir — see Manager.Download, which owns
-	// moving it to the caller's validated destination.
-	downloadViaClick(ctx context.Context, selector, dir string) (*proto.PageDownloadWillBegin, error)
-	downloadViaURL(ctx context.Context, url, dir string) (*proto.PageDownloadWillBegin, error)
-
-	// consoleLogs/networkRequests snapshot the active page's buffered
-	// entries, most-recent last, capped to the last limit entries
-	// (limit<=0 means the full buffer). Pure in-memory, no ctx.
-	consoleLogs(limit int) []ConsoleEntry
-	networkRequests(limit int) []NetworkEntry
+	tabs(context.Context) []TabInfo
+	switchTab(int) error
+	closeTab(context.Context, int) error
+	setFiles(context.Context, string, []string) error
+	downloadViaClick(context.Context, string, string) (*browser.EventDownloadWillBegin, error)
+	downloadViaURL(context.Context, string, string) (*browser.EventDownloadWillBegin, error)
+	consoleLogs(int) []ConsoleEntry
+	networkRequests(int) []NetworkEntry
 }
 
-// trackedPage is one page/tab the session has seen, from launch or from
-// the background target-tracking goroutine below.
 type trackedPage struct {
-	id       proto.TargetTargetID
-	page     *rod.Page
+	id       target.ID
+	ctx      context.Context
+	cancel   context.CancelFunc
 	openedAt time.Time
-
-	// mu guards console/network — written by this page's own
-	// console/network EachEvent subscriptions (attachPageCapture),
-	// independent of session.mu and of every other tracked page's.
-	mu      syncutil.Mutex
-	console []ConsoleEntry
-	network []*NetworkEntry
+	mu       syncutil.Mutex
+	console  []ConsoleEntry
+	network  []*NetworkEntry
 }
 
-// recordConsole appends one entry, evicting the oldest if over
-// maxBufferedEntries.
-func (tp *trackedPage) recordConsole(e ConsoleEntry) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	tp.console = append(tp.console, e)
-	if len(tp.console) > maxBufferedEntries {
-		tp.console = tp.console[len(tp.console)-maxBufferedEntries:]
+func (p *trackedPage) recordConsole(e ConsoleEntry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.console = append(p.console, e)
+	if len(p.console) > maxBufferedEntries {
+		p.console = p.console[len(p.console)-maxBufferedEntries:]
 	}
 }
-
-// recordRequestStart buffers a new request, evicting the oldest if over
-// maxBufferedEntries.
-func (tp *trackedPage) recordRequestStart(id, method, url string) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	tp.network = append(tp.network, &NetworkEntry{RequestID: id, Method: method, URL: url, At: time.Now()})
-	if len(tp.network) > maxBufferedEntries {
-		tp.network = tp.network[len(tp.network)-maxBufferedEntries:]
+func (p *trackedPage) recordRequestStart(id, method, url string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.network = append(p.network, &NetworkEntry{RequestID: id, Method: method, URL: url, At: time.Now()})
+	if len(p.network) > maxBufferedEntries {
+		p.network = p.network[len(p.network)-maxBufferedEntries:]
 	}
 }
-
-// recordRequestUpdate applies fn to the buffered entry matching id, if
-// still present — a silent no-op otherwise (the entry was evicted, or
-// this event arrived for a request whose start was never seen, e.g. one
-// already in flight before Network.enable armed). Never creates a new
-// entry: doing so here would leave a malformed one with no Method/URL.
-// The buffer is small (<=maxBufferedEntries) so a linear scan for id is
-// simpler and safer than an index map eviction would have to keep
-// patched.
-func (tp *trackedPage) recordRequestUpdate(id string, fn func(*NetworkEntry)) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	for _, e := range tp.network {
+func (p *trackedPage) recordRequestUpdate(id string, fn func(*NetworkEntry)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, e := range p.network {
 		if e.RequestID == id {
 			fn(e)
 			return
 		}
 	}
 }
-
-func (tp *trackedPage) consoleSnapshot(limit int) []ConsoleEntry {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	entries := tp.console
-	if limit > 0 && len(entries) > limit {
-		entries = entries[len(entries)-limit:]
+func (p *trackedPage) consoleSnapshot(n int) []ConsoleEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a := p.console
+	if n > 0 && len(a) > n {
+		a = a[len(a)-n:]
 	}
-	out := make([]ConsoleEntry, len(entries))
-	copy(out, entries)
-	return out
+	return append([]ConsoleEntry(nil), a...)
+}
+func (p *trackedPage) networkSnapshot(n int) []NetworkEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a := p.network
+	if n > 0 && len(a) > n {
+		a = a[len(a)-n:]
+	}
+	o := make([]NetworkEntry, len(a))
+	for i, e := range a {
+		o[i] = *e
+	}
+	return o
 }
 
-func (tp *trackedPage) networkSnapshot(limit int) []NetworkEntry {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	entries := tp.network
-	if limit > 0 && len(entries) > limit {
-		entries = entries[len(entries)-limit:]
-	}
-	out := make([]NetworkEntry, len(entries))
-	for i, e := range entries {
-		out[i] = *e
-	}
-	return out
-}
-
-// session is a thin wrapper over one launched *rod.Browser and the set of
-// pages it has opened. It owns no launch/close lifecycle policy (lazy
-// launch, closed-once guard, action serialization) — that's Manager's
-// job; session only knows how to perform one already-launched browser's
-// actions, including tracking which of its (possibly several) pages is
-// currently active.
 type session struct {
-	launcher *launcher.Launcher
-	browser  *rod.Browser
-
-	// mu guards pages/active. Separate from Manager.mu: the background
-	// target-tracking goroutine started in launchSession appends/removes
-	// tracked pages concurrently with whatever action call Manager.mu is
-	// currently serializing, so this needs its own lock rather than
-	// relying on Manager's.
-	mu     syncutil.Mutex
-	pages  []*trackedPage
-	active int
+	allocCtx        context.Context
+	cancel          context.CancelFunc
+	browserCtx      context.Context
+	browserCancel   context.CancelFunc
+	browser         *chromedp.Browser
+	mu              syncutil.Mutex
+	pages           []*trackedPage
+	active          int
+	pid             int
+	downloadMu      syncutil.Mutex
+	downloads       map[string]*downloadWaiter
+	pendingDownload *downloadWaiter
 }
 
-// newTabDetectWindow bounds how long click/type(submit=true) wait to see
-// whether the action opened a new tab (target="_blank" links,
-// window.open()). Named and justified the same way networkIdleWindow is:
-// a fixed, documented heuristic rather than an unbounded wait. Every
+type downloadWaiter struct {
+	begun    chan *browser.EventDownloadWillBegin
+	done     chan struct{}
+	failed   chan error
+	maxBytes int64
+}
 
-// click already goes through human approval — far slower than 300ms — so
-// this fixed tax is negligible in relative terms, and it's scoped to
-// click/submit only: navigate/screenshot/inspect/scroll/wait/hotkey pay
-// nothing extra.
 const newTabDetectWindow = 2 * time.Second
 
-// launchSession starts a headless Chromium/Chrome using the given binary
-// and isolated profile dir, and opens its single initial page. bin and
-// profileDir are always explicit (see findChromeBinary/newProfileDir) so
-// rod never falls back to auto-downloading its own pinned build.
-//
-// ctx bounds only the launch itself (a binary that starts but never opens
-// its debug port would otherwise hang Launch forever — see Launcher.Context).
-// It is deliberately NOT threaded onto the returned Browser/pages: those
-// are reused across every later action for the rest of the session, each
-// of which binds its own per-call context (see every session method's
-// `pg.Context(ctx)`), so tying the long-lived connection itself to one
-// call's short deadline would cancel it out from under every later call.
-func launchSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	return launchSessionMode(ctx, bin, profileDir, true)
+func launchSession(ctx context.Context, bin, profile string) (pageSession, error) {
+	return launchSessionMode(ctx, bin, profile, true)
 }
-
-// launchHeadedSession is launchSession with a visible window, for
-// Manager.Handoff: the human completes a step (a bot-verification
-// challenge) that the headless session can't show them.
-func launchHeadedSession(ctx context.Context, bin, profileDir string) (pageSession, error) {
-	return launchSessionMode(ctx, bin, profileDir, false)
+func launchHeadedSession(ctx context.Context, bin, profile string) (pageSession, error) {
+	return launchSessionMode(ctx, bin, profile, false)
 }
-
-func launchSessionMode(ctx context.Context, bin, profileDir string, headless bool) (pageSession, error) {
-	l := hardenBrowserFlags(launcher.New()).
-		Bin(bin).
-		Headless(headless).
-		UserDataDir(profileDir).
-		Leakless(leaklessUsable()).
-		Context(ctx)
-
-	u, err := l.Launch()
-	if err != nil {
-		l.Cleanup()
-		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
+func launchSessionMode(ctx context.Context, bin, profile string, headless bool) (pageSession, error) {
+	opts := []chromedp.ExecAllocatorOption{chromedp.ExecPath(bin), chromedp.UserDataDir(profile), chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck, chromedp.Flag("disable-features", "TranslateUI")}
+	if headless {
+		opts = append(opts, chromedp.Headless)
 	}
-
-	br := rod.New().ControlURL(u)
-	if !headless {
-		// rod emulates a fixed 1280x800 Mac-laptop device (viewport and
-		// user agent) on every page it creates. That's a sensible fixed
-		// viewport for a headless session, but in a visible window it pins
-		// the page to the top-left corner with dead space around it and
-		// ignores the window's real size. The window is for a human, so let
-		// the page fill it.
-		br = br.NoDefaultDevice()
-	}
-	if err := br.Connect(); err != nil {
-		l.Kill()
-		l.Cleanup()
-		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
-	}
-
-	pg, err := br.Page(proto.TargetCreateTarget{URL: "about:blank"})
-	if err != nil {
-		_ = br.Close()
-		l.Kill()
-		l.Cleanup()
-		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
-	}
-
-	s := &session{launcher: l, browser: br}
-	tp, _ := s.trackPage(pg.TargetID, pg)
-	attachPageCapture(pg, tp)
-
-	// Passively track every later page the browser opens (popups,
-	// target="_blank" links, window.open) so click/type-submit can follow
-	// one without every ordinary action paying for a blocking wait — see
-	// followNewPage/newTabDetectWindow. Runs for the life of the session;
-	// no explicit teardown needed, same as attachPageCapture's own
-	// subscriptions (they end on their own once the browser closes) —
-	// this is rod's own documented idiom for the purpose (see
-	// Browser.EachEvent's doc example).
-	go br.EachEvent(func(e *proto.TargetTargetCreated) {
-		if e.TargetInfo.Type != "page" {
-			return
-		}
-		newPg, err := br.PageFromTarget(e.TargetInfo.TargetID)
+	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	bc, browserCancel := chromedp.NewContext(allocCtx)
+	// Keep the long-lived browser context alive after startup. A child context
+	// used only for readiness would cancel the browser target when it returns.
+	ready := make(chan error, 1)
+	go func() { ready <- chromedp.Run(bc) }()
+	startupTimer := time.NewTimer(30 * time.Second)
+	defer startupTimer.Stop()
+	select {
+	case err := <-ready:
 		if err != nil {
-			return
+			browserCancel()
+			cancel()
+			return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 		}
-		if newTP, created := s.trackPage(e.TargetInfo.TargetID, newPg); created {
-			attachPageCapture(newPg, newTP)
-		}
-	}, func(e *proto.TargetTargetDestroyed) {
-		s.untrackPage(e.TargetID)
-	})()
-
-	return s, nil
-}
-
-// attachPageCapture wires every background behavior a tracked page
-// needs for the rest of its life: auto-dismissing JS dialogs, and
-// buffering its console/network activity into tp for
-// browser_console_logs/browser_network_requests. Callers must only
-// invoke this once per page — see trackPage's created return value —
-// since each of these subscribes independently and calling it twice
-// would double-dismiss dialogs and double-record every entry.
-func attachPageCapture(pg *rod.Page, tp *trackedPage) {
-	dismissDialogs(pg)
-	startConsoleCapture(pg, tp)
-	startNetworkCapture(pg, tp)
-}
-
-// dismissDialogs auto-dismisses every JS-initiated dialog
-// (alert/confirm/prompt/beforeunload) on pg. A dialog blocks the page's
-// own execution — and every browser_* call that touches it — until
-// something answers Page.handleJavaScriptDialog. There is no human here
-// to click it, so auto-dismiss every one instead of letting a tool call
-// hang until its timeout. Dismiss (not accept) is the safer default: the
-// triggering click/navigate was already approval-gated, but a confirm()
-// can gate its own separate destructive action, and silently accepting
-// that goes beyond what the click's approval covered.
-func dismissDialogs(pg *rod.Page) {
-	go pg.EachEvent(func(e *proto.PageJavascriptDialogOpening) {
-		_ = proto.PageHandleJavaScriptDialog{Accept: false}.Call(pg)
-	})()
-}
-
-// startConsoleCapture arms the Runtime domain and records every
-// console.* call and uncaught exception into tp for the rest of pg's
-// life. RuntimeConsoleAPICalled.Args are rendered as a space-joined
-// text line: a primitive's Value (via gson.JSON.String()) when present,
-// else its Description (objects/functions), else its bare Type as a
-// last resort.
-func startConsoleCapture(pg *rod.Page, tp *trackedPage) {
-	_ = proto.RuntimeEnable{}.Call(pg)
-	go pg.EachEvent(func(e *proto.RuntimeConsoleAPICalled) {
-		parts := make([]string, 0, len(e.Args))
-		for _, arg := range e.Args {
-			parts = append(parts, consoleArgText(arg))
-		}
-		tp.recordConsole(ConsoleEntry{Level: string(e.Type), Text: strings.Join(parts, " "), At: time.Now()})
-	}, func(e *proto.RuntimeExceptionThrown) {
-		text := ""
-		if e.ExceptionDetails != nil {
-			text = e.ExceptionDetails.Text
-			if e.ExceptionDetails.Exception != nil {
-				if d := consoleArgText(e.ExceptionDetails.Exception); d != "" {
-					text = text + ": " + d
-				}
-			}
-		}
-		tp.recordConsole(ConsoleEntry{Level: "exception", Text: text, At: time.Now()})
-	})()
-}
-
-// consoleArgText renders one console-call argument as text: a
-// primitive's JSON value when present, else its object-form
-// Description, else its bare Type as a last resort.
-func consoleArgText(arg *proto.RuntimeRemoteObject) string {
-	if arg == nil {
-		return ""
+	case <-ctx.Done():
+		browserCancel()
+		cancel()
+		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, ctx.Err())
+	case <-startupTimer.C:
+		browserCancel()
+		cancel()
+		return nil, fmt.Errorf("%w: browser startup timed out", ErrLaunchFailed)
 	}
-	if !arg.Value.Nil() {
-		return arg.Value.String()
+	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, downloads: make(map[string]*downloadWaiter)}
+	if s.browser != nil && s.browser.Process() != nil {
+		s.pid = s.browser.Process().Pid
 	}
-	if arg.Description != "" {
-		return arg.Description
+	pc, pcancel := chromedp.NewContext(bc)
+	if err := chromedp.Run(pc, chromedp.Navigate("about:blank")); err != nil {
+		cancel()
+		pcancel()
+		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 	}
-	return string(arg.Type)
-}
-
-// startNetworkCapture arms the Network domain and records every request
-// pg makes into tp for the rest of its life: requestWillBeSent seeds an
-// entry, responseReceived fills in its status once one arrives, and
-// loadingFailed marks it failed for requests that never get a response
-// (DNS/connection errors, CORS blocks, etc.).
-func startNetworkCapture(pg *rod.Page, tp *trackedPage) {
-	_ = proto.NetworkEnable{}.Call(pg)
-	go pg.EachEvent(func(e *proto.NetworkRequestWillBeSent) {
-		if e.Request == nil {
-			return
-		}
-		tp.recordRequestStart(string(e.RequestID), e.Request.Method, e.Request.URL)
-	}, func(e *proto.NetworkResponseReceived) {
-		if e.Response == nil {
-			return
-		}
-		tp.recordRequestUpdate(string(e.RequestID), func(entry *NetworkEntry) {
-			entry.Status = e.Response.Status
-			entry.StatusText = e.Response.StatusText
-			entry.MIMEType = e.Response.MIMEType
-		})
-	}, func(e *proto.NetworkLoadingFailed) {
-		tp.recordRequestUpdate(string(e.RequestID), func(entry *NetworkEntry) {
-			entry.Failed = true
-			entry.ErrorText = e.ErrorText
-		})
-	})()
-}
-
-// trackPage adds id/pg to the registry, or no-ops if it's already there
-// (created=false) — the background target-tracking goroutine and
-// followNewPage's own race-safety call can both reach the same new page,
-// and only the first must win. Callers use created to decide whether to
-// attachPageCapture (dialog-dismiss, console/network capture): doing that
-// twice for the same page would double-subscribe and double-count every
-// buffered entry.
-func (s *session) trackPage(id proto.TargetTargetID, pg *rod.Page) (tp *trackedPage, created bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, existing := range s.pages {
-		if existing.id == id {
-			return existing, false
-		}
-	}
-	tp = &trackedPage{id: id, page: pg, openedAt: time.Now()}
-	s.pages = append(s.pages, tp)
-	return tp, true
-}
-
-// untrackPage removes id and keeps active pointing at the same *page*
-// it pointed at before, not just the same index — an index-based
-// adjustment (e.g. "clamp if now out of range") gets this wrong whenever
-// a page *before* the active one closes, since every later page shifts
-// down by one but the index isn't a valid proxy for identity anymore.
-// Re-resolving by id after removal handles that, plus the active page
-// itself closing, uniformly.
-func (s *session) untrackPage(id proto.TargetTargetID) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var activeID proto.TargetTargetID
-	if s.active < len(s.pages) {
-		activeID = s.pages[s.active].id
-	}
-	for i, tp := range s.pages {
-		if tp.id == id {
-			// Keep the final page as a tombstone. Chrome can remain alive
-			// after its last target is externally destroyed; removing the
-			// entry would let a concurrent Status/action index an empty
-			// registry between Manager's liveness check and its page lookup.
-			// The retained rod page fails subsequent CDP operations normally,
-			// while the next successful action or explicit close can tear the
-			// session down without a host-process panic.
-			if len(s.pages) == 1 {
+	id := chromedp.FromContext(pc).Target.TargetID
+	tp := s.track(id, pc, pcancel)
+	attachPageCapture(pc, tp)
+	chromedp.ListenBrowser(bc, func(ev any) {
+		s.dispatchBrowserEvent(ev)
+		switch e := ev.(type) {
+		case *target.EventTargetCreated:
+			if e.TargetInfo == nil || e.TargetInfo.Type != "page" {
 				return
 			}
-			s.pages = append(s.pages[:i], s.pages[i+1:]...)
-			break
+			if _, ok := s.pageByID(e.TargetInfo.TargetID); ok {
+				return
+			}
+			ctx, cancel := chromedp.NewContext(bc, chromedp.WithTargetID(e.TargetInfo.TargetID))
+			p, created := s.trackPage(e.TargetInfo.TargetID, ctx)
+			if created {
+				attachPageCapture(ctx, p)
+			} else {
+				cancel()
+			}
+		case *target.EventTargetDestroyed:
+			s.untrackPage(e.TargetID)
 		}
-	}
-	if len(s.pages) == 0 {
-		s.active = 0
-		return
-	}
-	if activeID == id {
-		// The active page itself was just closed — fall back to the most
-		// recently opened remaining page, matching what closing a tab by
-		// hand usually does (focus lands on the next-most-recent one).
-		s.active = len(s.pages) - 1
-		return
-	}
-	for i, tp := range s.pages {
-		if tp.id == activeID {
-			s.active = i
+	})
+	return s, nil
+}
+func (s *session) dispatchBrowserEvent(ev any) {
+	s.downloadMu.Lock()
+	defer s.downloadMu.Unlock()
+	switch e := ev.(type) {
+	case *browser.EventDownloadWillBegin:
+		if s.pendingDownload != nil {
+			w := s.pendingDownload
+			s.pendingDownload = nil
+			s.downloads[e.GUID] = w
+			select {
+			case w.begun <- e:
+			default:
+			}
+		}
+	case *browser.EventDownloadProgress:
+		if w := s.downloads[e.GUID]; w != nil && (e.TotalBytes > float64(w.maxBytes) || e.ReceivedBytes > float64(w.maxBytes)) {
+			select {
+			case w.failed <- fmt.Errorf("%w: received %.0f bytes, limit is %d", ErrDownloadTooLarge, e.ReceivedBytes, w.maxBytes):
+			default:
+			}
+			delete(s.downloads, e.GUID)
 			return
 		}
-	}
-	// activeID vanished for some other reason (shouldn't happen) — clamp
-	// defensively rather than leave an out-of-range index.
-	if s.active >= len(s.pages) {
-		s.active = len(s.pages) - 1
+		if e.State == browser.DownloadProgressStateCompleted {
+			if w := s.downloads[e.GUID]; w != nil {
+				close(w.done)
+				delete(s.downloads, e.GUID)
+			}
+		}
 	}
 }
+func (s *session) pageByID(id target.ID) (*trackedPage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.pages {
+		if p.id == id {
+			return p, true
+		}
+	}
+	return nil, false
+}
+func (s *session) track(id target.ID, ctx context.Context, cancel context.CancelFunc) *trackedPage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.pages {
+		if p.id == id {
+			return p
+		}
+	}
+	p := &trackedPage{id: id, ctx: ctx, cancel: cancel, openedAt: time.Now()}
+	s.pages = append(s.pages, p)
+	return p
+}
+func (s *session) trackPage(id target.ID, ctx context.Context) (*trackedPage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.pages {
+		if p.id == id {
+			return p, false
+		}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pageCtx, cancel := context.WithCancel(ctx)
+	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now()}
+	s.pages = append(s.pages, p)
+	return p, true
+}
 
-// activeTrackedPage returns the currently active trackedPage (registry
-// entry, not just its *rod.Page) — the shared lock/index lookup
-// activePage and the console/network read methods below all build on.
-// Callers normally have at least one tracked page: launchSession tracks
-// the initial page, and untrackPage retains a tombstone when the final
-// target disappears so an external close cannot create an empty slice
-// between the manager's liveness check and this lookup.
+func (s *session) untrackPage(id target.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.pages {
+		if p.id != id {
+			continue
+		}
+		if len(s.pages) == 1 {
+			return
+		}
+		wasActive := i == s.active
+		s.pages = append(s.pages[:i], s.pages[i+1:]...)
+		if wasActive {
+			s.active = len(s.pages) - 1
+		} else if i < s.active {
+			s.active--
+		}
+		return
+	}
+}
 func (s *session) activeTrackedPage() *trackedPage {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.pages) == 0 {
+		return nil
+	}
+	if s.active < 0 || s.active >= len(s.pages) {
+		s.active = len(s.pages) - 1
+	}
 	return s.pages[s.active]
 }
-
-// activePage is a convenience wrapper over activeTrackedPage for the
-// (common) case a caller only needs the *rod.Page, not the registry
-// entry itself.
-func (s *session) activePage() *rod.Page {
-	return s.activeTrackedPage().page
+func (s *session) activePage() *trackedPage { return s.activeTrackedPage() }
+func (s *session) untrack(id target.ID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, p := range s.pages {
+		if p.id == id && len(s.pages) > 1 {
+			s.pages = append(s.pages[:i], s.pages[i+1:]...)
+			if s.active >= len(s.pages) {
+				s.active = len(s.pages) - 1
+			}
+			return
+		}
+	}
+}
+func attachPageCapture(ctx context.Context, p *trackedPage) {
+	chromedp.ListenTarget(ctx, func(ev any) {
+		switch e := ev.(type) {
+		case *page.EventJavascriptDialogOpening:
+			// Dialogs have no browser_* interaction surface; dismiss them so
+			// a modal alert cannot block the target indefinitely.
+			go func() { _ = chromedp.Run(ctx, page.HandleJavaScriptDialog(false)) }()
+		case *runtime.EventConsoleAPICalled:
+			var b strings.Builder
+			for _, a := range e.Args {
+				if a.Value != nil {
+					b.WriteString(a.Value.String())
+				} else {
+					b.WriteString(a.Description)
+				}
+			}
+			p.recordConsole(ConsoleEntry{Level: string(e.Type), Text: b.String(), At: time.Now()})
+		case *runtime.EventExceptionThrown:
+			text := e.ExceptionDetails.Text
+			if e.ExceptionDetails.Exception != nil && e.ExceptionDetails.Exception.Description != "" {
+				if text != "" {
+					text += ": "
+				}
+				text += e.ExceptionDetails.Exception.Description
+			}
+			p.recordConsole(ConsoleEntry{Level: "exception", Text: text, At: time.Now()})
+		case *network.EventRequestWillBeSent:
+			if e.Request != nil {
+				p.recordRequestStart(string(e.RequestID), e.Request.Method, e.Request.URL)
+			}
+		case *network.EventResponseReceived:
+			if e.Response != nil {
+				p.recordRequestUpdate(string(e.RequestID), func(n *NetworkEntry) {
+					n.Status = int(e.Response.Status)
+					n.StatusText = e.Response.StatusText
+					n.MIMEType = e.Response.MimeType
+				})
+			}
+		case *network.EventLoadingFailed:
+			p.recordRequestUpdate(string(e.RequestID), func(n *NetworkEntry) { n.Failed = true; n.ErrorText = e.ErrorText })
+		}
+	})
+	// Do not synchronously execute CDP commands from a browser event listener:
+	// chromedp's browser dispatcher holds its execution lock while invoking
+	// listeners, so doing so would deadlock target-created events.
+	go func() { _ = chromedp.Run(ctx, runtime.Enable(), network.Enable(), page.Enable()) }()
 }
 
-func (s *session) consoleLogs(limit int) []ConsoleEntry {
-	return s.activeTrackedPage().consoleSnapshot(limit)
+// actionContext retains the target context while propagating the caller's
+// cancellation and deadline to chromedp actions.
+func actionContext(targetCtx, callCtx context.Context) (context.Context, context.CancelFunc) {
+	if callCtx == nil {
+		return context.WithCancel(targetCtx)
+	}
+	ctx, cancel := context.WithCancel(targetCtx)
+	go func() {
+		select {
+		case <-callCtx.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
-
-func (s *session) networkRequests(limit int) []NetworkEntry {
-	return s.activeTrackedPage().networkSnapshot(limit)
-}
-
+func (s *session) consoleLogs(n int) []ConsoleEntry     { return s.activePage().consoleSnapshot(n) }
+func (s *session) networkRequests(n int) []NetworkEntry { return s.activePage().networkSnapshot(n) }
 func (s *session) close() error {
-	err := s.browser.Close()
-	s.launcher.Kill()
-	s.launcher.Cleanup()
+	err := chromedp.Cancel(s.browserCtx)
+	s.browserCancel()
+	s.cancel()
 	return err
 }
-
-// snapshot reads the active page reference and the tab count together
-// under one lock acquisition, then resolves the active page's URL
-// outside the lock. This must NOT be split into two separate calls (one
-// for the page/URL, one for the count): the background target-tracking
-// goroutine in launchSession mutates s.pages/s.active independently of
-// any Manager-level call, so two independently-locked reads can observe
-// different versions of that state — e.g. the active page has just been
-// destroyed (its Info() call fails, URL comes back "") in the first
-// read, while the second read already reflects the post-close tab count.
-// Capturing both under one critical section removes that window; only
-// the much narrower one between releasing the lock and calling Info()
-// remains, which Info()'s own error handling already covers.
-func (s *session) snapshot() (url string, tabCount int) {
-	s.mu.Lock()
-
-	if len(s.pages) == 0 {
-		// The last page closed since the caller last checked alive() (a
-		// window.close(), or the user closing the window). Report "nothing"
-		// rather than indexing an empty registry.
-		s.mu.Unlock()
+func (s *session) forceCleanup() {
+	s.browserCancel()
+	s.cancel()
+}
+func (s *session) alive() bool {
+	if s.browser == nil || s.browser.Process() == nil {
+		return false
+	}
+	return s.browser.Process().Signal(syscall.Signal(0)) == nil
+}
+func (s *session) snapshot() (string, int) {
+	p := s.activeTrackedPage()
+	if p == nil {
 		return "", 0
 	}
-	pg := s.pages[s.active].page
-	tabCount = len(s.pages)
-	s.mu.Unlock()
-
-	info, err := pg.Info()
-	if err != nil {
-		return "", tabCount
-	}
-	return info.URL, tabCount
-}
-
-// alive checks whether the launched OS process is still running, via a
-// zero-signal existence probe (see kill(2) — signal 0 sends nothing, it
-// only reports ESRCH if the pid is gone). This is deliberately a process
-// check, not a CDP round-trip: it's what lets Manager.ensureLocked notice
-// a crashed browser (OOM-killed, killed externally, or just crashed)
-// cheaply, before attempting to reuse a connection that's already dead.
-//
-// PID reuse by the OS could in principle make a long-dead process look
-// alive again, but that requires the OS to cycle back to the exact same
-// pid within one session's lifetime — a risk this crash check accepts as
-// negligible in exchange for not needing rod's private launch-exit
-// channel (not part of Launcher's public API).
-func (s *session) alive() bool {
-	// A browser process can remain running after its last target is closed.
-	// Treat an empty page registry as a dead session so Manager discards it
-	// and relaunches cleanly instead of allowing activePage/snapshot to index
-	// an empty slice and panic on the next action.
+	var u string
+	_ = chromedp.Run(p.ctx, chromedp.Location(&u))
 	s.mu.Lock()
-	hasPage := len(s.pages) > 0
+	n := len(s.pages)
 	s.mu.Unlock()
-	if !hasPage {
-		return false
-	}
-	pid := s.launcher.PID()
-	if pid <= 0 {
-		return false
-	}
-	return syscall.Kill(pid, syscall.Signal(0)) == nil
+	return u, n
 }
-
-// forceCleanup skips the CDP-level Browser.Close() — there's no live
-// connection to negotiate a graceful shutdown with — and only reaps the
-// OS process and launcher state.
-func (s *session) forceCleanup() {
-	s.launcher.Kill()
-	s.launcher.Cleanup()
-}
-
-// classifyErr wraps a raw rod/CDP error with the taxonomy sentinel that
-// best describes it, so tool callers can use errors.Is regardless of the
-// underlying error's concrete type. fallback is used for a plain
-// context-deadline error, which carries no type information of its own.
-func classifyErr(err error, fallback error) error {
+func classifyErr(err, fallback error) error {
 	if err == nil {
 		return nil
 	}
-	if _, ok := errors.AsType[*rod.ElementNotFoundError](err); ok {
-		return fmt.Errorf("%w: %v", ErrSelectorNotFound, err)
-	}
-	if _, ok := errors.AsType[*rod.NavigationError](err); ok {
-		return fmt.Errorf("%w: %v", ErrNavigationTimeout, err)
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrCanceled, err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%w: %v", fallback, err)
@@ -629,361 +442,341 @@ func classifyErr(err error, fallback error) error {
 	return err
 }
 
-// element resolves selector against pg — always the caller's own
-// activePage() snapshot, taken once at the top of the calling method, so
-// a single action always acts on one consistent page even though the
-// session may be tracking several.
-func (s *session) element(ctx context.Context, pg *rod.Page, selector string) (*rod.Element, error) {
-	el, err := pg.Context(ctx).Element(selector)
-	if err != nil {
-		return nil, classifyErr(err, ErrSelectorNotFound)
+func classifySelectorErr(err error) error {
+	if err == nil {
+		return nil
 	}
-	return el, nil
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrCanceled, err)
+	}
+	message := strings.ToLower(err.Error())
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(message, "node with given id") || strings.Contains(message, "no node") || strings.Contains(message, "waiting for element") || strings.Contains(message, "could not find") {
+		return fmt.Errorf("%w: %v", ErrSelectorNotFound, err)
+	}
+	return err
 }
 
-// networkIdleWindow is how long the network must stay quiet before
-// "networkidle" is considered satisfied — a fixed heuristic quiet-period
-// (the same order of magnitude Playwright's own networkidle uses), not an
-// overall deadline. The overall deadline for the call is whatever ctx
-// already carries (see Manager.withActionTimeout / Manager.Wait).
-const networkIdleWindow = 500 * time.Millisecond
-
-func waitUntilCondition(pg *rod.Page, waitUntil string) error {
-	switch strings.ToLower(strings.TrimSpace(waitUntil)) {
-	case "networkidle":
-		return pg.WaitIdle(networkIdleWindow)
-	case "domcontentloaded":
-		return pg.WaitDOMStable(300*time.Millisecond, 0)
-	default: // "", "load"
-		return pg.WaitLoad()
+func classifyDownloadErr(err error) error {
+	if err == nil {
+		return nil
 	}
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%w: %v", ErrCanceled, err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrDownloadFailed, err)
+	}
+	return err
 }
-
-func (s *session) navigate(ctx context.Context, url, waitUntil string) (NavigateResult, error) {
-	pg := s.activePage().Context(ctx)
-	if err := pg.Navigate(url); err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
-	}
-	if err := waitUntilCondition(pg, waitUntil); err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
-	}
-	info, err := pg.Info()
-	if err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
-	}
-	return NavigateResult{URL: info.URL, Title: info.Title}, nil
-}
-
-func (s *session) screenshot(ctx context.Context, selector string, fullPage bool) ([]byte, error) {
-	activePg := s.activePage()
-	pg := activePg.Context(ctx)
-	if strings.TrimSpace(selector) != "" {
-		el, err := s.element(ctx, activePg, selector)
-		if err != nil {
-			return nil, err
-		}
-		data, err := el.Screenshot(proto.PageCaptureScreenshotFormatPng, 0)
-		if err != nil {
-			return nil, fmt.Errorf("browser screenshot: %w", err)
-		}
-		return data, nil
-	}
-	data, err := pg.Screenshot(fullPage, &proto.PageCaptureScreenshot{Format: proto.PageCaptureScreenshotFormatPng})
-	if err != nil {
-		return nil, fmt.Errorf("browser screenshot: %w", err)
-	}
-	return data, nil
-}
-
-func (s *session) inspect(ctx context.Context, selector string) (string, error) {
-	activePg := s.activePage()
-	pg := activePg.Context(ctx)
-	_ = proto.AccessibilityEnable{}.Call(pg)
-
-	if strings.TrimSpace(selector) == "" {
-		res, err := proto.AccessibilityGetFullAXTree{}.Call(pg)
-		if err != nil {
-			return "", fmt.Errorf("browser inspect: %w", err)
-		}
-		return renderAXTree(res.Nodes), nil
-	}
-
-	el, err := s.element(ctx, activePg, selector)
-	if err != nil {
-		return "", err
-	}
-	res, err := proto.AccessibilityGetPartialAXTree{ObjectID: el.Object.ObjectID, FetchRelatives: true}.Call(pg)
-	if err != nil {
-		return "", fmt.Errorf("browser inspect: %w", err)
-	}
-	return renderAXTree(res.Nodes), nil
-}
-
-// followNewPage runs action, then — if it caused fromPage to open a new
-// page within newTabDetectWindow — switches the session's active page to
-// it. Uses go-rod's own Page.WaitOpen() idiom: the wait must be armed
-// BEFORE action runs, to avoid missing a TargetCreated event that fires
-// during it rather than after. When nothing opens (the overwhelming
-// majority of clicks/submits), wait() simply returns once detectCtx
-// expires and this is a no-op.
-func (s *session) followNewPage(ctx context.Context, fromPage *rod.Page, action func() error) error {
-	detectCtx, cancel := context.WithTimeout(ctx, newTabDetectWindow)
+func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, error) {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	wait := fromPage.Context(detectCtx).WaitOpen()
-
-	if err := action(); err != nil {
-		return err
+	if err := chromedp.Run(c, chromedp.Navigate(u)); err != nil {
+		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
 	}
-
-	newPage, err := wait()
-	if err != nil || newPage == nil {
-		return nil
-	}
-	// Ensure the new page is registered (and, if this call is the one that
-	// actually wins that race, that it gets dialog-dismiss/console/network
-	// capture attached) before switching to it — the background
-	// target-tracking goroutine in launchSession subscribes to the same
-	// TargetTargetCreated event independently, and there's no ordering
-	// guarantee between the two subscriptions, so this call's own wait()
-	// can resolve before that goroutine has appended the page.
-	if tp, created := s.trackPage(newPage.TargetID, newPage); created {
-		attachPageCapture(newPage, tp)
-	}
-	s.mu.Lock()
-	for i, tp := range s.pages {
-		if tp.id == newPage.TargetID {
-			s.active = i
-			break
+	switch strings.ToLower(w) {
+	case "domcontentloaded":
+		if err := chromedp.Run(c, chromedp.WaitReady("html")); err != nil {
+			return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
+		}
+	case "networkidle":
+		if err := s.waitNetworkIdle(c, 500*time.Millisecond); err != nil {
+			return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
 		}
 	}
-	s.mu.Unlock()
-	return nil
+	var url, title string
+	if err := chromedp.Run(c, chromedp.Location(&url), chromedp.Title(&title)); err != nil {
+		return NavigateResult{}, err
+	}
+	return NavigateResult{url, title}, nil
 }
-
-func (s *session) click(ctx context.Context, selector string) error {
-	pg := s.activePage()
-	el, err := s.element(ctx, pg, selector)
-	if err != nil {
-		return err
-	}
-	if _, err := el.WaitInteractable(); err != nil {
-		return classifyErr(err, ErrSelectorNotFound)
-	}
-	return s.followNewPage(ctx, pg, func() error {
-		if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
-			return fmt.Errorf("browser click: %w", err)
-		}
-		return nil
-	})
-}
-
-func (s *session) typeText(ctx context.Context, selector, text string, submit bool) error {
-	pg := s.activePage()
-	el, err := s.element(ctx, pg, selector)
-	if err != nil {
-		return err
-	}
-	if _, err := el.WaitInteractable(); err != nil {
-		return classifyErr(err, ErrSelectorNotFound)
-	}
-	if err := el.Input(text); err != nil {
-		return fmt.Errorf("browser type: %w", err)
-	}
-	if !submit {
-		return nil
-	}
-	return s.followNewPage(ctx, pg, func() error {
-		if err := el.Type(input.Enter); err != nil {
-			return fmt.Errorf("browser type: submit: %w", err)
-		}
-		return nil
-	})
-}
-
-func (s *session) hotkey(ctx context.Context, keys string) error {
-	combo, err := parseHotkey(keys)
-	if err != nil {
-		return err
-	}
-	ka := s.activePage().Context(ctx).KeyActions()
-	for _, k := range combo.modifiers {
-		ka = ka.Press(k)
-	}
-	ka = ka.Type(combo.main)
-	for i := len(combo.modifiers) - 1; i >= 0; i-- {
-		ka = ka.Release(combo.modifiers[i])
-	}
-	if err := ka.Do(); err != nil {
-		return fmt.Errorf("browser hotkey %q: %w", keys, err)
-	}
-	return nil
-}
-
-func (s *session) scroll(ctx context.Context, selector string, deltaX, deltaY float64) error {
-	activePg := s.activePage()
-	pg := activePg.Context(ctx)
-	if strings.TrimSpace(selector) != "" {
-		el, err := s.element(ctx, activePg, selector)
-		if err != nil {
+func (s *session) waitNetworkIdle(ctx context.Context, quiet time.Duration) error {
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for {
+		var state string
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.readyState`, &state)); err != nil {
 			return err
 		}
-		if err := el.ScrollIntoView(); err != nil {
-			return fmt.Errorf("browser scroll: %w", err)
+		if state == "complete" {
+			t := time.NewTimer(quiet)
+			select {
+			case <-t.C:
+				return nil
+			case <-ctx.Done():
+				t.Stop()
+				return ctx.Err()
+			case <-deadline.C:
+				t.Stop()
+				return nil
+			}
 		}
-		return nil
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return nil
+		}
 	}
-
-	metrics, err := proto.PageGetLayoutMetrics{}.Call(pg)
-	if err != nil {
-		return fmt.Errorf("browser scroll: %w", err)
-	}
-	var cx, cy float64
-	if metrics.CSSLayoutViewport != nil {
-		cx = float64(metrics.CSSLayoutViewport.ClientWidth) / 2
-		cy = float64(metrics.CSSLayoutViewport.ClientHeight) / 2
-	}
-	if err := pg.Mouse.MoveTo(proto.NewPoint(cx, cy)); err != nil {
-		return fmt.Errorf("browser scroll: %w", err)
-	}
-	if err := pg.Mouse.Scroll(deltaX, deltaY, 1); err != nil {
-		return fmt.Errorf("browser scroll: %w", err)
-	}
-	return nil
 }
 
-// wait assumes the caller (Manager.Wait) has already resolved timeout to
-// a positive value — the "built-in timeout" the tool docs promise, not
-// left unbounded.
-func (s *session) wait(ctx context.Context, selector, text string, networkIdle bool, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (s *session) screenshot(ctx context.Context, sel string, full bool) ([]byte, error) {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	pg := s.activePage().Context(ctx)
-
-	if networkIdle {
-		if err := pg.WaitIdle(networkIdleWindow); err != nil {
-			return classifyErr(err, ErrNavigationTimeout)
+	var b []byte
+	var a chromedp.Action = chromedp.FullScreenshot(&b, 100)
+	if sel != "" {
+		a = chromedp.Screenshot(sel, &b)
+	}
+	if err := chromedp.Run(c, a); err != nil {
+		return nil, fmt.Errorf("browser screenshot: %w", err)
+	}
+	return b, nil
+}
+func (s *session) inspect(ctx context.Context, sel string) (string, error) {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	var nodes []*accessibility.Node
+	var axErr error
+	if sel == "" {
+		// CDP commands need chromedp's executor installed by Run.
+		axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
+			var err error
+			nodes, err = accessibility.GetFullAXTree().Do(execCtx)
+			return err
+		}))
+	} else {
+		var ids []cdp.NodeID
+		axErr = chromedp.Run(c, chromedp.NodeIDs(sel, &ids))
+		if axErr == nil && len(ids) > 0 {
+			axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
+				var err error
+				nodes, err = accessibility.GetPartialAXTree().WithNodeID(ids[0]).WithFetchRelatives(true).Do(execCtx)
+				return err
+			}))
+		} else if axErr == nil {
+			axErr = fmt.Errorf("selector %q matched no nodes", sel)
 		}
 	}
-	if strings.TrimSpace(selector) != "" {
-		el, err := pg.Element(selector)
-		if err != nil {
-			return classifyErr(err, ErrSelectorNotFound)
+	if axErr != nil {
+		var fallback string
+		if err := chromedp.Run(c, chromedp.Evaluate(`(() => {
+				const out = [];
+				for (const el of document.querySelectorAll('button,[role],input,textarea,select')) {
+					const role = el.getAttribute('role') || (el.tagName || '').toLowerCase();
+					const name = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+					out.push(role + (name ? ': ' + name : ''));
+				}
+				return out.join('\\n') + (document.body ? '\\n' + document.body.innerText : '');
+			})()`, &fallback)); err == nil && fallback != "" {
+			return fallback, nil
 		}
-		if err := el.WaitVisible(); err != nil {
-			return classifyErr(err, ErrSelectorNotFound)
+		return "", fmt.Errorf("browser inspect: %w", axErr)
+	}
+	return renderAXTree(nodes), nil
+}
+func (s *session) click(ctx context.Context, sel string) error {
+	p := s.activePage()
+	before := s.pageCount()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
+		return classifySelectorErr(err)
+	}
+	s.followNewPage(before, ctx)
+	return nil
+}
+func (s *session) typeText(ctx context.Context, sel, text string, submit bool) error {
+	a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
+	if submit {
+		a = append(a, chromedp.SendKeys(sel, "\r"))
+	}
+	pageCtx := s.activePage().ctx
+	cctx, cancel := actionContext(pageCtx, ctx)
+	defer cancel()
+	if err := chromedp.Run(cctx, a...); err != nil {
+		return classifySelectorErr(err)
+	}
+	return nil
+}
+func (s *session) pageCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.pages) }
+func (s *session) followNewPage(before int, ctx context.Context) {
+	deadline := time.NewTimer(newTabDetectWindow)
+	defer deadline.Stop()
+	for {
+		if s.pageCount() > before {
+			s.mu.Lock()
+			s.active = len(s.pages) - 1
+			s.mu.Unlock()
+			return
+		}
+		select {
+		case <-deadline.C:
+			return
+		case <-ctx.Done():
+			return
+		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	if strings.TrimSpace(text) != "" {
-		if _, err := pg.ElementR("*", regexp.QuoteMeta(text)); err != nil {
-			return classifyErr(err, ErrSelectorNotFound)
+}
+func (s *session) hotkey(ctx context.Context, spec string) error {
+	c, e := parseHotkey(spec)
+	if e != nil {
+		return e
+	}
+	a := []chromedp.Action{}
+	for _, k := range c.modifiers {
+		a = append(a, chromedp.KeyEvent(k))
+	}
+	a = append(a, chromedp.KeyEvent(c.main))
+	pageCtx := s.activePage().ctx
+	cctx, cancel := actionContext(pageCtx, ctx)
+	defer cancel()
+	if err := chromedp.Run(cctx, a...); err != nil {
+		return classifySelectorErr(err)
+	}
+	return nil
+}
+func (s *session) scroll(ctx context.Context, sel string, x, y float64) error {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	if sel != "" {
+		return classifySelectorErr(chromedp.Run(c, chromedp.ScrollIntoView(sel)))
+	}
+	return chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("window.scrollBy(%g,%g)", x, y), nil))
+}
+func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.Duration) error {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	c, timeoutCancel := context.WithTimeout(c, d)
+	defer timeoutCancel()
+	if idle {
+		if e := chromedp.Run(c, chromedp.Sleep(500*time.Millisecond)); e != nil {
+			return e
+		}
+	}
+	if sel != "" {
+		if e := chromedp.Run(c, chromedp.WaitVisible(sel)); e != nil {
+			return classifySelectorErr(e)
+		}
+	}
+	if text != "" {
+		var ok bool
+		if e := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text), &ok)); e != nil {
+			return classifySelectorErr(e)
+		} else if !ok {
+			return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
 		}
 	}
 	return nil
 }
-
 func (s *session) tabs(ctx context.Context) []TabInfo {
 	s.mu.Lock()
-	snapshot := make([]*trackedPage, len(s.pages))
-	copy(snapshot, s.pages)
-	activeIdx := s.active
+	p := append([]*trackedPage(nil), s.pages...)
+	a := s.active
 	s.mu.Unlock()
-
-	out := make([]TabInfo, 0, len(snapshot))
-	for i, tp := range snapshot {
-		var title, url string
-		if info, err := tp.page.Context(ctx).Info(); err == nil {
-			title, url = info.Title, info.URL
-		}
-		out = append(out, TabInfo{Index: i, ID: string(tp.id), Title: title, URL: url, Active: i == activeIdx})
+	o := make([]TabInfo, len(p))
+	for i, x := range p {
+		var u, t string
+		_ = chromedp.Run(x.ctx, chromedp.Location(&u), chromedp.Title(&t))
+		o[i] = TabInfo{i, string(x.id), t, u, i == a}
 	}
-	return out
+	return o
 }
-
-func (s *session) switchTab(index int) error {
+func (s *session) switchTab(i int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if index < 0 || index >= len(s.pages) {
-		return fmt.Errorf("%w: index %d, have %d tab(s)", ErrTabNotFound, index, len(s.pages))
+	if i < 0 || i >= len(s.pages) {
+		return fmt.Errorf("%w: index %d", ErrTabNotFound, i)
 	}
-	s.active = index
+	s.active = i
 	return nil
 }
-
-// closeTab closes one tracked page by index. pg.Close() triggers the
-// same CDP target-destroyed path the background listener already
-// handles for externally-closed tabs (e.g. a popup's own
-// window.close()), but this also untracks synchronously afterward so
-// the tool call's own result reflects the change immediately rather
-// than waiting on that async event — untrackPage is idempotent, so the
-// listener's own later (redundant) call is a harmless no-op.
-func (s *session) closeTab(ctx context.Context, index int) error {
+func (s *session) closeTab(ctx context.Context, i int) error {
 	s.mu.Lock()
-	if index < 0 || index >= len(s.pages) {
+	if i < 0 || i >= len(s.pages) {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: index %d, have %d tab(s)", ErrTabNotFound, index, len(s.pages))
+		return ErrTabNotFound
 	}
 	if len(s.pages) == 1 {
 		s.mu.Unlock()
 		return errors.New("cannot close the only remaining tab; use browser_close to end the session instead")
 	}
-	id := s.pages[index].id
-	pg := s.pages[index].page
+	p := s.pages[i]
 	s.mu.Unlock()
-
-	if err := pg.Context(ctx).Close(); err != nil {
-		return fmt.Errorf("browser close tab: %w", err)
-	}
-	s.untrackPage(id)
+	_ = chromedp.Run(p.ctx, target.CloseTarget(p.id))
+	p.cancel()
+	s.untrack(p.id)
 	return nil
 }
+func (s *session) setFiles(ctx context.Context, sel string, paths []string) error {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	return classifySelectorErr(chromedp.Run(c, chromedp.SetUploadFiles(sel, paths)))
+}
+func (s *session) downloadViaClick(ctx context.Context, sel, dir string) (*browser.EventDownloadWillBegin, error) {
+	return s.download(ctx, dir, func(p context.Context) error { return chromedp.Run(p, chromedp.Click(sel)) })
+}
 
-// setFiles sets a file input element's files directly via CDP
-// (DOM.setFileInputFiles). Unlike click/typeText this needs no
-// WaitInteractable precondition: it targets the DOM node directly rather
-// than synthesizing mouse/keyboard input, so it works on the common
-// display:none file input pattern too.
-func (s *session) setFiles(ctx context.Context, selector string, paths []string) error {
-	activePg := s.activePage()
-	el, err := s.element(ctx, activePg, selector)
-	if err != nil {
+func (s *session) downloadViaURL(ctx context.Context, u, dir string) (*browser.EventDownloadWillBegin, error) {
+	return s.download(ctx, dir, func(p context.Context) error {
+		err := chromedp.Run(p, chromedp.Navigate(u))
+		if err != nil && strings.Contains(err.Error(), "ERR_ABORTED") {
+			return nil
+		}
 		return err
-	}
-	if err := el.SetFiles(paths); err != nil {
-		return fmt.Errorf("browser upload: %w", err)
-	}
-	return nil
+	})
 }
 
-func (s *session) downloadViaClick(ctx context.Context, selector, dir string) (*proto.PageDownloadWillBegin, error) {
-	activePg := s.activePage()
-	el, err := s.element(ctx, activePg, selector)
-	if err != nil {
+func (s *session) download(ctx context.Context, dir string, trigger func(context.Context) error) (*browser.EventDownloadWillBegin, error) {
+	p := s.activePage()
+	triggerCtx, triggerCancel := actionContext(p.ctx, ctx)
+	defer triggerCancel()
+	w := &downloadWaiter{begun: make(chan *browser.EventDownloadWillBegin, 1), done: make(chan struct{}), failed: make(chan error, 1), maxBytes: MaxDownloadBytes}
+	s.downloadMu.Lock()
+	s.pendingDownload = w
+	s.downloadMu.Unlock()
+	defer func() {
+		s.downloadMu.Lock()
+		if s.pendingDownload == w {
+			s.pendingDownload = nil
+		}
+		s.downloadMu.Unlock()
+	}()
+	if err := browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllowAndName).WithDownloadPath(dir).WithEventsEnabled(true).Do(cdp.WithExecutor(s.browserCtx, s.browser)); err != nil {
+		return nil, fmt.Errorf("browser download: %w", err)
+	}
+	if err := trigger(triggerCtx); err != nil {
+		if mapped := classifySelectorErr(err); mapped != err {
+			return nil, mapped
+		}
+		return nil, classifyDownloadErr(fmt.Errorf("browser download: %w", err))
+	}
+	wait := ctx
+	if wait == nil {
+		wait = context.Background()
+	}
+	var info *browser.EventDownloadWillBegin
+	select {
+	case info = <-w.begun:
+	case err := <-w.failed:
 		return nil, err
+	case <-wait.Done():
+		return nil, classifyDownloadErr(fmt.Errorf("browser download: %w", wait.Err()))
 	}
-	if _, err := el.WaitInteractable(); err != nil {
-		return nil, classifyErr(err, ErrSelectorNotFound)
-	}
-	wait := s.browser.Context(ctx).WaitDownload(dir)
-	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return nil, fmt.Errorf("browser download: click: %w", err)
-	}
-	info := wait()
-	if info == nil {
-		return nil, classifyErr(ctx.Err(), ErrDownloadFailed)
-	}
-	return info, nil
-}
-
-func (s *session) downloadViaURL(ctx context.Context, url, dir string) (*proto.PageDownloadWillBegin, error) {
-	wait := s.browser.Context(ctx).WaitDownload(dir)
-	// A download response legitimately aborts the page's own navigation
-	// (the response never becomes a loaded document), so the navigate
-	// error is deliberately not treated as fatal here — the point of this
-	// call is the download event, not a loaded page.
-	_ = s.activePage().Context(ctx).Navigate(url)
-	info := wait()
-	if info == nil {
-		return nil, classifyErr(ctx.Err(), ErrDownloadFailed)
+	select {
+	case <-w.done:
+	case err := <-w.failed:
+		return nil, err
+	case <-wait.Done():
+		return nil, classifyDownloadErr(fmt.Errorf("browser download: %w", wait.Err()))
 	}
 	return info, nil
 }

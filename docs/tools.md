@@ -2175,7 +2175,7 @@ No approval. On clean success it reports the integration branch to push/open a P
 Experimental behind `browser` (see [experimental.md](experimental.md)).
 The `browser_*` tools drive a real, headless Chrome/Chromium instance
 over the Chrome DevTools Protocol via
-[`go-rod/rod`](https://github.com/go-rod/rod) — no Node.js, no
+[`chromedp/cdproto`](https://github.com/chromedp/cdproto) — no Node.js, no
 Playwright. The manager is session-scoped: at most one browser process,
 launched lazily on the first call that needs it, sharing one isolated
 temp profile directory for the whole session. See

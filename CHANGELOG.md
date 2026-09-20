@@ -15,7 +15,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
   `browser_download`, `browser_console_logs`, `browser_network_requests`
   — drive a real, headless Chrome/Chromium instance over the Chrome
-  DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
+  DevTools Protocol via `chromedp/cdproto`, with no Node.js or Playwright
   dependency. A fresh, isolated temp profile per session (never your
 
   real, logged-in browser), headless by default, and not available to
@@ -54,7 +54,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `read_file`; the approval prompt shows the typed text, the uploaded files
   and the download source instead of only a selector or destination; Chrome
   launches with site isolation and an out-of-process network service again
-  (rod turns both off by default); rod's `/tmp` leakless helper is only run
+  (chromedp leaves both enabled by default); chromedp's `/tmp` leakless helper is only run
   if it is owned by you and not writable by others (it used a predictable
   path and no ownership check); and the download copy refuses to write
   through a symlink. Known limitations (prompt injection, internal-network
