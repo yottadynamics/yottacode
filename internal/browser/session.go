@@ -667,11 +667,28 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 		}
 	}
 	if text != "" {
-		var ok bool
-		if e := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text), &ok)); e != nil {
-			return classifySelectorErr(e)
-		} else if !ok {
-			return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
+		// Text can be updated asynchronously by the page after an action. Poll
+		// until the caller's wait deadline instead of evaluating only once.
+		deadline := time.NewTimer(d)
+		defer deadline.Stop()
+		for {
+			var ok bool
+			if e := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text), &ok)); e != nil {
+				return classifySelectorErr(e)
+			}
+			if ok {
+				break
+			}
+			poll := time.NewTimer(50 * time.Millisecond)
+			select {
+			case <-poll.C:
+			case <-deadline.C:
+				poll.Stop()
+				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
+			case <-c.Done():
+				poll.Stop()
+				return classifySelectorErr(c.Err())
+			}
 		}
 	}
 	return nil
