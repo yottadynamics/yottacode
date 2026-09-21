@@ -1484,11 +1484,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
-		// Toggle and re-arm. Unlike the spinner tick, the cursor
-		// blink runs perpetually — there's no "idle" state where we
-		// hide the input row, so the tick has work to do every
-		// cycle. The 530ms cadence keeps redraw churn low compared
-		// to the spinner's 100ms.
+		// Busy work keeps the cursor steady and dim so it remains an input
+		// affordance without adding blink churn to the live agent view.
+		if m.cursorBusy() {
+			m.cursorVisible = true
+			return m, cursorBlinkCmd()
+		}
 		m.cursorVisible = !m.cursorVisible
 		return m, cursorBlinkCmd()
 	}
@@ -3661,10 +3662,25 @@ func (m Model) renderInputRule() string {
 	return lipgloss.NewStyle().Foreground(colorDim).Render(strings.Repeat("─", w))
 }
 
+// cursorBusy reports whether the cmdline should use its steady busy treatment.
+// The predicate matches the activity that keeps the live work indicator running.
+func (m Model) cursorBusy() bool {
+	return m.turnActive || m.summarizing || m.hasRunningSubagents() || m.skillsBusy()
+}
+
+// renderEmptyCursorState renders the cursor with a steady dim treatment while
+// work is active, without changing the cursor cell's one-column layout.
+func renderEmptyCursorState(visible, busy bool) string {
+	if busy {
+		return styleBusyCursor.Render(" ")
+	}
+	return renderEmptyCursor(visible)
+}
+
 // renderEmptyCursor returns a single-cell cursor block for the empty
 // input row. When `visible` is true the cell is reverse-video so it
-// reads as a typical block cursor; when false a plain space holds the
-// position so the placeholder/hints don't shift across blink phases.
+// reads as a typical block cursor; when false a plain space holds
+// the position so the placeholder/hints don't shift across blink phases.
 func renderEmptyCursor(visible bool) string {
 	if !visible {
 		return " "
@@ -3840,7 +3856,7 @@ func (m Model) renderInputBody(contentW int) string {
 		// onboarding hints inlined on the same row. The cursor block
 		// is fixed at column 0 so the placeholder doesn't shift as
 		// the cursor toggles visible/invisible.
-		cur := renderEmptyCursor(m.cursorVisible)
+		cur := renderEmptyCursorState(m.cursorVisible, m.cursorBusy())
 		placeholder := "build anything…"
 		if m.cfg.PlanMode.IsActive() {
 			// Surface the mode in the placeholder too — even if the
@@ -3878,7 +3894,7 @@ func (m Model) renderInputBody(contentW int) string {
 		text := r.text
 		if (i + start) == cursorVisRow {
 			col := cursorLogicalCol - r.startChar
-			text = insertCursor(text, col, m.cursorVisible)
+			text = insertCursorState(text, col, m.cursorVisible, m.cursorBusy())
 		}
 		out = append(out, prefix+text)
 	}
@@ -3891,6 +3907,30 @@ func (m Model) renderInputBody(contentW int) string {
 // way (the trailing space is appended in both branches when col is past
 // the row's end), so the placeholder/content above doesn't shift on
 // each tick.
+// insertCursorState preserves the cursor cell while applying the steady dim
+// busy treatment. Normal idle rendering delegates to the existing blink helper.
+func insertCursorState(row string, col int, visible, busy bool) string {
+	if busy {
+		return insertCursorBusy(row, col)
+	}
+	return insertCursor(row, col, visible)
+}
+
+func insertCursorBusy(row string, col int) string {
+	rs := []rune(row)
+	if col < 0 {
+		col = 0
+	}
+	cur := styleBusyCursor.Render(" ")
+	if col >= len(rs) {
+		return row + cur
+	}
+	return string(rs[:col]) + cur + string(rs[col+1:])
+}
+
+// insertCursor returns row with a cursor block at rune index col. The
+// block is reverse-video when `visible` is true and a plain pass-through
+// when false.
 func insertCursor(row string, col int, visible bool) string {
 	rs := []rune(row)
 	atEnd := col >= len(rs)
