@@ -71,6 +71,7 @@ type trackedPage struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
 	openedAt time.Time
+	url      string
 	mu       syncutil.Mutex
 	console  []ConsoleEntry
 	network  []*NetworkEntry
@@ -123,6 +124,16 @@ func (p *trackedPage) networkSnapshot(n int) []NetworkEntry {
 		o[i] = *e
 	}
 	return o
+}
+func (p *trackedPage) setURL(u string) {
+	p.mu.Lock()
+	p.url = u
+	p.mu.Unlock()
+}
+func (p *trackedPage) getURL() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.url
 }
 
 type session struct {
@@ -209,6 +220,7 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 			}
 			ctx, cancel := chromedp.NewContext(bc, chromedp.WithTargetID(e.TargetInfo.TargetID))
 			p, created := s.trackPage(e.TargetInfo.TargetID, ctx)
+			p.setURL(e.TargetInfo.URL)
 			if created {
 				attachPageCapture(ctx, p)
 			} else {
@@ -422,12 +434,10 @@ func (s *session) snapshot() (string, int) {
 	if p == nil {
 		return "", 0
 	}
-	var u string
-	_ = chromedp.Run(p.ctx, chromedp.Location(&u))
 	s.mu.Lock()
 	n := len(s.pages)
 	s.mu.Unlock()
-	return u, n
+	return p.getURL(), n
 }
 func classifyErr(err, fallback error) error {
 	if err == nil {
@@ -489,6 +499,7 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 	if err := chromedp.Run(c, chromedp.Location(&url), chromedp.Title(&title)); err != nil {
 		return NavigateResult{}, err
 	}
+	p.setURL(url)
 	return NavigateResult{url, title}, nil
 }
 func (s *session) waitNetworkIdle(ctx context.Context, quiet time.Duration) error {
@@ -611,7 +622,14 @@ func (s *session) followNewPage(before int, ctx context.Context) {
 		if s.pageCount() > before {
 			s.mu.Lock()
 			s.active = len(s.pages) - 1
+			p := s.pages[s.active]
 			s.mu.Unlock()
+			refreshCtx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
+			var url string
+			if chromedp.Run(refreshCtx, chromedp.Location(&url)) == nil {
+				p.setURL(url)
+			}
+			cancel()
 			return
 		}
 		select {
