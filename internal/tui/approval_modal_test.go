@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// On a very wide terminal the approval modal caps at 120 columns
-// (per Phase 6) instead of stretching across the whole screen.
-// Asserted via the rendered top-border line width.
-func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
+// On a very wide terminal the approval modal stays compact instead of
+// stretching across the whole screen. Asserted via the rendered top-border
+// line width.
+func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 240
 	m.awaitingApproval = true
@@ -24,16 +24,14 @@ func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
 	got := renderApprovalModal(m)
 	first := strings.SplitN(got, "\n", 2)[0]
 	w := ansi.StringWidth(first)
-	if w > 124 {
-		t.Errorf("approval modal top border width = %d, expected ≤ 124 (120 + 2 corners + 2 outer chars)", w)
+	if w > approvalModalMaxInnerWidth+4 {
+		t.Errorf("approval modal top border width = %d, expected ≤ %d", w, approvalModalMaxInnerWidth+4)
 	}
 	if w < 30 {
 		t.Errorf("approval modal too narrow on a 240-col terminal: width=%d", w)
 	}
 }
 
-// Brackets-first hotkeys, command-only-bright, no permissions.local.json
-// inline detail. The toast carries that detail post-decision.
 func TestRenderApprovalModal_DoesNotDuplicateTitleInBody(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80

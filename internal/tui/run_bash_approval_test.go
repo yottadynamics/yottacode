@@ -116,7 +116,20 @@ func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
 	}
 }
 
-// Approval body collapses cwd inside command segments — `cd /abs/cwd`
+func TestRenderRunBashApproval_TruncatesUnicodeWithoutCorruption(t *testing.T) {
+	long := strings.Repeat("界", 200)
+	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !strings.Contains(body, "…") {
+		t.Fatalf("long segment should be truncated with ellipsis: %q", body)
+	}
+	if strings.Contains(body, "�") {
+		t.Fatalf("truncation must not split UTF-8 runes: %q", body)
+	}
+}
+
 // reads as `cd .` while everything else stays put.
 func TestRenderRunBashApproval_CollapsesCwd(t *testing.T) {
 	args := `{"command":"cd /home/me/proj && grep -r foo internal/"}`

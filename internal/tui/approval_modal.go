@@ -30,7 +30,13 @@ import (
 // prompt itself — after the user picks `[A]` we emit a toast
 // (`✓ Added Bash(go *) to permissions.local.json`) into scrollback.
 // Keeps the prompt focused on the immediate decision.
-const approvalModalMinInnerWidth = 64
+const (
+	approvalModalMinInnerWidth = 64
+	// Keep approval decisions compact on wide terminals. The preview can scroll
+	// vertically, so a wider card only wastes horizontal space and makes the
+	// hotkeys harder to scan.
+	approvalModalMaxInnerWidth = 96
+)
 
 func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	var h *pickerHits
@@ -297,7 +303,11 @@ func approvalHotkeyColumnWidths(rows []approvalHotkeyRow, capW int) (keyW, descW
 }
 
 func capApprovalBoxWidth(termWidth int) int {
-	return capLabeledBoxWidth(termWidth)
+	capW := capLabeledBoxWidth(termWidth)
+	if capW <= 0 {
+		return capW
+	}
+	return min(capW, approvalModalMaxInnerWidth)
 }
 
 func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {

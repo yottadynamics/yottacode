@@ -73,11 +73,17 @@ func renderRunBashApproval(argsJSON, cwd string) (body string, segments int, ok 
 	return b.String(), len(segs), true
 }
 
+// truncSegment keeps the visible command preview within its display budget
+// without splitting UTF-8 text in the middle of a rune.
 func truncSegment(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	if max <= 1 {
+		return "…"
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 // renderRiskInline returns a leading marker for a segment based on its
