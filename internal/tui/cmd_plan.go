@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -62,7 +63,35 @@ func loadPlanForApproval(state *agent.PlanModeState) (body string, denyReason st
 	if body == "" {
 		return "", "plan file is empty — the model called exit_plan_mode without writing content"
 	}
+	if planHasOpenQuestionsSection(body) {
+		return "", "plan file still has a non-empty \"Open questions\" section — material questions belong in ask_user_question, not left for the user to spot in the approval card"
+	}
 	return body, ""
+}
+
+// openQuestionsHeading matches a markdown "Open questions" heading at
+// any level (##, ###, …), case-insensitive. Capturing the heading's
+// end lets planHasOpenQuestionsSection scan only the body that
+// follows it, up to the next heading of any level or end of file.
+var openQuestionsHeading = regexp.MustCompile(`(?im)^#{1,6}[ \t]+open questions[ \t]*$`)
+
+var anyHeading = regexp.MustCompile(`(?m)^#{1,6}[ \t]+`)
+
+// planHasOpenQuestionsSection reports whether body contains a
+// non-empty "Open questions" section. An empty heading (nothing but
+// blank lines before the next heading or EOF) passes — that's the
+// "N/A, nothing left" shape the model should leave behind once every
+// material question has gone through ask_user_question instead.
+func planHasOpenQuestionsSection(body string) bool {
+	loc := openQuestionsHeading.FindStringIndex(body)
+	if loc == nil {
+		return false
+	}
+	rest := body[loc[1]:]
+	if next := anyHeading.FindStringIndex(rest); next != nil {
+		rest = rest[:next[0]]
+	}
+	return strings.TrimSpace(rest) != ""
 }
 
 // cmdPlan is the slash-command handler for /plan. Two shapes:

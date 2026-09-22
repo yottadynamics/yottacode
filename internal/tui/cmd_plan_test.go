@@ -487,6 +487,88 @@ func TestExitPlanModeApprovalCard_AutoDeniesWhenFileMissing(t *testing.T) {
 	}
 }
 
+func TestExitPlanModeApprovalCard_AutoDeniesOnNonEmptyOpenQuestions(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m, _ = cmdPlan(m, nil)
+	maybeFillPlanFile(&m, "investigate")
+	if err := os.MkdirAll(filepath.Dir(planMode.PlanFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "# Plan\n\nDo the thing.\n\n## Open questions\n\nShould we use RFC3339 or unix seconds?\n"
+	if err := os.WriteFile(planMode.PlanFile, []byte(body), 0o644); err != nil {
+		t.Fatalf("write plan file: %v", err)
+	}
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{
+		ToolName: "exit_plan_mode",
+		ArgsJSON: `{}`,
+	})
+	if m.awaitingApproval {
+		t.Errorf("a non-empty Open questions section should auto-deny rather than open the modal")
+	}
+	select {
+	case d := <-m.decisions:
+		if d != agent.Deny {
+			t.Errorf("expected Deny with a non-empty Open questions section; got %v", d)
+		}
+	default:
+		t.Errorf("no decision sent for a plan with open questions")
+	}
+	out := stripANSI(m.transcript.String())
+	if !strings.Contains(out, "Open questions") {
+		t.Errorf("expected the refusal notice to mention the Open questions section; got %q", out)
+	}
+}
+
+func TestExitPlanModeApprovalCard_AllowsEmptyOpenQuestionsHeading(t *testing.T) {
+	m, planMode := newPlanModeTestModel(t)
+	m, _ = cmdPlan(m, nil)
+	maybeFillPlanFile(&m, "investigate")
+	if err := os.MkdirAll(filepath.Dir(planMode.PlanFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A heading left in place with nothing under it (the "N/A" shape)
+	// must NOT block — only a heading with real content underneath does.
+	body := "# Plan\n\nDo the thing.\n\n## Open questions\n\n## Verification\n\nRun the tests.\n"
+	if err := os.WriteFile(planMode.PlanFile, []byte(body), 0o644); err != nil {
+		t.Fatalf("write plan file: %v", err)
+	}
+	m.eventsCh = make(chan agent.Event, 4)
+	m.decisions = make(chan agent.Decision, 1)
+	m.turnErrCh = make(chan error, 1)
+	m, _ = m.handleAgentEventTea(agent.ApprovalNeeded{
+		ToolName: "exit_plan_mode",
+		ArgsJSON: `{}`,
+	})
+	if !m.awaitingApproval {
+		t.Errorf("an empty Open questions heading should not block exit_plan_mode")
+	}
+}
+
+func TestPlanHasOpenQuestionsSection(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"no heading at all", "# Plan\n\nDo the thing.", false},
+		{"empty heading, next heading follows", "## Open questions\n\n## Verification\nrun tests", false},
+		{"empty heading at EOF", "## Open questions\n\n", false},
+		{"non-empty heading", "## Open questions\n\nWhich format?", true},
+		{"case-insensitive, deeper heading", "### open QUESTIONS\nStill unclear about X.", true},
+		{"whitespace-only body counts as empty", "## Open questions\n   \n\t\n## Steps\n1. do it", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := planHasOpenQuestionsSection(tc.body); got != tc.want {
+				t.Errorf("planHasOpenQuestionsSection(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
 // handleAgentEventTea is a tiny wrapper that lets the test drive
 // handleAgentEvent without going through the full waitForEvent
 // machinery — the tests only care about state transitions, not the

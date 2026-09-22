@@ -328,6 +328,65 @@ func TestOneshot_JSONStatusClassifiesApprovalRequired(t *testing.T) {
 	}
 }
 
+func TestOneshot_AskUserQuestion_FailsClosedWithoutRecommendedDefault(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{
+			ID:   "c1",
+			Name: agent.AskUserQuestionToolName,
+			ArgsJSON: `{"questions":[{"header":"Auth","question":"How should we authenticate?","options":[
+				{"label":"OAuth"},{"label":"API key"}
+			]}]}`,
+		})},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&agent.AskUserQuestionTool{})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	var stdout, stderr bytes.Buffer
+	err := stream(context.Background(), cfg, &hist, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected an error when no question has a recommended default")
+	}
+	if !strings.Contains(stderr.String(), "recommended:true") && !strings.Contains(stderr.String(), "needs a human answer") {
+		t.Errorf("stderr should explain the fail-closed reason; got %q", stderr.String())
+	}
+}
+
+func TestOneshot_AskUserQuestion_AutoAnswersRecommendedDefaults(t *testing.T) {
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{
+			ID:   "c1",
+			Name: agent.AskUserQuestionToolName,
+			ArgsJSON: `{"questions":[{"header":"Auth","question":"How should we authenticate?","options":[
+				{"label":"OAuth"},{"label":"API key","recommended":true}
+			]}]}`,
+		})},
+		{sseToken("done"), sseDone("done")},
+	}}
+	reg := agent.NewRegistry()
+	reg.Register(&agent.AskUserQuestionTool{})
+	cfg := agent.LoopConfig{Adapter: streamer, Registry: reg, MaxIterations: 3}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	var stdout, stderr bytes.Buffer
+	if err := stream(context.Background(), cfg, &hist, &stdout, &stderr); err != nil {
+		t.Fatalf("stream: %v (stderr=%q)", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "API key") {
+		t.Errorf("stderr should note the auto-answered default; got %q", stderr.String())
+	}
+	var toolResult string
+	for _, m := range hist {
+		if m.Role == adapter.RoleTool {
+			toolResult = m.Content
+		}
+	}
+	if !strings.Contains(toolResult, "API key") {
+		t.Errorf("model's tool result should carry the auto-answered default; got %q", toolResult)
+	}
+}
+
 func TestOneshot_JSONStatusReportsChangedFilesAndTools(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("", adapter.ToolCall{ID: "c1", Name: "list_git_changed_files", ArgsJSON: `{}`})},

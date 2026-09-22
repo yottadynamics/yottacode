@@ -11,7 +11,7 @@ import (
 // modal flags here are deliberately kept OUT of anyOverlayOpen itself because
 // that helper has callers/tests with a narrower overlay meaning.
 func (m Model) popupOpen() bool {
-	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
+	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.awaitingQuestion || m.loopExitConfirmOpen
 }
 
 // interactiveMouseOpen is intentionally false: yottacode no longer enables
@@ -931,7 +931,7 @@ func (m Model) inlinePaletteTop() int {
 // the same hit regions as click handling, but only moves cursors; it never
 // synthesizes Enter or commits an action.
 func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
-	if m.awaitingPathTrust || m.awaitingApproval {
+	if m.awaitingPathTrust || m.awaitingApproval || m.awaitingQuestion {
 		return m
 	}
 	if m.loopExitConfirmOpen {
