@@ -716,18 +716,28 @@ func (s *session) tabs(ctx context.Context) []TabInfo {
 	p := append([]*trackedPage(nil), s.pages...)
 	a := s.active
 	s.mu.Unlock()
+
+	// Read tab metadata from the browser-level target registry. Querying each
+	// page target can block forever when Chrome has created a popup target but
+	// has not finished attaching its renderer, which makes browser_tabs hang.
+	lookupCtx, cancel := context.WithTimeout(s.browserCtx, 2*time.Second)
+	defer cancel()
+	infos, _ := target.GetTargets().Do(cdp.WithExecutor(lookupCtx, s.browser))
+	byID := make(map[target.ID]*target.Info, len(infos))
+	for _, info := range infos {
+		if info != nil {
+			byID[info.TargetID] = info
+		}
+	}
+
 	o := make([]TabInfo, len(p))
 	for i, x := range p {
-		// A target can disappear or stop servicing CDP commands while the
-		// browser is still shutting it down. Bound each metadata lookup so a
-		// stale popup cannot hang browser_tabs indefinitely.
-		lookupCtx, cancel := context.WithTimeout(x.ctx, 2*time.Second)
-		var u, t string
-		if err := chromedp.Run(lookupCtx, chromedp.Location(&u), chromedp.Title(&t)); err == nil {
-			x.setURL(u)
+		var title, url string
+		if info := byID[x.id]; info != nil {
+			title, url = info.Title, info.URL
+			x.setURL(url)
 		}
-		cancel()
-		o[i] = TabInfo{i, string(x.id), t, u, i == a}
+		o[i] = TabInfo{i, string(x.id), title, url, i == a}
 	}
 	return o
 }
