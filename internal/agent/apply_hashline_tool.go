@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
@@ -24,17 +24,17 @@ type ApplyHashlineTool struct {
 func (t *ApplyHashlineTool) Name() string { return "apply_hashline" }
 
 func (t *ApplyHashlineTool) Description() string {
-	return "Apply hash-anchored text edits to one file. Provide path and hunks with offset, length, hash, old, and new; hash is sha256 of the exact old span truncated to 16 hex characters. Mutating application requires approval, validates the write path, and rejects stale or ambiguous anchors with a re-read range instead of guessing."
+	return "Apply hash-anchored text edits to one file. Provide path and hunks with offset, length, hash, old, and new. Copy offset, length and hash from a `# hashline` receipt (read_file or read_many_files with anchors=true) and set old to the exact text of that span; length must be old's byte length, and old must end with a newline exactly when the receipt says ends_with_newline=true. A syntax_range receipt carries old verbatim; copy it as is. new is the replacement, possibly empty. To insert, anchor on adjacent text: set old to a neighbouring line and new to that line plus the addition (an empty old is rejected). In files that use CRLF line endings, old and new may use plain newlines; they are matched to the file. Mutating application requires approval, validates the write path, and rejects stale or ambiguous anchors with a re-read range instead of guessing."
 }
 
 func (t *ApplyHashlineTool) Schema() map[string]any {
 	anchorProps := map[string]any{
-		"offset": map[string]any{"type": "integer", "description": "Byte offset recorded when the span was read"},
-		"length": map[string]any{"type": "integer", "description": "Byte length of the old span"},
-		"hash":   map[string]any{"type": "string", "description": "sha256(old span) truncated to 16 lowercase hex characters"},
-		"old":    map[string]any{"type": "string", "description": "Exact old text that must hash to hash"},
+		"offset": map[string]any{"type": "integer", "description": "Byte offset from the receipt"},
+		"length": map[string]any{"type": "integer", "description": "Byte length from the receipt; must equal the byte length of old"},
+		"hash":   map[string]any{"type": "string", "description": "16 lowercase hex characters copied from the receipt; do not compute it"},
+		"old":    map[string]any{"type": "string", "description": "Exact text of the receipt's span, including the final newline when ends_with_newline=true; non-empty"},
 		"new":    map[string]any{"type": "string", "description": "Replacement text, possibly empty"},
-		"op":     map[string]any{"type": "string", "description": "Optional documentation label such as replace/insert/delete; validation is determined by old/new/length"},
+		"op":     map[string]any{"type": "string", "description": "Optional documentation label such as replace/delete; an insert is a replace of adjacent text. Validation is determined by old/new/length"},
 	}
 	return map[string]any{
 		"type": "object",
@@ -97,11 +97,11 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("apply_hashline: %w", err)
 	}
-	oldBytes, err := os.ReadFile(p)
+	oldBytes, err := hashline.ReadFileForEdit(p)
 	if err != nil {
-		return "", fmt.Errorf("apply_hashline: %w", err)
+		return "", formatHashlineApplyError(err)
 	}
-	out, err := hashline.Apply(oldBytes, parsed)
+	out, err := hashline.Apply(oldBytes, alignHunkEOL(oldBytes, parsed))
 	if err != nil {
 		return "", formatHashlineApplyError(err)
 	}
@@ -117,6 +117,64 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 		msg += note
 	}
 	return msg, nil
+}
+
+// alignHunkEOL reconciles line endings between what the model sent and a CRLF
+// file. A model reading CRLF text emits plain newlines (it cannot reliably
+// reproduce invisible carriage returns), while the receipt hashes the real
+// bytes. The hashline library stays byte-exact; this adapts the hunks first:
+//
+//   - old is used exactly as sent when it already matches its hash. Only when
+//     it does not, and its CRLF form does, is the CRLF form used, so a genuine
+//     mismatch is never masked.
+//   - new is converted to CRLF when old was CRLF-only or had no newline at all,
+//     so an edit cannot leave the file with mixed endings. If old itself was
+//     mixed, the model is managing endings and new is left untouched.
+//
+// LF files are never touched: converting toward CRLF only, and only in files
+// that are predominantly CRLF, avoids guessing at intent elsewhere.
+func alignHunkEOL(src []byte, hunks []hashline.Hunk) []hashline.Hunk {
+	crlf := bytes.Count(src, []byte("\r\n"))
+	if crlf <= bytes.Count(src, []byte("\n"))-crlf {
+		return hunks
+	}
+	out := make([]hashline.Hunk, len(hunks))
+	for i, h := range hunks {
+		out[i] = h
+		converted := false
+		if spanHash(h.Old) != h.Anchor.Hash {
+			if cand := toCRLF(h.Old); spanHash(cand) == h.Anchor.Hash {
+				out[i].Old, converted = cand, true
+			}
+		}
+		if converted || !hasBareLF(out[i].Old) {
+			out[i].New = toCRLF(h.New)
+		}
+	}
+	return out
+}
+
+func spanHash(b []byte) string {
+	a, err := hashline.HashSpan(b, 0, len(b))
+	if err != nil {
+		return ""
+	}
+	return a.Hash
+}
+
+// toCRLF converts every line ending to CRLF; it is idempotent.
+func toCRLF(b []byte) []byte {
+	return bytes.ReplaceAll(bytes.ReplaceAll(b, []byte("\r\n"), []byte("\n")), []byte("\n"), []byte("\r\n"))
+}
+
+// hasBareLF reports whether b contains a newline not preceded by a carriage return.
+func hasBareLF(b []byte) bool {
+	for i, c := range b {
+		if c == '\n' && (i == 0 || b[i-1] != '\r') {
+			return true
+		}
+	}
+	return false
 }
 
 type applyHashlineArgs struct {
@@ -190,6 +248,8 @@ func formatHashlineApplyError(err error) error {
 		return fmt.Errorf("apply_hashline: %w; use exactly %d lowercase hexadecimal characters from a fresh hashline receipt", applyErr, hashline.HashHexLength)
 	case hashline.ErrConcurrentWrite:
 		return fmt.Errorf("apply_hashline: %w; the file changed while the edit was being prepared — re-read it and retry", applyErr)
+	case hashline.ErrFileTooLarge:
+		return fmt.Errorf("apply_hashline: %w; use run_bash with sed/awk for a targeted change, or split it into a smaller edit", applyErr)
 	}
 	return fmt.Errorf("apply_hashline: %w", applyErr)
 }
