@@ -576,9 +576,12 @@ func (s *PodmanSandbox) Close() error {
 	for i, n := range s.secretNames {
 		mounts[i] = secretMount{SecretName: n}
 	}
+	containerErr := removeContainer(context.Background(), s.name)
+	// Podman refuses to remove a secret while the container still references
+	// it, so container teardown must precede secret cleanup.
 	removeSecrets(context.Background(), mounts)
-	if err := removeContainer(context.Background(), s.name); err != nil {
-		return fmt.Errorf("sandbox: %w", err)
+	if containerErr != nil {
+		return fmt.Errorf("sandbox: %w", containerErr)
 	}
 	return nil
 }

@@ -254,7 +254,9 @@ func PruneOrphanedSecrets(ctx context.Context) error {
 		return fmt.Errorf("sandbox: parse podman secret inspect output: %w", err)
 	}
 	for _, name := range selectPruneSecretTargets(entries, time.Now()) {
-		_ = podmanSecretRM(context.Background(), name)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), secretOpTimeout)
+		_ = podmanSecretRM(cleanupCtx, name)
+		cleanupCancel()
 	}
 	return nil
 }

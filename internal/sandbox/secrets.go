@@ -49,21 +49,14 @@ var podmanSecretCreate = func(ctx context.Context, name, value string, labels []
 }
 
 // createSessionSecrets resolves each name in envNames from yottacode's own
-// process environment (already populated from ~/.yottacode/.env /
-// <repo>/.yottacode/.env by the time a session builds its sandbox — see
-// internal/cli's loadDotEnvFiles) and creates one podman secret per
-// non-empty value, named containerName+"-secret-"+name so secrets stay
-// grouped with, and as unique as, the container they belong to.
-//
-// A name with no value set anywhere is skipped entirely — no secret, no
-// mount — matching the old bare `-e NAME` behavior where an unset var just
-// stayed unset inside the container rather than erroring. envNames is
-// assumed already validated (see config.validEnvVarName): this is the one
-// place a name gets interpolated into a value an attacker doesn't control
-// (the podman secret name), so a defensive re-check here would be
-// redundant, not additional safety — the actual injection-sensitive use is
-// Command's shell interpolation of EnvName, guarded by
-// secretExportPrelude's own check instead.
+// process environment. Names that are unset are skipped; an explicitly set
+// empty value is preserved as an empty secret so presence semantics match the
+// previous bare `-e NAME` behavior. envNames is assumed already validated
+// (see config.validEnvVarName): this is the one place a name gets
+// interpolated into a value an attacker doesn't control (the podman secret
+// name), so a defensive re-check here would be redundant, not additional
+// safety — the actual injection-sensitive use is Command's shell
+// interpolation of EnvName, guarded by secretExportPrelude's own check.
 //
 // A creation failure partway through is fatal: unlike hostCapabilities'
 // resource limits, a credential the user explicitly configured is not
@@ -73,18 +66,16 @@ func createSessionSecrets(ctx context.Context, containerName string, envNames []
 	labels := ownerLabels(owner)
 	var mounts []secretMount
 	for _, name := range envNames {
-		value := os.Getenv(name)
-		if value == "" {
+		value, ok := os.LookupEnv(name)
+		if !ok {
 			continue
 		}
 		secretName := containerName + "-secret-" + name
-		// Best-effort leftover sweep, not a correctness dependency: a
-		// secret from a crashed prior run under this same deterministic
-		// name would otherwise block create outright. Real podman 4.9.3
-		// verified: `secret create --replace` is not a safe substitute —
-		// it fails with "deleting secret: no secret data with ID" when
-		// NAME does NOT already exist, i.e. exactly the common case here.
-		_ = podmanSecretRM(context.Background(), secretName)
+		// Bound the best-effort replacement sweep: a stuck Podman
+		// operation must not block sandbox startup indefinitely.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), secretOpTimeout)
+		_ = podmanSecretRM(cleanupCtx, secretName)
+		cancel()
 		if err := podmanSecretCreate(ctx, secretName, value, labels); err != nil {
 			removeSecrets(context.Background(), mounts)
 			return nil, fmt.Errorf("sandbox: %w", err)

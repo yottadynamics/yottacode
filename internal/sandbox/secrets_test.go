@@ -3,12 +3,14 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestCreateSessionSecrets_SkipsUnsetNames(t *testing.T) {
-	t.Setenv("YC_TEST_UNSET_VAR_XYZ", "")
+	t.Setenv("YC_TEST_UNSET_VAR_XYZ", "present")
+	os.Unsetenv("YC_TEST_UNSET_VAR_XYZ")
 
 	origCreate := podmanSecretCreate
 	defer func() { podmanSecretCreate = origCreate }()
@@ -23,6 +25,31 @@ func TestCreateSessionSecrets_SkipsUnsetNames(t *testing.T) {
 	}
 	if len(mounts) != 0 {
 		t.Fatalf("mounts = %v, want empty for an unset env var", mounts)
+	}
+}
+
+func TestCreateSessionSecrets_PreservesEmptyValue(t *testing.T) {
+	t.Setenv("YC_TEST_EMPTY_VAR_XYZ", "")
+
+	origRM := podmanSecretRM
+	origCreate := podmanSecretCreate
+	defer func() {
+		podmanSecretRM = origRM
+		podmanSecretCreate = origCreate
+	}()
+	podmanSecretRM = func(context.Context, string) error { return nil }
+	var gotValue string
+	podmanSecretCreate = func(_ context.Context, _ string, value string, _ []string) error {
+		gotValue = value
+		return nil
+	}
+
+	mounts, err := createSessionSecrets(context.Background(), "yc-test", []string{"YC_TEST_EMPTY_VAR_XYZ"}, sandboxOwner{PID: 1})
+	if err != nil {
+		t.Fatalf("createSessionSecrets: %v", err)
+	}
+	if len(mounts) != 1 || gotValue != "" {
+		t.Fatalf("mounts = %+v, created value = %q, want one empty-valued secret", mounts, gotValue)
 	}
 }
 
