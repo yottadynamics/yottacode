@@ -51,7 +51,9 @@ package permissions
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+
 	"errors"
 	"fmt"
 	"os"
@@ -63,6 +65,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // skeleton is the canonical empty permissions file: the full
@@ -165,13 +168,20 @@ func Load(cwd string) (*Permissions, error) {
 }
 
 // LoadWithSystemPath loads permissions using an explicit system-policy path.
+// Persistent project permissions are stored at the main repository root when
+// cwd is inside a git worktree. Rule evaluation still uses cwd so path rules
+// remain relative to the active worktree.
 // An empty systemPath disables the system source, which is useful for isolated
 // callers and tests that must not depend on the host administrator policy.
 func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	if cwd == "" {
 		return nil, errors.New("permissions: cwd is required")
 	}
-	dir := filepath.Join(cwd, ".yottacode")
+	storageRoot := cwd
+	if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
+		storageRoot = repoRoot
+	}
+	dir := filepath.Join(storageRoot, ".yottacode")
 	p := &Permissions{
 		cwd:        cwd,
 		systemPath: systemPath,
