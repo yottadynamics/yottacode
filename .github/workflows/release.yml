@@ -26,6 +26,20 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
+      - name: Require Homebrew tap token on stable tags
+        # goreleaser publishes the GitHub Release before it pushes the tap
+        # formula, so a missing token would leave a live release with no brew
+        # update. Fail here instead. Pre-release tags skip the tap entirely and
+        # do not need this token.
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set; it must have contents:write on yottadynamics/homebrew-yottacode"
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -34,3 +48,22 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Homebrew formula
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -eu
+          tap_dir="$RUNNER_TEMP/homebrew-yottacode"
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/yottadynamics/homebrew-yottacode.git" "$tap_dir"
+          bash .github/scripts/generate-homebrew-formula.sh "${GITHUB_REF_NAME#v}" dist/SHA256SUMS "$tap_dir/Formula/yottacode.rb"
+          git -C "$tap_dir" config user.name YottaDynamics
+          git -C "$tap_dir" config user.email hello@yottadynamics.com
+          git -C "$tap_dir" add Formula/yottacode.rb
+          if git -C "$tap_dir" diff --cached --quiet; then
+            echo "Homebrew formula is already current"
+          else
+            git -C "$tap_dir" commit -m "yottacode ${GITHUB_REF_NAME}"
+            git -C "$tap_dir" push origin main
+          fi
