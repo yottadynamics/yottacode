@@ -216,15 +216,14 @@ The `Agent` tool accepts `run_in_background: true`:
   long-running session to host the task; retry without the flag to run it in
   foreground. Use background when the parent can keep working without the answer.
 
-  Background subagents stream the **same live progress card** as
-  foreground ones — a start header followed by `├` activity ticks —
-  for as long as the spawning turn stays active (the spawn-then-wait
-  case, e.g. spawn several background subagents and then collect them
-  in the same turn). The forward is best-effort: once the spawning
-  turn ends, interim ticks are dropped (a later turn never inherits a
-  stale child's ticks) and the live view falls back to the bottom
-  dock, which tracks every running subagent from the task registry.
-  Approvals are still auto-denied for background subagents regardless —
+  Foreground and background subagents share the same live activity surface: a
+  start header is written once, while subsequent activity updates the pinned
+  subagent dock in place. This keeps concurrent foreground work visible without
+  turning the main conversation into a scrolling activity log. Select a row with
+  `Tab` and press `Enter` to inspect the full child transcript. Background
+  progress forwarding is best-effort while the spawning turn is active; after
+  that, the dock continues tracking every running subagent from the task
+  registry. Approvals are still auto-denied for background subagents regardless —
   nobody is watching to answer a modal.
 
   Background subagents are **generally available** in the
