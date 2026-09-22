@@ -6349,11 +6349,12 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine("")
 		m.appendLine(renderSubagentStart(e))
 	case agent.SubagentProgress:
+		// Progress is live state, not transcript history. The pinned subagent
+		// dock reads the registry's latest activity and redraws in place; adding
+		// every tick here turns concurrent foreground work into an unbounded
+		// scrollback log and hides the other agents. Detailed activity remains
+		// available in the child's transcript via Tab/Enter or /subagents.
 		m.flushPendingGroupedTools()
-		// One-line tick. Multiple of these will land in quick
-		// succession while a child works through its tool budget; let
-		// scrollback collect them rather than overwriting.
-		m.appendLine(renderSubagentProgress(e))
 	case agent.SubagentDone:
 		m.flushPendingGroupedTools()
 		m.appendLine(renderSubagentDone(e))

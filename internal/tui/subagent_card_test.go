@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/subagents"
 )
 
 // TestAppendDispatchWakeMetadata_ErroredCommittedWorkerNotRecommendedForIntegrate
@@ -54,6 +55,33 @@ func TestAppendDispatchWakeMetadata_CleanCommittedWorkerStillRecommended(t *test
 
 	if !strings.Contains(out, "Next: when every worker") {
 		t.Errorf("a clean committed worker should still be recommended for integrate:\n%s", out)
+	}
+}
+
+// TestHandleAgentEvent_SubagentProgressStaysOutOfScrollback pins the live-progress
+// contract: activity belongs in the dock and child transcript, not one permanent
+// row per event in the parent conversation.
+func TestHandleAgentEvent_SubagentProgressStaysOutOfScrollback(t *testing.T) {
+	m := Model{}
+	m.transcriptRows = []string{"before"}
+	m.transcript = new(strings.Builder)
+
+	got, _ := m.handleAgentEvent(agent.SubagentProgress{
+		TaskID:    "task1234",
+		AgentType: "review",
+		Activity:  "read_file(internal/tui/model.go)",
+	})
+	updated := got.(Model)
+	if len(updated.transcriptRows) != 1 || updated.transcriptRows[0] != "before" {
+		t.Fatalf("progress should not append transcript rows: %#v", updated.transcriptRows)
+	}
+	dock := renderSubagentDock([]subagents.Task{{
+		AgentType:  "review",
+		Status:     subagents.TaskRunning,
+		Activities: []string{"read_file(internal/tui/model.go)"},
+	}}, 100, "test-model", false, 0)
+	if !strings.Contains(dock, "read_file(internal/tui/model.go)") {
+		t.Fatalf("dock should show latest foreground activity, got:\n%s", dock)
 	}
 }
 
