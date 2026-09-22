@@ -718,8 +718,15 @@ func (s *session) tabs(ctx context.Context) []TabInfo {
 	s.mu.Unlock()
 	o := make([]TabInfo, len(p))
 	for i, x := range p {
+		// A target can disappear or stop servicing CDP commands while the
+		// browser is still shutting it down. Bound each metadata lookup so a
+		// stale popup cannot hang browser_tabs indefinitely.
+		lookupCtx, cancel := context.WithTimeout(x.ctx, 2*time.Second)
 		var u, t string
-		_ = chromedp.Run(x.ctx, chromedp.Location(&u), chromedp.Title(&t))
+		if err := chromedp.Run(lookupCtx, chromedp.Location(&u), chromedp.Title(&t)); err == nil {
+			x.setURL(u)
+		}
+		cancel()
 		o[i] = TabInfo{i, string(x.id), t, u, i == a}
 	}
 	return o
