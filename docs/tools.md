@@ -112,6 +112,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
 | [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
+| [`ask_user_question`](#ask_user_question) | none | Ask 1-4 structured multiple-choice questions and get back a machine-checkable answer |
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 | [`dispatch`](#dispatch) | none | Experimental behind `dispatch`; fan multiple independent subtasks out to concurrent subagents |
 | [`integrate`](#integrate) | none | Experimental behind `dispatch`; merge dispatch worker branches into one PR-ready integration branch |
@@ -2120,6 +2121,47 @@ tools auto-allow as usual; writes to the plan file auto-allow too (no per-edit
 prompt — the plan file is the model's only legitimate mutation surface during
 planning). See [tui-slash-commands.md#plan-mode](tui-slash-commands.md#plan-mode)
 for the full plan-mode flow.
+
+## ask_user_question
+
+Ask the user 1-4 structured multiple-choice questions and get back a
+machine-checkable answer, instead of ending the turn with a prose question the
+model can't branch on. Mirrors Claude Code's `AskUserQuestion` schema: each
+question has a short `header` (<=12 chars, shown as a tab when a call carries
+more than one question), the full `question` text, 2-4 `options` (each with a
+`label` and an optional `description`), and an optional `multi_select` flag. At
+most one option per question should set `recommended:true` — the safe default
+	a non-interactive session auto-picks, and the option the interactive picker
+	pre-selects. An automatic free-text "Other" choice is always available in
+	addition to the listed options; for `multi_select:true`, it can be combined
+	with listed choices and the result contains both `options` and `other`. Headers
+	must be unique, and text length limits are rejected rather than truncated.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `questions` | array (1-4) | required | Each: `header`, `question`, `options` (2-4), optional `multi_select` |
+| `questions[].options[].recommended` | bool | `false` | At most one per question; ambiguous (0 or 2+) is treated as "no default" |
+
+Renders as a picker overlay (same `renderMenuHeader`/`renderMenuItem`/tab-strip
+chrome as `/model`) with one tab per question plus a trailing `Submit` tab that
+only activates once every question has an answer — nothing is sent back to the
+model until Submit is confirmed, so revisiting and changing an earlier answer
+before submitting is always safe. `Esc` at any point cancels the whole set, not
+just the current question.
+
+`RequiresApproval` is always `false` — this tool never mutates anything, so
+`--yolo`/auto mode never block the interactive exchange (there's no approval
+step to skip). In `/plan` mode it's unavailable until the plan file has real
+content (investigate and draft first, ask what's still genuinely ambiguous
+last); the final plan additionally can't carry a non-empty "Open questions"
+heading — `exit_plan_mode` refuses while one is present.
+
+Not available to subagents or dispatch workers (no human to answer). In
+non-interactive `yottacode run`, it auto-answers from each question's
+`recommended:true` default when every question has exactly one; otherwise it
+fails the call closed with an actionable stderr message. Over ACP it always
+fails closed today — `session/request_permission` has no way to express
+multi-select or free text.
 
 ## Agent
 

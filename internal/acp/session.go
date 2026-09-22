@@ -248,6 +248,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			case decisions <- d:
 			default:
 			}
+		case agent.QuestionNeeded:
+			d := requestUserQuestion(e)
+			select {
+			case decisions <- d:
+			default:
+			}
 		default:
 			_ = emitUpdate(ctx, conn, s.id, tracker, ev)
 			// The model can flip Plan mode itself mid-turn by calling

@@ -552,6 +552,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(&agent.TodoWriteTool{Store: planStore})
 	reg.Register(&agent.ExitPlanModeTool{})
 	reg.Register(&agent.EnterPlanModeTool{State: planMode})
+	reg.Register(&agent.AskUserQuestionTool{})
 	reg.Register(&agent.LoopControlTool{State: loopControl})
 
 	validSubagentTools := reg.Names()

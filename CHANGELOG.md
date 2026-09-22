@@ -8,6 +8,20 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`ask_user_question` tool.** Ask 1-4 structured multiple-choice
+  questions and get back a machine-checkable answer instead of ending the
+  turn with a prose question. Mirrors Claude Code's `AskUserQuestion`
+  schema (header/question/options with an optional `recommended` default
+  and `multi_select`), renders as a tab-strip picker matching `/model`'s
+  chrome with a trailing `Submit` tab that only activates once every
+  question is answered, and never needs approval (yolo/auto-mode can't
+  skip it — it's not a mutation). Unavailable in `/plan` mode until the
+  plan file has real content, and `exit_plan_mode` now refuses a plan
+  with a non-empty "Open questions" section. Not available to subagents
+  or dispatch workers; `yottacode run` auto-answers from each question's
+  `recommended` default when every question has exactly one, otherwise
+  fails closed; ACP fails closed for now (no protocol primitive for
+  multi-select/free-text). See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
 - **`browser_*` tools (experimental).** Eighteen agent tools —
   `browser_status`, `browser_navigate`, `browser_screenshot`,
   `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,

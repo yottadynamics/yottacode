@@ -325,12 +325,54 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 			}
 		}
 		return planModeBlockMessage(name, planFile), true
+	case AskUserQuestionToolName:
+		// Explicit case ahead of default: ask_user_question's
+		// RequiresApproval is always false, so without this it would
+		// fall into the read-only carve-out below and be allowed
+		// unconditionally — including as the model's very first move,
+		// the exact "what should I plan for?" failure mode this gate
+		// exists to prevent. Investigate and draft first; ask what's
+		// still ambiguous last.
+		if planFileHasContent(planFile) {
+			return "", false
+		}
+		return fmt.Sprintf(
+			"error: ask_user_question is unavailable until you've investigated and written a real plan to %s — draft the plan first, then ask about whatever is still genuinely ambiguous before exit_plan_mode",
+			planFileOrPlaceholder(planFile),
+		), true
 	default:
 		if !tool.RequiresApproval(argsJSON) {
 			return "", false
 		}
 	}
 	return planModeBlockMessage(name, planFile), true
+}
+
+// planFileHasContent reports whether planFile exists and has
+// non-whitespace content — the same emptiness test
+// readPlanFileForAddendum uses for the system-prompt view of the
+// file, reused here so the two never disagree about what counts as
+// "drafted."
+func planFileHasContent(planFile string) bool {
+	if planFile == "" {
+		return false
+	}
+	body, err := os.ReadFile(planFile)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(body)) != ""
+}
+
+// planFileOrPlaceholder avoids printing an empty path in the block
+// message on the rare call where planFile itself is "" (plan mode
+// active but the file hasn't been resolved yet — see PlanModeState's
+// doc comment).
+func planFileOrPlaceholder(planFile string) string {
+	if planFile == "" {
+		return "your plan file (not resolved yet — your next user message will name one)"
+	}
+	return planFile
 }
 
 func planModeBlockMessage(name, planFile string) string {
