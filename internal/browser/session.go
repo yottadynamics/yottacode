@@ -206,6 +206,17 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 	}
 	id := chromedp.FromContext(pc).Target.TargetID
+	// The initial target is created outside a browser event callback. Enable
+	// its domains synchronously so callers such as handoff do not race the
+	// background setup goroutine when they immediately act on the page.
+	readyCtx, readyCancel := context.WithTimeout(pc, 5*time.Second)
+	if err := chromedp.Run(readyCtx, runtime.Enable(), network.Enable(), page.Enable()); err != nil {
+		readyCancel()
+		cancel()
+		pcancel()
+		return nil, fmt.Errorf("%w: page readiness setup failed: %v", ErrLaunchFailed, err)
+	}
+	readyCancel()
 	tp := s.track(id, pc, pcancel)
 	attachPageCapture(pc, tp)
 	chromedp.ListenBrowser(bc, func(ev any) {
