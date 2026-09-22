@@ -592,13 +592,13 @@ func TestLoadWithSystemPath_WorktreeUsesRepositoryStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithSystemPath: %v", err)
 	}
-	if want := filepath.Join(repo, ".yottacode", "permissions.local.json"); p.LocalPath() != want {
+	if want := canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
 		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
 	}
 	if err := p.AddAllow("Bash(go test *)"); err != nil {
 		t.Fatalf("AddAllow: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repo, ".yottacode", "permissions.local.json")); err != nil {
+	if _, err := os.Stat(canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json"))); err != nil {
 		t.Fatalf("repository permission file missing: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(worktreeDir, ".yottacode", "permissions.local.json")); !os.IsNotExist(err) {

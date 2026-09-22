@@ -162,7 +162,23 @@ type fileShape struct {
 	} `json:"permissions"`
 }
 
-// Load reads the optional system policy and the two project policy files.
+// canonicalizePath makes equivalent macOS paths such as /var and /private/var
+// compare consistently while preserving a useful absolute fallback when the
+// path does not exist yet.
+func canonicalizePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return filepath.Clean(path)
+}
+
 func Load(cwd string) (*Permissions, error) {
 	return LoadWithSystemPath(cwd, "/etc/yottacode/permissions.json")
 }
@@ -177,9 +193,11 @@ func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	if cwd == "" {
 		return nil, errors.New("permissions: cwd is required")
 	}
+
+	cwd = canonicalizePath(cwd)
 	storageRoot := cwd
 	if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
-		storageRoot = repoRoot
+		storageRoot = canonicalizePath(repoRoot)
 	}
 	dir := filepath.Join(storageRoot, ".yottacode")
 	p := &Permissions{
