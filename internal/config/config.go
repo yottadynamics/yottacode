@@ -223,10 +223,14 @@ type SubagentsConfig struct {
 // roadmap/sandbox-podman.md for the design this implements: long-lived
 // containers, podman exec per command, project-dir-only mount, and a temporary
 // host-network default until yottacode grows per-destination egress allowlists.
-// EnvPassthrough names are forwarded via bare `-e NAME` (podman reads the value
-// from its own environment) so credential values never appear in podman's argv/
-// process list. DocumentsImage is the built-in secondary profile image used
-// automatically by document-tool subprocess paths.
+// EnvPassthrough names have their value (read from yottacode's own process
+// environment — see ~/.yottacode/.env for the common way to populate that
+// without exporting in every shell) delivered via a per-session podman secret
+// rather than a baked `-e NAME=value` container env var: the value never
+// appears in podman's argv, in `podman inspect`, or in the container's
+// on-disk config — see internal/sandbox/podman.go's secret helpers.
+// DocumentsImage is the built-in secondary profile image used automatically
+// by document-tool subprocess paths.
 type SandboxConfig struct {
 	Backend        string `toml:"backend"` // "none" (default) | "podman"
 	Image          string `toml:"image"`
@@ -283,6 +287,14 @@ var ValidSandboxBackends = []string{"none", "podman"}
 
 // ValidSandboxNetworks is the whitelist for SandboxConfig.Network.
 var ValidSandboxNetworks = []string{"none", "host"}
+
+// validEnvVarName restricts SandboxConfig.EnvPassthrough entries to bare
+// POSIX-shape env var names. This is not just cosmetic: internal/sandbox's
+// exec wrapper interpolates each name directly into a shell script
+// (`export NAME="$(cat /run/secrets/NAME)"`) to re-expose a mounted podman
+// secret as an env var, so an unvalidated name would be a shell-injection
+// vector via a hand-edited config.toml.
+var validEnvVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // LSPConfig contains optional per-language server command overrides. Keys are
 // stable language IDs such as "go", "typescript", "python", and "rust".
@@ -1416,6 +1428,11 @@ func Validate(cfg Config) error {
 		}
 		if _, err := netip.ParseAddr(server); err != nil {
 			return fmt.Errorf("sandbox.dns[%d] = %q invalid (expected an IP address): %w", i, raw, err)
+		}
+	}
+	for i, name := range cfg.Sandbox.EnvPassthrough {
+		if !validEnvVarName.MatchString(name) {
+			return fmt.Errorf("sandbox.env_passthrough[%d] = %q invalid (expected a bare env var name, e.g. GITHUB_TOKEN)", i, name)
 		}
 	}
 	if cfg.Sandbox.CPUs < 0 {
