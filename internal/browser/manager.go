@@ -331,7 +331,7 @@ func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
 	res := HandoffResult{}
 	if isWebURL(url) {
 		res.URL = url
-		if _, err := next.navigate(ctx, url, ""); err != nil {
+		if _, err := next.navigate(ctx, url, "load"); err != nil {
 			res.LoadWarning = err.Error()
 		}
 	}
