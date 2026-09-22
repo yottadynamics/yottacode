@@ -437,6 +437,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		// are swallowed the same way podman.removeContainer's own callers
 		// already do for best-effort cleanup elsewhere in this package.
 		_ = sandbox.PruneOrphaned(ctx)
+		_ = sandbox.PruneOrphanedSecrets(ctx)
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
 		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr

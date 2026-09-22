@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -182,6 +183,113 @@ func parsePrunePSOutput(out []byte) ([]prunePSEntry, error) {
 		return nil, nil
 	}
 	var entries []prunePSEntry
+	if err := json.Unmarshal(trimmed, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// podmanSecretLS lists the IDs of secrets this package could have created
+// (see createSessionSecrets' containerName+"-secret-"+envName naming) — `-q`
+// with a name filter rather than `ls --format json`: unlike `podman ps`,
+// `podman secret ls --format` only supports a Go-template string, not the
+// "json" keyword (verified against a real podman 4.9.3 install — passing
+// "json" as the template just prints the literal word once). Swapped in
+// tests, mirroring podmanPS's seam.
+var podmanSecretLS = func(ctx context.Context) ([]byte, error) {
+	return exec.CommandContext(ctx, "podman", "secret", "ls", "-q", "--filter", "name=^yc-.*-secret-").Output()
+}
+
+// podmanSecretInspect fetches full metadata (CreatedAt, owner Labels) for
+// the given secret IDs in one call — `podman secret ls` itself doesn't
+// expose Labels through its template context. Swapped in tests.
+var podmanSecretInspect = func(ctx context.Context, ids []string) ([]byte, error) {
+	args := append([]string{"secret", "inspect"}, ids...)
+	return exec.CommandContext(ctx, "podman", args...).Output()
+}
+
+// secretInspectEntry decodes the fields PruneOrphanedSecrets needs from
+// `podman secret inspect`. Verified against a real podman 4.9.3 install:
+// CreatedAt is RFC3339 (unlike podman ps -a's Unix-seconds Created), and
+// Labels lives under Spec, not at the top level.
+type secretInspectEntry struct {
+	CreatedAt string         `json:"CreatedAt"`
+	Spec      secretSpecInfo `json:"Spec"`
+}
+
+type secretSpecInfo struct {
+	Name   string            `json:"Name"`
+	Labels map[string]string `json:"Labels"`
+}
+
+// PruneOrphanedSecrets is createSessionSecrets' counterpart to
+// PruneOrphaned: a session that crashes (or is killed) between creating a
+// secret and either mounting it into a container or reaching Close()
+// leaves it behind forever without this. Unlike a container, a secret has
+// no "running" state to muddy the safety check — ownerAlive (see
+// PruneOrphaned's doc comment) is the whole filter, gated by the same
+// pruneGracePeriod. Runs once at session startup, best-effort: only the
+// listing call's own error is returned, individual removal failures are
+// swallowed.
+func PruneOrphanedSecrets(ctx context.Context) error {
+	if _, err := podmanLookPath("podman"); err != nil {
+		return nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, pruneTimeout)
+	defer cancel()
+	idsOut, err := podmanSecretLS(cctx)
+	if err != nil {
+		return fmt.Errorf("sandbox: podman secret ls: %w", err)
+	}
+	ids := strings.Fields(string(idsOut))
+	if len(ids) == 0 {
+		return nil
+	}
+	detailsOut, err := podmanSecretInspect(cctx, ids)
+	if err != nil {
+		return fmt.Errorf("sandbox: podman secret inspect: %w", err)
+	}
+	entries, err := parseSecretInspectOutput(detailsOut)
+	if err != nil {
+		return fmt.Errorf("sandbox: parse podman secret inspect output: %w", err)
+	}
+	for _, name := range selectPruneSecretTargets(entries, time.Now()) {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), secretOpTimeout)
+		_ = podmanSecretRM(cleanupCtx, name)
+		cleanupCancel()
+	}
+	return nil
+}
+
+// selectPruneSecretTargets is PruneOrphanedSecrets' pure decision logic,
+// split out for the same reason selectPruneTargets is.
+func selectPruneSecretTargets(entries []secretInspectEntry, now time.Time) []string {
+	var names []string
+	for _, e := range entries {
+		if e.Spec.Name == "" {
+			continue
+		}
+		created, err := time.Parse(time.RFC3339Nano, e.CreatedAt)
+		if err != nil {
+			continue
+		}
+		if now.Sub(created) < pruneGracePeriod {
+			continue
+		}
+		if ownerAlive(e.Spec.Labels) {
+			continue
+		}
+		names = append(names, e.Spec.Name)
+	}
+	return names
+}
+
+func parseSecretInspectOutput(out []byte) ([]secretInspectEntry, error) {
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	var entries []secretInspectEntry
 	if err := json.Unmarshal(trimmed, &entries); err != nil {
 		return nil, err
 	}
