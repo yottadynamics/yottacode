@@ -1123,13 +1123,9 @@ func executeToolCallImpl(
 	preview := tool.PreviewCall(argsJSON)
 	var approvalSource string
 
-	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
-	// rules still beat the gate (the model never gets to call a denied
-	// tool, plan mode or not), but the gate beats the tool's own
-	// RequiresApproval policy. Returning the gate's error string as a
-	// tool result lets the model recover by switching to a read-only
-	// or plan-file alternative on the next iteration.
-	if cfg.PlanMode.IsActive() {
+	// Plan-mode gate runs before permissions only for blocked mutations; the
+	// plan-file allow exception is handled later, after deny/ask evaluation.
+	if cfg.PlanMode.IsActive() && !IsPlanFileWrite(tool.Name(), argsJSON, cfg.PlanMode.PlanFile) {
 		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
 				ToolName: tool.Name(), Preview: preview, Source: "plan-mode-block",

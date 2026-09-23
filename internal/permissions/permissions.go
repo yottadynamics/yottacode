@@ -51,7 +51,9 @@ package permissions
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+
 	"errors"
 	"fmt"
 	"os"
@@ -63,6 +65,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // skeleton is the canonical empty permissions file: the full
@@ -159,19 +162,44 @@ type fileShape struct {
 	} `json:"permissions"`
 }
 
-// Load reads the optional system policy and the two project policy files.
+// canonicalizePath makes equivalent macOS paths such as /var and /private/var
+// compare consistently while preserving a useful absolute fallback when the
+// path does not exist yet.
+func canonicalizePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(path)
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	return filepath.Clean(path)
+}
+
 func Load(cwd string) (*Permissions, error) {
 	return LoadWithSystemPath(cwd, "/etc/yottacode/permissions.json")
 }
 
 // LoadWithSystemPath loads permissions using an explicit system-policy path.
+// Persistent project permissions are stored at the main repository root when
+// cwd is inside a git worktree. Rule evaluation still uses cwd so path rules
+// remain relative to the active worktree.
 // An empty systemPath disables the system source, which is useful for isolated
 // callers and tests that must not depend on the host administrator policy.
 func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	if cwd == "" {
 		return nil, errors.New("permissions: cwd is required")
 	}
-	dir := filepath.Join(cwd, ".yottacode")
+
+	cwd = canonicalizePath(cwd)
+	storageRoot := cwd
+	if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
+		storageRoot = canonicalizePath(repoRoot)
+	}
+	dir := filepath.Join(storageRoot, ".yottacode")
 	p := &Permissions{
 		cwd:        cwd,
 		systemPath: systemPath,
@@ -632,30 +660,27 @@ func matchFirst(target Target, rules []Rule, cwd string) (Rule, bool) {
 // matchPattern dispatches to the right matcher based on whether the
 // target is a path (use doublestar) or a free-form string (custom
 // `*`/`?` glob).
+func canonicalizePattern(pattern string) string {
+	pattern = expandHome(pattern)
+	if !filepath.IsAbs(pattern) {
+		return filepath.ToSlash(pattern)
+	}
+	return filepath.ToSlash(canonicalizePath(pattern))
+}
+
 func matchPattern(pattern, value, cwd string, isPath bool) bool {
 	if pattern == "" {
 		return value == ""
 	}
 	if isPath {
-		// Expand "~/foo" patterns to the resolved home dir so user-
-		// authored rules match the absolute descriptors the agent
-		// produces (descriptors are home-expanded in relPath).
-		pattern = expandHome(pattern)
-		ok, err := doublestar.PathMatch(pattern, value)
-		if err == nil && ok {
+		pattern = canonicalizePattern(pattern)
+		value = filepath.ToSlash(value)
+		if ok, err := doublestar.PathMatch(pattern, value); err == nil && ok {
 			return true
 		}
-		// Absolute pattern + relative value: descriptors are cwd-
-		// relative when the file is under cwd, but auto-derived rules
-		// are now cwd-anchored absolute (`Write(/abs/cwd/**)`). Join
-		// the value onto cwd before retrying so the rule matches.
 		if strings.HasPrefix(pattern, "/") && !strings.HasPrefix(value, "/") {
-			absValue := "/" + value
-			if cwd != "" {
-				absValue = filepath.ToSlash(filepath.Join(cwd, value))
-			}
-			ok, err := doublestar.PathMatch(pattern, absValue)
-			if err == nil && ok {
+			absValue := canonicalizePath(filepath.Join(cwd, value))
+			if ok, err := doublestar.PathMatch(pattern, filepath.ToSlash(absValue)); err == nil && ok {
 				return true
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -562,6 +563,46 @@ func TestEvaluate_NilPermissionsIsDefault(t *testing.T) {
 	var p *Permissions
 	if got := p.Evaluate("run_bash", `{"command":"x"}`); got != Default {
 		t.Errorf("nil Permissions should evaluate to Default; got %v", got)
+	}
+}
+
+func TestLoadWithSystemPath_WorktreeUsesRepositoryStorage(t *testing.T) {
+	// Build a real linked worktree so the test exercises git-common-dir resolution.
+	repo := t.TempDir()
+	mustRun := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	mustRun(repo, "git", "init", "-q", "-b", "main")
+	mustRun(repo, "git", "config", "user.email", "test@example.com")
+	mustRun(repo, "git", "config", "user.name", "test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(repo, "git", "add", "README.md")
+	mustRun(repo, "git", "commit", "-q", "-m", "init")
+	worktreeDir := filepath.Join(t.TempDir(), "linked")
+	mustRun(repo, "git", "worktree", "add", "-q", "-b", "feature", worktreeDir)
+
+	p, err := LoadWithSystemPath(worktreeDir, "")
+	if err != nil {
+		t.Fatalf("LoadWithSystemPath: %v", err)
+	}
+	if want := canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
+		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
+	}
+	if err := p.AddAllow("Bash(go test *)"); err != nil {
+		t.Fatalf("AddAllow: %v", err)
+	}
+	if _, err := os.Stat(canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json"))); err != nil {
+		t.Fatalf("repository permission file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".yottacode", "permissions.local.json")); !os.IsNotExist(err) {
+		t.Fatalf("worktree permission file exists, stat err = %v", err)
 	}
 }
 
