@@ -698,8 +698,11 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 	if text != "" {
 		// Text can be updated asynchronously by the page after an action. Poll
 		// until the caller's wait deadline instead of evaluating only once.
-		deadline := time.NewTimer(d)
-		defer deadline.Stop()
+		// Bound the poll by c's own deadline (already set to d above) rather
+		// than a second, independent timer: a second timer started here would
+		// run d milliseconds from now, letting the poll outlast the caller's
+		// requested budget whenever the WaitVisible check above (or idle
+		// sleep) already consumed part of it.
 		for {
 			var ok bool
 			if e := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text), &ok)); e != nil {
@@ -708,14 +711,12 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 			if ok {
 				break
 			}
-			poll := time.NewTimer(50 * time.Millisecond)
 			select {
-			case <-poll.C:
-			case <-deadline.C:
-				poll.Stop()
-				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
+			case <-time.After(50 * time.Millisecond):
 			case <-c.Done():
-				poll.Stop()
+				if errors.Is(c.Err(), context.DeadlineExceeded) {
+					return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
+				}
 				return classifySelectorErr(c.Err())
 			}
 		}
