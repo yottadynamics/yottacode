@@ -20,6 +20,7 @@ import (
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/doctor"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -1256,9 +1257,44 @@ func inSlice(ss []string, s string) bool {
 }
 
 func cmdDoctor(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider")))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider, GitHub, LSP, and media")))
 	m.appendLine(formatPermissionsDoctor(permissions.Validate(m.cwd)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), true)
+	return m, runDoctor(m.parentCtx, m.cwd, m.adapterConfig(m.modelName, m.baseURL), m.fileCfg)
+}
+
+func runDoctor(ctx context.Context, cwd string, provider adapter.Config, cfg config.Config) tea.Cmd {
+	return func() tea.Msg {
+		return doctorMsg{result: doctor.Probe(ctx, cwd, provider, cfg.LSP, cfg.Sandbox.Backend != "none")}
+	}
+}
+
+func formatDoctor(result doctor.Result) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "provider: %s\n%s", result.Provider.Profile.Provider, formatProbeResult(result.Provider))
+	fmt.Fprintf(&b, "\nGitHub: %s", result.GitHub.Status)
+	if result.GitHub.Login != "" {
+		fmt.Fprintf(&b, " login=%s", result.GitHub.Login)
+	}
+	for _, issue := range result.GitHub.Issues {
+		fmt.Fprintf(&b, "\n  issue: %s", issue)
+	}
+	fmt.Fprintf(&b, "\nLSP: %s", result.LSP.Status)
+	if result.LSP.Note != "" {
+		fmt.Fprintf(&b, " (%s)", result.LSP.Note)
+	}
+	for _, lang := range result.LSP.Languages {
+		fmt.Fprintf(&b, "\n  %s: %s", lang.Name, lang.Probe)
+	}
+	fmt.Fprintf(&b, "\nmedia: %s\n  ffmpeg: %s\n  ffprobe: %s", result.Media.Status, binaryDoctorStatus(result.Media.FFmpeg), binaryDoctorStatus(result.Media.FFprobe))
+	fmt.Fprintf(&b, "\nsandbox/cache: %s (%s)", result.Sandbox.Status, result.Sandbox.Note)
+	return b.String()
+}
+
+func binaryDoctorStatus(b doctor.Binary) string {
+	if b.Installed {
+		return "installed"
+	}
+	return "missing"
 }
 
 func renderProviderCommandValue(provider adapter.Provider) string {
