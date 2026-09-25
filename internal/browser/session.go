@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -160,6 +162,40 @@ type downloadWaiter struct {
 
 const newTabDetectWindow = 2 * time.Second
 
+// debugCPUTicks is TEMPORARY diagnostic instrumentation for tracking down
+// https://github.com/yottadynamics/yottacode/pull/360's intermittent
+// TestIntegration_HandoffOpensVisibleIsolatedSession CI failure. It reads
+// utime+stime (in clock ticks) for pid from /proc, to let wait() report how
+// much CPU the browser process actually burned during a timed-out wait —
+// distinguishing "the renderer was starved for CPU" from "something else is
+// blocking". Linux-only; returns ok=false anywhere else (e.g. macOS CI) or
+// on any read error, and callers must treat that as "no data", not a bug.
+// TO BE REMOVED once the root cause is confirmed.
+func debugCPUTicks(pid int) (ticks uint64, ok bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	// Fields are space-separated; the process name field (2) can itself
+	// contain spaces and is parenthesized, so split after its closing ')'.
+	i := strings.LastIndexByte(string(b), ')')
+	if i < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(string(b)[i+1:])
+	// utime is field 14 overall, stime is field 15; fields[0] here is field 3.
+	const utimeIdx, stimeIdx = 14 - 3, 15 - 3
+	if len(fields) <= stimeIdx {
+		return 0, false
+	}
+	utime, err1 := strconv.ParseUint(fields[utimeIdx], 10, 64)
+	stime, err2 := strconv.ParseUint(fields[stimeIdx], 10, 64)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	return utime + stime, true
+}
+
 func launchSession(ctx context.Context, bin, profile string) (pageSession, error) {
 	return launchSessionMode(ctx, bin, profile, true)
 }
@@ -246,6 +282,9 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		s.dispatchBrowserEvent(ev)
 		switch e := ev.(type) {
 		case *target.EventTargetCreated:
+			if e.TargetInfo != nil {
+				fmt.Fprintf(os.Stderr, "DEBUG %s target-created type=%q id=%s url=%q\n", time.Now().Format(time.RFC3339Nano), e.TargetInfo.Type, e.TargetInfo.TargetID, e.TargetInfo.URL)
+			}
 			if e.TargetInfo == nil || e.TargetInfo.Type != "page" {
 				return
 			}
@@ -627,11 +666,19 @@ func (s *session) inspect(ctx context.Context, sel string) (string, error) {
 func (s *session) click(ctx context.Context, sel string) error {
 	p := s.activePage()
 	before := s.pageCount()
+	startTicks, startOK := debugCPUTicks(s.pid)
+	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s\n", time.Now().Format(time.RFC3339Nano), sel, p.id)
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
 	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
 		return classifySelectorErr(err)
 	}
+	endTicks, endOK := debugCPUTicks(s.pid)
+	ticksMsg := "n/a"
+	if startOK && endOK {
+		ticksMsg = fmt.Sprintf("%dticks", endTicks-startTicks)
+	}
+	fmt.Fprintf(os.Stderr, "DEBUG %s click dispatched ok, cpuDuringDispatch=%s\n", time.Now().Format(time.RFC3339Nano), ticksMsg)
 	s.followNewPage(before, ctx)
 	return nil
 }
@@ -733,8 +780,28 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 		// Bounded by c's own deadline (set to d above), not a separate
 		// timeout — no second timer to race against it.
 		predicate := fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text)
+		startTicks, startOK := debugCPUTicks(s.pid)
+		startWall := time.Now()
+		fmt.Fprintf(os.Stderr, "DEBUG %s wait poll start activeID=%s pid=%d\n", startWall.Format(time.RFC3339Nano), p.id, s.pid)
 		if e := chromedp.Run(c, chromedp.Poll(predicate, nil, chromedp.WithPollingMutation())); e != nil {
 			if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, chromedp.ErrPollingTimeout) {
+				endTicks, endOK := debugCPUTicks(s.pid)
+				wallElapsed := time.Since(startWall)
+				diagCtx, diagCancel := context.WithTimeout(p.ctx, 2*time.Second)
+				var readyState, innerText, visState string
+				diagErr := chromedp.Run(diagCtx,
+					chromedp.Evaluate(`document.readyState`, &readyState),
+					chromedp.Evaluate(`document.body&&document.body.innerText`, &innerText),
+					chromedp.Evaluate(`document.visibilityState`, &visState),
+				)
+				diagCancel()
+				cpuRatio := "n/a"
+				if startOK && endOK {
+					cpuSeconds := float64(endTicks-startTicks) / 100.0 // USER_HZ is 100 on virtually all Linux
+					cpuRatio = fmt.Sprintf("%.2fs CPU / %.2fs wall = %.0f%%", cpuSeconds, wallElapsed.Seconds(), 100*cpuSeconds/wallElapsed.Seconds())
+				}
+				fmt.Fprintf(os.Stderr, "DEBUG %s wait TIMEOUT activeID=%s readyState=%q visState=%q innerText=%q diagErr=%v browserCPU=%s\n",
+					time.Now().Format(time.RFC3339Nano), p.id, readyState, visState, innerText, diagErr, cpuRatio)
 				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
 			}
 			return classifySelectorErr(e)
