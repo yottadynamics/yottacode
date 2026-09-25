@@ -8,6 +8,16 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`apply_hashline` gains line-addressed hunks.** A hunk can now be
+  addressed by `anchor` — the exact `line#hash` token `read_file`/
+  `read_many_files` print with `anchors=true`, or that `edit_anchored`
+  already accepts — instead of `offset`/`length`/`hash`/`old`. The tool
+  resolves the anchor against the current file (rejecting a stale line or
+  changed content the same way `edit_anchored` does) and derives that
+  line's exact span, text, and hash itself, so touching one line inside a
+  large read window no longer means reproducing the whole window as `old`.
+  `new` replaces the anchored line including its own terminator; empty
+  deletes it. Anchor and byte-addressed hunks can be mixed in one call.
 - **`browser_*` tools (experimental).** Eighteen agent tools —
   `browser_status`, `browser_navigate`, `browser_screenshot`,
   `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,

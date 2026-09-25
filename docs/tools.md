@@ -804,16 +804,19 @@ Apply one or more content-hash anchored text edits to a single file. This is the
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | File to edit; absolute or cwd-relative |
-| `offset` | int | — | Byte offset from the hashline receipt |
+| `anchor` | string | — | Line-addressed form: the exact `line#hash` token printed by `read_file`/`read_many_files` (`anchors=true`) or accepted by `edit_anchored`, e.g. `42#a1b2c3d4`. Mutually exclusive with `offset`/`length`/`hash`/`old` |
+| `offset` | int | — | Byte-addressed form: byte offset from the hashline receipt |
 | `length` | int | — | Byte length from the hashline receipt; must equal the byte length of `old` |
 | `hash` | string | — | 16-hex SHA-256 prefix copied from the receipt (a model cannot compute it) |
 | `old` | string | — | Exact old text covered by the anchor; must be non-empty and end with a newline exactly when the receipt says `ends_with_newline=true` |
-| `new` | string | — | Replacement text; may be empty |
-| `hunks` | []object | — | Optional multi-hunk form using the same `offset`/`length`/`hash`/`old`/`new` fields per hunk |
+| `new` | string | — | Replacement text; may be empty (deletes the line, for an `anchor` hunk) |
+| `hunks` | []object | — | Optional multi-hunk form; each hunk is either anchor-addressed (`anchor` + `new`) or byte-addressed (`offset`/`length`/`hash`/`old`/`new`) |
+
+**Line addressing.** `anchor` is a second way to point at a hunk, alongside the byte-based `offset`/`length`/`hash`/`old`. It takes the exact `line#hash` token `read_file`/`read_many_files` print before each line with `anchors=true` (line numbers are absolute, so the token is valid regardless of what `offset`/`limit` window it came from) — copy it as-is, no parsing needed. The tool re-reads the file, resolves the anchor the same way `edit_anchored` does (stale-line and hash-mismatch errors read identically), and derives that line's exact byte span, text, and hash itself — `old`, `hash`, `offset`, and `length` are never needed for an anchor hunk. This is the point of `anchor`: touching one line inside a large `read_file` window no longer means reproducing the whole window as `old`. `new` replaces the anchored line (its own terminator included), so an empty `new` deletes the line, and a multi-line `new` can turn one line into several. Two hunks may not target the same line (rejected as `overlapping_hunks`), but adjacent lines each addressed by their own hunk compose into one multi-line edit in a single call. An `anchor` hunk may be freely mixed with byte-addressed hunks in the same `hunks` array.
 
 Always prompts for approval, validates the same write-path rules as `edit_file` (which refuse a symlinked leaf today), and writes atomically via same-directory temp file plus rename — resolved through any symlink chain first, so a symlinked target is written in place rather than replaced by a plain file. On `stale_anchor` or `ambiguous_anchor`, re-read the suggested range with `anchors=true`, copy the current text and receipt, then retry.
 
-**Inserting.** There is no separate insert: an empty span hashes to a constant, so it could not prove the file is unchanged, and an insert at a stale offset would land in the wrong place (or split a multi-byte character). An empty `old` is rejected with `empty_anchor`. To insert, anchor on adjacent text: set `old` to the neighbouring line and `new` to that line plus the addition. Use `write_file` to fill an empty or new file.
+**Inserting.** There is no separate insert: an empty span hashes to a constant, so it could not prove the file is unchanged, and an insert at a stale offset would land in the wrong place (or split a multi-byte character). An empty `old` is rejected with `empty_anchor`. To insert with a byte hunk, anchor on adjacent text: set `old` to the neighbouring line and `new` to that line plus the addition. To insert with a line `anchor`, set `new` to the anchored line's own text plus the addition — an `anchor` with no `new`, or an empty `new`, deletes the line instead. Use `write_file` to fill an empty or new file.
 
 **Length is verified.** `length` must equal the byte length of `old` (`invalid_range` otherwise). It decides how many bytes are replaced, so a value that disagreed with the hashed text could otherwise replace bytes nobody verified.
 
