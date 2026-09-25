@@ -277,8 +277,9 @@ backend change (`podman` ↔ `none`) still needs a new session.
   grows like any Go cache directory, unbounded and outside `disk`'s
   writable-layer quota (a bind mount isn't part of the container's own
   overlay filesystem, so `--storage-opt size=` never sees it); reclaim space
-  with `go clean -cache -modcache` using those two env vars, or delete the
-  directory outright.
+  with `go clean -cache` for build/test artifacts only. If downloaded modules also need
+  removal, use `go clean -modcache`; deleting the whole directory is the stronger
+  cleanup and should only be done when no sandboxed Go jobs are running.
 - **`run_bash`, `run_tests`, `create_document`'s docx/pdf paths, and
   `read_document`'s PDF path are sandboxed.** Git, GitHub, MCP, provider
   calls, and the other file tools still run on the host. The hardline

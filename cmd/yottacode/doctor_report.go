@@ -50,21 +50,23 @@ type DoctorSummary struct {
 // SandboxDoctorResult reports sandbox configuration and Go cache visibility.
 // It is intentionally cheap and local: no Podman process is started by doctor.
 type SandboxDoctorResult struct {
-	Status       doctorStatus         `json:"status"`
-	Backend      string               `json:"backend"`
-	Image        string               `json:"image,omitempty"`
-	GoCacheDir   string               `json:"go_cache_dir,omitempty"`
-	GoCacheBytes int64                `json:"go_cache_bytes,omitempty"`
-	PIDCurrent   int64                `json:"pid_current,omitempty"`
-	PIDMax       int64                `json:"pid_max,omitempty"`
-	PIDRemaining int64                `json:"pid_remaining,omitempty"`
-	PIDUnlimited bool                 `json:"pid_unlimited,omitempty"`
-	ZombieCount  int                  `json:"zombie_count"`
-	Resources    []DoctorPathResource `json:"resources,omitempty"`
-	Warnings     []string             `json:"warnings,omitempty"`
-	Issues       []string             `json:"issues,omitempty"`
-	Hints        []string             `json:"hints,omitempty"`
-	Skipped      bool                 `json:"skipped,omitempty"`
+	Status            doctorStatus         `json:"status"`
+	Backend           string               `json:"backend"`
+	Image             string               `json:"image,omitempty"`
+	GoCacheDir        string               `json:"go_cache_dir,omitempty"`
+	GoCacheBytes      int64                `json:"go_cache_bytes,omitempty"`
+	GoBuildCacheBytes int64                `json:"go_build_cache_bytes,omitempty"`
+	GoModCacheBytes   int64                `json:"go_modcache_bytes,omitempty"`
+	PIDCurrent        int64                `json:"pid_current,omitempty"`
+	PIDMax            int64                `json:"pid_max,omitempty"`
+	PIDRemaining      int64                `json:"pid_remaining,omitempty"`
+	PIDUnlimited      bool                 `json:"pid_unlimited,omitempty"`
+	ZombieCount       int                  `json:"zombie_count"`
+	Resources         []DoctorPathResource `json:"resources,omitempty"`
+	Warnings          []string             `json:"warnings,omitempty"`
+	Issues            []string             `json:"issues,omitempty"`
+	Hints             []string             `json:"hints,omitempty"`
+	Skipped           bool                 `json:"skipped,omitempty"`
 }
 
 type DoctorPathResource struct {
@@ -125,7 +127,7 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		return result
 	}
 	result.GoCacheDir = cacheDir
-	size, err := dirSize(cacheDir)
+	_, err = dirSize(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
@@ -136,11 +138,13 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache: %v", err))
 		return result
 	}
-	result.GoCacheBytes = size
-	if size > 2*1024*1024*1024 {
+	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes = goCacheSizes(cacheDir)
+	if result.GoCacheBytes > 2*1024*1024*1024 {
 		result.Status = doctorStatusWarning
-		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(size)))
-		result.Hints = append(result.Hints, "run `go clean -cache -modcache` inside a sandboxed shell, or remove /var/tmp/yottacode-<uid>/sandbox-go-cache when no sandboxed Go jobs are running")
+		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(result.GoCacheBytes)))
+		result.Hints = append(result.Hints,
+			"for build/test artifacts only, run `go clean -cache` inside a sandboxed shell",
+			"to also remove downloaded modules, run `go clean -modcache` inside a sandboxed shell, or remove /var/tmp/yottacode-<uid>/sandbox-go-cache when no sandboxed Go jobs are running")
 		return result
 	}
 	result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
@@ -261,6 +265,12 @@ func doctorZombieCount(procRoot string) int {
 		}
 	}
 	return count
+}
+
+func goCacheSizes(path string) (total, build, modcache int64) {
+	build, _ = dirSize(filepath.Join(path, "cache"))
+	modcache, _ = dirSize(filepath.Join(path, "modcache"))
+	return build + modcache, build, modcache
 }
 
 func dirSize(path string) (int64, error) {
@@ -462,7 +472,7 @@ func renderSandboxSection(b *strings.Builder, result SandboxDoctorResult) {
 		if result.GoCacheBytes == 0 {
 			cache = "0 B"
 		}
-		fmt.Fprintf(b, "  go cache: %s total (%s)\n", cache, result.GoCacheDir)
+		fmt.Fprintf(b, "  go cache: %s total (build/test: %s, modules: %s) (%s)\n", cache, humanBytes(result.GoBuildCacheBytes), humanBytes(result.GoModCacheBytes), result.GoCacheDir)
 	}
 	renderIssuesWarnings(b, "  ", result.Issues, result.Warnings)
 	for _, hint := range result.Hints {
