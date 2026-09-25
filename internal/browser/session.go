@@ -667,9 +667,20 @@ func (s *session) click(ctx context.Context, sel string) error {
 	p := s.activePage()
 	before := s.pageCount()
 	startTicks, startOK := debugCPUTicks(s.pid)
-	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s\n", time.Now().Format(time.RFC3339Nano), sel, p.id)
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
+	var winW, winH int
+	var rectJSON string
+	diagCtx, diagCancel := context.WithTimeout(c, 2*time.Second)
+	diagErr := chromedp.Run(diagCtx,
+		chromedp.Evaluate(`window.innerWidth`, &winW),
+		chromedp.Evaluate(`window.innerHeight`, &winH),
+		chromedp.Evaluate(fmt.Sprintf(`JSON.stringify((function(){var e=document.querySelector(%q); if(!e) return null; var r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}})())`, sel), &rectJSON),
+	)
+	diagCancel()
+	win, bounds, boundsErr := browser.GetWindowForTarget().WithTargetID(p.id).Do(cdp.WithExecutor(s.browserCtx, s.browser))
+	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s innerWH=%dx%d rect=%s diagErr=%v windowID=%v bounds=%+v boundsErr=%v\n",
+		time.Now().Format(time.RFC3339Nano), sel, p.id, winW, winH, rectJSON, diagErr, win, bounds, boundsErr)
 	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
 		return classifySelectorErr(err)
 	}
