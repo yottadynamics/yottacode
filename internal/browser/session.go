@@ -167,7 +167,30 @@ func launchHeadedSession(ctx context.Context, bin, profile string) (pageSession,
 	return launchSessionMode(ctx, bin, profile, false)
 }
 func launchSessionMode(ctx context.Context, bin, profile string, headless bool) (pageSession, error) {
-	opts := []chromedp.ExecAllocatorOption{chromedp.ExecPath(bin), chromedp.UserDataDir(profile), chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck, chromedp.Flag("disable-features", "TranslateUI")}
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.ExecPath(bin), chromedp.UserDataDir(profile), chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck,
+		chromedp.Flag("disable-features", "TranslateUI"),
+		// Chrome ships several built-in component extensions (PDF viewer
+		// helpers, Cast, etc.) that lazily spin up their own background
+		// service workers a second or two after launch on a fresh profile.
+		// That startup work runs on the browser process's own threads and
+		// competes for CPU with the page's renderer; under load (a busy CI
+		// runner) it can starve a freshly launched page's JS for long enough
+		// that a script-driven action (e.g. a click handler) appears to hang
+		// — reproduced locally: a chrome-extension:// service worker spun up
+		// ~1.9s after a click, and the click's handler didn't run until
+		// after it finished. None of this exists for real users automation
+		// controls, so disable it outright rather than working around its
+		// timing.
+		chromedp.Flag("disable-component-extensions-with-background-pages", true),
+		chromedp.Flag("disable-component-update", true),
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("disable-client-side-phishing-detection", true),
+		chromedp.Flag("disable-hang-monitor", true),
+		chromedp.Flag("metrics-recording-only", true),
+	}
 	if headless {
 		opts = append(opts, chromedp.Headless)
 	}
@@ -696,29 +719,25 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 		}
 	}
 	if text != "" {
-		// Text can be updated asynchronously by the page after an action. Poll
-		// until the caller's wait deadline instead of evaluating only once.
-		// Bound the poll by c's own deadline (already set to d above) rather
-		// than a second, independent timer: a second timer started here would
-		// run d milliseconds from now, letting the poll outlast the caller's
-		// requested budget whenever the WaitVisible check above (or idle
-		// sleep) already consumed part of it.
-		for {
-			var ok bool
-			if e := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text), &ok)); e != nil {
-				return classifySelectorErr(e)
+		// Text can be updated asynchronously by the page after an action.
+		// Watch for it with a MutationObserver running inside the page
+		// (Poll+WithPollingMutation) instead of round-tripping a fresh CDP
+		// Evaluate call every N milliseconds from Go: each round trip pays
+		// full IPC/serialization latency, and a page that's slow to render
+		// (a freshly headed, software-rendered Chrome under Xvfb, say) can
+		// make that latency stretch to hundreds of milliseconds, silently
+		// starving the number of checks a fixed-interval Go-side poll gets
+		// to make before the deadline. The in-page observer fires on the
+		// actual DOM mutation, so detection latency no longer depends on
+		// how slow or fast the CDP round trip happens to be that day.
+		// Bounded by c's own deadline (set to d above), not a separate
+		// timeout — no second timer to race against it.
+		predicate := fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text)
+		if e := chromedp.Run(c, chromedp.Poll(predicate, nil, chromedp.WithPollingMutation())); e != nil {
+			if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, chromedp.ErrPollingTimeout) {
+				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
 			}
-			if ok {
-				break
-			}
-			select {
-			case <-time.After(50 * time.Millisecond):
-			case <-c.Done():
-				if errors.Is(c.Err(), context.DeadlineExceeded) {
-					return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
-				}
-				return classifySelectorErr(c.Err())
-			}
+			return classifySelectorErr(e)
 		}
 	}
 	return nil
