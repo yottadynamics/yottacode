@@ -912,7 +912,7 @@ func TestFormatDoctor_RendersSections(t *testing.T) {
 		Sandbox:  doctor.Section{Status: doctor.StatusSkipped, Note: "not checked by the TUI doctor"},
 	}
 	got := formatDoctor(result)
-	for _, want := range []string{"provider:", "GitHub: ok", "LSP: warning", "detector failed", "media: ok", "sandbox/cache: skipped"} {
+	for _, want := range []string{"provider:", "status=ok", "GitHub: ok", "LSP: warning", "detector failed", "media: ok", "sandbox: skipped"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, got)
 		}
