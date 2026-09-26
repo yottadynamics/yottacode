@@ -1,15 +1,16 @@
 package browser
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/go-rod/rod/lib/proto"
-	"github.com/ysmood/gson"
+	"github.com/chromedp/cdproto/accessibility"
 )
 
-func axVal(v any) *proto.AccessibilityAXValue {
-	return &proto.AccessibilityAXValue{Value: gson.New(v)}
+func axVal(v any) *accessibility.Value {
+	b, _ := json.Marshal(v)
+	return &accessibility.Value{Value: b}
 }
 
 func TestRenderAXTree_Empty(t *testing.T) {
@@ -19,12 +20,12 @@ func TestRenderAXTree_Empty(t *testing.T) {
 }
 
 func TestRenderAXTree_RoleNameValue(t *testing.T) {
-	nodes := []*proto.AccessibilityAXNode{
+	nodes := []*accessibility.Node{
 		{
 			NodeID:   "1",
 			Role:     axVal("RootWebArea"),
 			Name:     axVal("Example Page"),
-			ChildIDs: []proto.AccessibilityAXNodeID{"2"},
+			ChildIDs: []accessibility.NodeID{"2"},
 		},
 		{
 			NodeID:   "2",
@@ -44,9 +45,9 @@ func TestRenderAXTree_RoleNameValue(t *testing.T) {
 }
 
 func TestRenderAXTree_SkipsIgnoredButRecursesChildren(t *testing.T) {
-	nodes := []*proto.AccessibilityAXNode{
-		{NodeID: "1", Role: axVal("RootWebArea"), ChildIDs: []proto.AccessibilityAXNodeID{"2"}},
-		{NodeID: "2", ParentID: "1", Ignored: true, Role: axVal("generic"), ChildIDs: []proto.AccessibilityAXNodeID{"3"}},
+	nodes := []*accessibility.Node{
+		{NodeID: "1", Role: axVal("RootWebArea"), ChildIDs: []accessibility.NodeID{"2"}},
+		{NodeID: "2", ParentID: "1", Ignored: true, Role: axVal("generic"), ChildIDs: []accessibility.NodeID{"3"}},
 		{NodeID: "3", ParentID: "2", Role: axVal("link"), Name: axVal("Home")},
 	}
 	out := renderAXTree(nodes)
@@ -64,8 +65,8 @@ func TestRenderAXTree_Truncates(t *testing.T) {
 	maxAXChars = 1_000_000
 	defer func() { maxAXNodes, maxAXChars = origNodes, origChars }()
 
-	nodes := []*proto.AccessibilityAXNode{
-		{NodeID: "1", Role: axVal("RootWebArea"), ChildIDs: []proto.AccessibilityAXNodeID{"2", "3", "4"}},
+	nodes := []*accessibility.Node{
+		{NodeID: "1", Role: axVal("RootWebArea"), ChildIDs: []accessibility.NodeID{"2", "3", "4"}},
 		{NodeID: "2", ParentID: "1", Role: axVal("link"), Name: axVal("A")},
 		{NodeID: "3", ParentID: "1", Role: axVal("link"), Name: axVal("B")},
 		{NodeID: "4", ParentID: "1", Role: axVal("link"), Name: axVal("C")},
@@ -80,7 +81,7 @@ func TestAxValueString_NilAndNull(t *testing.T) {
 	if got := axValueString(nil); got != "" {
 		t.Errorf("axValueString(nil) = %q", got)
 	}
-	if got := axValueString(&proto.AccessibilityAXValue{}); got != "" {
+	if got := axValueString(&accessibility.Value{}); got != "" {
 		t.Errorf("axValueString(zero value) = %q", got)
 	}
 }

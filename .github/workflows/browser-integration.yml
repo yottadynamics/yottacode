@@ -2,7 +2,7 @@
 # (internal/browser/). The `integration` build tag suite
 # (internal/browser/integration_test.go) skips cleanly with no browser
 # present, so go.yml's plain `go test ./...` never exercises the real
-# go-rod/CDP path — this workflow is what actually runs it. Matrixed
+# chromedp/CDP path — this workflow is what actually runs it. Matrixed
 # across ubuntu-latest and macos-latest (matching go.yml's build matrix)
 # rather than Linux-only: browser_* ships linux+darwin, and the darwin
 # Chrome-discovery path (findChromeBinary's macOS search list) is

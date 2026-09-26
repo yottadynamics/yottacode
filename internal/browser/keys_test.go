@@ -3,24 +3,24 @@ package browser
 import (
 	"testing"
 
-	"github.com/go-rod/rod/lib/input"
+	"github.com/chromedp/chromedp/kb"
 )
 
 func TestParseKeyToken(t *testing.T) {
-	cases := map[string]input.Key{
-		"Enter":   input.Enter,
-		"enter":   input.Enter,
-		"Escape":  input.Escape,
-		"Esc":     input.Escape,
-		"Tab":     input.Tab,
-		"Control": input.ControlLeft,
-		"ctrl":    input.ControlLeft,
-		"Shift":   input.ShiftLeft,
-		"a":       input.KeyA,
-		"A":       input.KeyA,
-		"z":       input.KeyZ,
-		"1":       input.Digit1,
-		"F1":      input.F1,
+	cases := map[string]string{
+		"Enter":   kb.Enter,
+		"enter":   kb.Enter,
+		"Escape":  kb.Escape,
+		"Esc":     kb.Escape,
+		"Tab":     kb.Tab,
+		"Control": kb.Control,
+		"ctrl":    kb.Control,
+		"Shift":   kb.Shift,
+		"a":       kb.Keys['a'].Code,
+		"A":       kb.Keys['A'].Code,
+		"z":       kb.Keys['z'].Code,
+		"1":       "1",
+		"F1":      kb.F1,
 	}
 	for tok, want := range cases {
 		got, err := parseKeyToken(tok)
@@ -48,7 +48,7 @@ func TestParseHotkey_SingleKey(t *testing.T) {
 	if len(combo.modifiers) != 0 {
 		t.Errorf("expected no modifiers, got %v", combo.modifiers)
 	}
-	if combo.main != input.Enter {
+	if combo.main != kb.Enter {
 		t.Errorf("main = %v, want Enter", combo.main)
 	}
 }
@@ -58,10 +58,10 @@ func TestParseHotkey_Combo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseHotkey: %v", err)
 	}
-	if len(combo.modifiers) != 1 || combo.modifiers[0] != input.ControlLeft {
+	if len(combo.modifiers) != 1 || combo.modifiers[0] != kb.Control {
 		t.Errorf("modifiers = %v, want [ControlLeft]", combo.modifiers)
 	}
-	if combo.main != input.KeyA {
+	if combo.main != kb.Keys['a'].Code {
 		t.Errorf("main = %v, want KeyA", combo.main)
 	}
 }
@@ -74,10 +74,10 @@ func TestParseHotkey_MultiModifierCombo(t *testing.T) {
 	if len(combo.modifiers) != 2 {
 		t.Fatalf("modifiers = %v, want 2 entries", combo.modifiers)
 	}
-	if combo.modifiers[0] != input.ControlLeft || combo.modifiers[1] != input.ShiftLeft {
+	if combo.modifiers[0] != kb.Control || combo.modifiers[1] != kb.Shift {
 		t.Errorf("modifiers = %v, want [ControlLeft ShiftLeft]", combo.modifiers)
 	}
-	if combo.main != input.KeyA {
+	if combo.main != kb.Keys['a'].Code {
 		t.Errorf("main = %v, want KeyA", combo.main)
 	}
 }

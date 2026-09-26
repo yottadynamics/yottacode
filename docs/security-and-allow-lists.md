@@ -170,7 +170,7 @@ top of the normal approval model:
   challenge itself — the human does it. The tools add no stealth or
   evasion of their own (no hiding of automation flags, no fingerprint
   patching), and this doesn't change that. One thing to know: the
-  headless session inherits go-rod's default device emulation — a fixed
+  headless session inherits chromedp's default device emulation — a fixed
   1280×800 viewport and a Mac Chrome user-agent string — which is a
   library default, not an evasion measure, and it does not match the real
   browser. The visible handoff window turns that emulation off and reports
@@ -260,10 +260,10 @@ top of the normal approval model:
   length, with the true length shown, and with control characters
   escaped so an argument can't reflow the prompt to look like something
   else.
-- **The browser keeps Chrome's process isolation.** rod's launch
+- **The browser keeps Chrome's process isolation.** chromedp's launch
   defaults turn site isolation off and run the network service inside the
   browser process; both are turned back on. Chrome's own sandbox is never
-  disabled (nothing passes `--no-sandbox`). rod's "leakless" guard is a
+  disabled (nothing passes `--no-sandbox`). The leakless guard is a
   helper binary it extracts to a predictable `/tmp` path and runs without
   checking who owns it — on a shared machine another user could plant a
   program there. The helper is only used if it and its directory belong
@@ -285,7 +285,7 @@ top of the normal approval model:
   workers multiply this surface in a way the single-session design
   hasn't been proven against yet.
 - **Not routed through the command sandbox.** `run_bash`'s Podman
-  sandbox doesn't apply here — rod launches the Chromium process
+  sandbox doesn't apply here — chromedp launches the Chromium process
   directly, not via a shell command. Containerizing the browser itself
   is a possible future addition, not a v1 guarantee.
 
@@ -335,8 +335,10 @@ way:
   shows no live browser holds it (a directory it can't prove is dead is
   never touched; at most 20 are removed per launch). Until then it sits
   in your temp dir.
-- **Downloads have a time limit, not a size limit.** A download is
-  bounded by the 60-second action timeout only.
+- **Downloads have both time and size limits.** A download is bounded by the
+  60-second action timeout and a 100 MiB maximum. Partial files in the private
+  scratch directory are removed when the operation fails or times out; the
+  validated destination is not published until completion.
 
 ## Write-path validation
 

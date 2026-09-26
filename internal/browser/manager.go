@@ -2,7 +2,6 @@ package browser
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/browser"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -70,6 +69,9 @@ type DownloadResult struct {
 // so this only ever tightens a looser or absent deadline, never loosens a
 // tighter one.
 const defaultActionTimeout = 60 * time.Second
+
+// MaxDownloadBytes is the fixed safety limit for browser downloads.
+const MaxDownloadBytes int64 = 100 << 20
 
 // Manager owns the session-scoped browser lifecycle: at most one launched
 // Chrome/Chromium process and one active page, lazily started on the
@@ -233,7 +235,7 @@ func (m *Manager) ensureAliveNoLaunchLocked() (sess pageSession, ok bool, err er
 	}
 	if !m.sess.alive() {
 		m.discardDeadSessionLocked()
-		return nil, false, errors.New("browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it")
+		return nil, false, fmt.Errorf("%w: browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it", ErrBrowserCrashed)
 	}
 	return m.sess, true, nil
 }
@@ -329,7 +331,7 @@ func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
 	res := HandoffResult{}
 	if isWebURL(url) {
 		res.URL = url
-		if _, err := next.navigate(ctx, url, ""); err != nil {
+		if _, err := next.navigate(ctx, url, "load"); err != nil {
 			res.LoadWarning = err.Error()
 		}
 	}
@@ -491,13 +493,13 @@ func (m *Manager) Download(ctx context.Context, selector, url, destPath string) 
 		return DownloadResult{}, err
 	}
 
-	tmpDir, err := os.MkdirTemp("", "yottacode-browser-download-*")
+	tmpDir, err := os.MkdirTemp(shortTempRoot(), "yottacode-browser-download-*")
 	if err != nil {
 		return DownloadResult{}, fmt.Errorf("browser download: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	var info *proto.PageDownloadWillBegin
+	var info *browser.EventDownloadWillBegin
 	if selector != "" {
 		info, err = s.downloadViaClick(ctx, selector, tmpDir)
 	} else {
@@ -673,7 +675,7 @@ func (m *Manager) Wait(ctx context.Context, selector, text string, networkIdle b
 		// silently returning nil would claim the wait condition was
 		// checked and satisfied, when nothing was actually checked at all.
 		m.discardDeadSessionLocked()
-		return errors.New("browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it")
+		return fmt.Errorf("%w: browser process is no longer running (it crashed or was killed); the next browser_* call will relaunch it", ErrBrowserCrashed)
 	}
 	if timeout <= 0 {
 		timeout = m.timeout()
