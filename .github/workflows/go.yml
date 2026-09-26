@@ -129,18 +129,60 @@ jobs:
           test -d "$YOTTACODE_LSP_TYPESCRIPT_TSSERVER"
           go test -run 'Test(Gopls|TypeScriptLanguageServer|PyrightLanguageServer|RustAnalyzer)Smoke' ./internal/lsp
 
+  goreleaser-config:
+    # Release config is otherwise only exercised on tag day. `check` rejects
+    # invalid or deprecated GoReleaser config, and the snapshot proves the
+    # darwin archive/checksum matrix used by the Homebrew formula. Nothing is
+    # published: `--skip=publish` keeps it off the network.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Check goreleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: check
+
+      - name: Render snapshot release
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --snapshot --clean --skip=before,publish,announce,sign,sbom
+
+      - name: Validate rendered release artifacts
+        run: |
+          set -eu
+          test -f dist/SHA256SUMS
+          for want in '_darwin_arm64.tar.gz' '_darwin_amd64.tar.gz'; do
+            grep -qF "$want" dist/SHA256SUMS || { echo "::error::release checksum is missing: $want"; exit 1; }
+          done
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: ShellCheck install.sh
+      - name: ShellCheck install and release scripts
         uses: ludeeus/action-shellcheck@master
         env:
           SHELLCHECK_OPTS: -s bash
         with:
-          scandir: '.'
+          scandir: '.github/scripts'
           additional_files: 'install.sh'
           ignore_paths: 'docs internal cmd .git'
+
+      - name: Test Homebrew formula generator
+        run: make homebrew-formula-test
 
   install-smoke:
     # Run install.sh end-to-end against a pinned released version.

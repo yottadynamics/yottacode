@@ -269,6 +269,17 @@ worktree-permissions-fine-grained-review
   format's image-section contract — never image bytes. See
   [`document-generation.md`](docs/document-generation.md#known-limitations)
   and [`tools.md`](docs/tools.md#read_document).
+- **Homebrew formula.** `brew install yottadynamics/yottacode/yottacode` installs
+  the published release binary on macOS from the
+  `yottadynamics/homebrew-yottacode` tap. The release workflow generates
+  `Formula/yottacode.rb` from the GoReleaser darwin archives (URL + SHA-256 per
+  architecture, never a build from HEAD) and pushes it to the tap on every
+  stable tag; pre-release tags (`-rc.N`) leave the tap untouched. Upgrade with
+  `brew upgrade yottacode`. Needs a `HOMEBREW_TAP_GITHUB_TOKEN` repository
+  secret with write access to the tap; a stable tag without it now fails
+  before the GitHub Release is published. A new `goreleaser-config` CI job
+  runs `goreleaser check` and validates the release checksum matrix on every
+  PR. See [`installation.md`](docs/installation.md#homebrew).
 
 ### Changed
 

@@ -64,7 +64,7 @@ func riskyAllowWarning(r Rule, cwd string) string {
 		if r.Pattern == "-C *" || strings.HasPrefix(r.Pattern, "-C ") {
 			return fmt.Sprintf("%s in %s allows git with an alternate working tree; prefer scoped git subcommands", rule, r.Source)
 		}
-	case "Github", "MCP", "Memory":
+	case "Github", "MCP":
 		if r.Pattern == "*" {
 			return fmt.Sprintf("%s in %s allows an entire integration namespace; prefer read_* or verb-specific rules", rule, r.Source)
 		}
@@ -76,7 +76,7 @@ func riskyAllowWarning(r Rule, cwd string) string {
 			return fmt.Sprintf("%s in %s allows navigating the browser to any website; prefer per-site rules", rule, r.Source)
 		}
 	case "Delete":
-		if allowsRepoWideDelete(r.Pattern, cwd) {
+		if strings.HasPrefix(filepath.ToSlash(r.Pattern), "/") || allowsRepoWideDelete(r.Pattern, cwd) {
 			return fmt.Sprintf("%s in %s allows deleting anywhere in the repo; keep delete rules narrow", rule, r.Source)
 		}
 	}
