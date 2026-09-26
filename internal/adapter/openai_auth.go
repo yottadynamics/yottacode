@@ -297,6 +297,14 @@ func (a *openAIAuthAdapter) send(ctx context.Context, body []byte) (*http.Respon
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", openAIAuthBetaHeader)
 	req.Header.Set("originator", openAIAuthOriginator)
+	// Required so the backend knows which ChatGPT account (and thus
+	// which plan/entitlement) to run this request under — without it
+	// the backend can't resolve billing and 401s with an unrelated
+	// "Incorrect API key" error. See project memory
+	// project_chatgpt_codex_api_contract.md.
+	if ts, err := a.tokens.Current(); err == nil && ts.ChatGPTAccountID != "" {
+		req.Header.Set("chatgpt-account-id", ts.ChatGPTAccountID)
+	}
 	return a.client.Do(req)
 }
 
@@ -635,6 +643,9 @@ func ProbeOpenAIAuthAccount(ctx context.Context) *OpenAIAuthAccount {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("originator", openAIAuthOriginator)
+	if ts, err := src.Current(); err == nil && ts.ChatGPTAccountID != "" {
+		req.Header.Set("chatgpt-account-id", ts.ChatGPTAccountID)
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

@@ -180,13 +180,15 @@ type wizardModel struct {
 	openAIAuthErr     error
 
 	// openai-auth post-login model scan state.
-	// openAIAuthAccessToken is forwarded from the login Wait result
-	// to the scan cmd so the scanner doesn't have to re-load the
-	// token store. openAIAuthModels is the discovered set on success;
-	// openAIAuthScanErr captures any failure for the stepDone view.
-	openAIAuthAccessToken string
-	openAIAuthModels      []string
-	openAIAuthScanErr     error
+	// openAIAuthAccessToken/openAIAuthChatGPTAccountID are forwarded
+	// from the login Wait result to the scan cmd so the scanner
+	// doesn't have to re-load the token store. openAIAuthModels is
+	// the discovered set on success; openAIAuthScanErr captures any
+	// failure for the stepDone view.
+	openAIAuthAccessToken      string
+	openAIAuthChatGPTAccountID string
+	openAIAuthModels           []string
+	openAIAuthScanErr          error
 
 	copilotUserCode  string
 	copilotVerifyURI string
@@ -374,8 +376,9 @@ type openAIAuthURLReadyMsg struct {
 // has already been persisted to ~/.yottacode/auth/openai-auth.json
 // and accessToken is forwarded to the scan cmd.
 type openAIAuthDoneMsg struct {
-	err         error
-	accessToken string
+	err              error
+	accessToken      string
+	chatgptAccountID string
 }
 
 // openAIAuthScanDoneMsg is sent by the scan cmd after the post-login
@@ -556,16 +559,16 @@ func waitOpenAIAuthLoginCmd(ctx context.Context, pending *openaiauth.PendingLogi
 		if err := openaiauth.Save(path, ts); err != nil {
 			return openAIAuthDoneMsg{err: fmt.Errorf("save tokens: %w", err)}
 		}
-		return openAIAuthDoneMsg{err: nil, accessToken: ts.AccessToken}
+		return openAIAuthDoneMsg{err: nil, accessToken: ts.AccessToken, chatgptAccountID: ts.ChatGPTAccountID}
 	}
 }
 
 // scanOpenAIAuthCmd runs the post-login model scan. Failures don't
 // touch the existing models file (if any); the caller surfaces the
 // error on stepDone so the user knows to retry login.
-func scanOpenAIAuthCmd(ctx context.Context, accessToken string) tea.Cmd {
+func scanOpenAIAuthCmd(ctx context.Context, accessToken, chatgptAccountID string) tea.Cmd {
 	return func() tea.Msg {
-		models, err := openaiauth.ScanAndPersist(ctx, accessToken)
+		models, err := openaiauth.ScanAndPersist(ctx, accessToken, chatgptAccountID)
 		return openAIAuthScanDoneMsg{models: models, err: err}
 	}
 }
@@ -730,12 +733,14 @@ func (m wizardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.openAIAuthAccessToken = msg.accessToken
+		m.openAIAuthChatGPTAccountID = msg.chatgptAccountID
 		m.step = stepOpenAIAuthScan
-		return m, scanOpenAIAuthCmd(m.ctx, msg.accessToken)
+		return m, scanOpenAIAuthCmd(m.ctx, msg.accessToken, msg.chatgptAccountID)
 	case openAIAuthScanDoneMsg:
 		m.openAIAuthModels = msg.models
 		m.openAIAuthScanErr = msg.err
 		m.openAIAuthAccessToken = ""
+		m.openAIAuthChatGPTAccountID = ""
 		m.step = stepDone
 		return m, tea.Quit
 	case embedPullDoneMsg:
