@@ -285,6 +285,17 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
+- **`openai-auth login` could reject every discovered model with an unrelated
+  "Incorrect API key provided" 401, even for a valid, paid ChatGPT account.**
+  OpenAI's access-token JWT nests email and `chatgpt_account_id` under two
+  custom claim namespaces (`https://api.openai.com/profile` and
+  `.../auth`) that the token decoder never looked at, so logins showed
+  `<no email claim>` and no request to `chatgpt.com/backend-api/codex/*`
+  ever carried the `chatgpt-account-id` header that endpoint needs to
+  resolve which account to bill. Claims are now decoded from both
+  namespaces, `ChatGPTAccountID` is persisted on the token store (surviving
+  refresh), and it's sent on every codex-backend call — model catalog
+  fetch, per-model probe, chat requests, and the `/usage` account probe.
 - **Go debug tools (`debug_eval`, `debug_step`, and friends) could report a
   spurious "DAP session closed" or timeout error for a request that had
   actually already succeeded.** The DAP client's response wait raced the
