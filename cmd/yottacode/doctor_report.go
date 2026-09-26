@@ -138,7 +138,13 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache: %v", err))
 		return result
 	}
-	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes = goCacheSizes(cacheDir)
+	var sizeErr error
+	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes, sizeErr = goCacheSizes(cacheDir)
+	if sizeErr != nil {
+		result.Status = doctorStatusWarning
+		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache components: %v", sizeErr))
+		return result
+	}
 	if result.GoCacheBytes > 2*1024*1024*1024 {
 		result.Status = doctorStatusWarning
 		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(result.GoCacheBytes)))
@@ -267,10 +273,28 @@ func doctorZombieCount(procRoot string) int {
 	return count
 }
 
-func goCacheSizes(path string) (total, build, modcache int64) {
-	build, _ = dirSize(filepath.Join(path, "cache"))
-	modcache, _ = dirSize(filepath.Join(path, "modcache"))
-	return build + modcache, build, modcache
+func goCacheSizes(path string) (total, build, modcache int64, err error) {
+	total, err = dirSize(path)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	build, err = cacheComponentSize(filepath.Join(path, "cache"))
+	if err != nil {
+		return total, 0, 0, err
+	}
+	modcache, err = cacheComponentSize(filepath.Join(path, "modcache"))
+	if err != nil {
+		return total, build, 0, err
+	}
+	return total, build, modcache, nil
+}
+
+func cacheComponentSize(path string) (int64, error) {
+	size, err := dirSize(path)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return size, err
 }
 
 func dirSize(path string) (int64, error) {
