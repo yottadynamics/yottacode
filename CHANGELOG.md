@@ -25,7 +25,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
   `browser_download`, `browser_console_logs`, `browser_network_requests`
   — drive a real, headless Chrome/Chromium instance over the Chrome
-  DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
+  DevTools Protocol via `chromedp/cdproto`, with no Node.js or Playwright
   dependency. A fresh, isolated temp profile per session (never your
 
   real, logged-in browser), headless by default, and not available to
@@ -64,7 +64,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `read_file`; the approval prompt shows the typed text, the uploaded files
   and the download source instead of only a selector or destination; Chrome
   launches with site isolation and an out-of-process network service again
-  (rod turns both off by default); rod's `/tmp` leakless helper is only run
+  (chromedp leaves both enabled by default); chromedp's `/tmp` leakless helper is only run
   if it is owned by you and not writable by others (it used a predictable
   path and no ownership check); and the download copy refuses to write
   through a symlink. Known limitations (prompt injection, internal-network
@@ -295,6 +295,7 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
+worktree-sharded-honking-nebula
 - **`read_many_files` is now safe to rely on for large or messy batches.**
   The 512 KiB combined-output cap is enforced on the output itself; it used
   to be checked only between files, so a batch could return roughly twice
@@ -361,6 +362,17 @@ worktree-permissions-fine-grained-review
   `[skipped: not UTF-8 text (…)]` rather than raw bytes, and an overlong
   line is cut on a character boundary so the returned text (and its hashline
   receipt) is never invalid UTF-8.
+- **`openai-auth login` could reject every discovered model with an unrelated
+  "Incorrect API key provided" 401, even for a valid, paid ChatGPT account.**
+  OpenAI's access-token JWT nests email and `chatgpt_account_id` under two
+  custom claim namespaces (`https://api.openai.com/profile` and
+  `.../auth`) that the token decoder never looked at, so logins showed
+  `<no email claim>` and no request to `chatgpt.com/backend-api/codex/*`
+  ever carried the `chatgpt-account-id` header that endpoint needs to
+  resolve which account to bill. Claims are now decoded from both
+  namespaces, `ChatGPTAccountID` is persisted on the token store (surviving
+  refresh), and it's sent on every codex-backend call — model catalog
+  fetch, per-model probe, chat requests, and the `/usage` account probe.
 - **Go debug tools (`debug_eval`, `debug_step`, and friends) could report a
   spurious "DAP session closed" or timeout error for a request that had
   actually already succeeded.** The DAP client's response wait raced the
