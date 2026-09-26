@@ -1282,6 +1282,9 @@ func formatDoctor(result doctor.Result) string {
 	if result.LSP.Note != "" {
 		fmt.Fprintf(&b, " (%s)", result.LSP.Note)
 	}
+	if result.LSP.Error != "" {
+		fmt.Fprintf(&b, "\n  error: %s", result.LSP.Error)
+	}
 	for _, lang := range result.LSP.Languages {
 		fmt.Fprintf(&b, "\n  %s: %s", lang.Name, lang.Probe)
 		if lang.InstallHint != "" && !lang.ServerAvailable {
