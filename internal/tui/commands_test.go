@@ -907,12 +907,12 @@ func TestFormatDoctor_RendersSections(t *testing.T) {
 	result := doctor.Result{
 		Provider: adapter.ProbeResult{Profile: adapter.ProviderProfile{Provider: adapter.ProviderOpenAI}},
 		GitHub:   doctor.GitHubResult{Status: doctor.StatusOK, Login: "octocat"},
-		LSP:      doctor.LSPResult{Status: doctor.StatusWarning, Note: "no supported languages detected"},
+		LSP:      doctor.LSPResult{Status: doctor.StatusWarning, Note: "no supported languages detected", Error: "detector failed"},
 		Media:    doctor.MediaResult{Status: doctor.StatusOK, FFmpeg: doctor.Binary{Installed: true}, FFprobe: doctor.Binary{Installed: true}},
-		Sandbox:  doctor.Section{Status: doctor.StatusSkipped, Note: "reported by CLI doctor"},
+		Sandbox:  doctor.Section{Status: doctor.StatusSkipped, Note: "not checked by the TUI doctor"},
 	}
 	got := formatDoctor(result)
-	for _, want := range []string{"provider:", "GitHub: ok", "LSP: warning", "media: ok", "sandbox/cache: skipped"} {
+	for _, want := range []string{"provider:", "GitHub: ok", "LSP: warning", "detector failed", "media: ok", "sandbox/cache: skipped"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, got)
 		}

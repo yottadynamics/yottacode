@@ -93,13 +93,17 @@ type Section struct {
 
 // Probe runs all independent diagnostics with bounded network and LSP probes.
 func Probe(ctx context.Context, cwd string, provider adapter.Config, lspConfig config.LSPConfig, sandboxEnabled bool) Result {
-	result := Result{Sandbox: Section{Status: StatusSkipped, Note: "sandbox cache diagnostics are reported by the CLI doctor"}}
+	// Keep the complete report bounded, including provider probes and token
+	// discovery, rather than only bounding individual network requests.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	result := Result{Sandbox: Section{Status: StatusSkipped, Note: "not checked by the TUI doctor"}}
 	result.Provider = adapter.Probe(ctx, provider)
 	result.GitHub = probeGitHub(ctx, cwd)
 	result.LSP = probeLSP(ctx, cwd, lspConfig)
 	result.Media = probeMedia()
 	if sandboxEnabled {
-		result.Sandbox = Section{Status: StatusSkipped, Note: "sandbox cache diagnostics are not yet available in the TUI"}
+		result.Sandbox = Section{Status: StatusSkipped, Note: "not checked by the TUI doctor"}
 	}
 	return result
 }
@@ -115,8 +119,12 @@ func status(issues, warnings []string) Status {
 }
 
 func probeGitHub(ctx context.Context, cwd string) (r GitHubResult) {
+	// Cover token discovery (including a possible `gh` shellout) and the API
+	// request with one deadline.
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	resolver := gh.NewTokenResolver()
-	_, source, err := resolver.Resolve(ctx)
+	_, source, err := resolver.Resolve(probeCtx)
 	if err != nil {
 		if errors.Is(err, gh.ErrNoToken) {
 			r.Issues = []string{"no GitHub token configured"}
@@ -128,8 +136,6 @@ func probeGitHub(ctx context.Context, cwd string) (r GitHubResult) {
 	}
 	r.TokenSource = source
 	client := gh.NewTypedClient(cwd)
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	user, err := client.AuthedUserLogin(probeCtx)
 	if err != nil {
 		r.Issues = []string{fmt.Sprintf("GitHub API probe failed: %v", err)}

@@ -1284,6 +1284,9 @@ func formatDoctor(result doctor.Result) string {
 	}
 	for _, lang := range result.LSP.Languages {
 		fmt.Fprintf(&b, "\n  %s: %s", lang.Name, lang.Probe)
+		if lang.InstallHint != "" && !lang.ServerAvailable {
+			fmt.Fprintf(&b, " (install: %s)", lang.InstallHint)
+		}
 	}
 	fmt.Fprintf(&b, "\nmedia: %s\n  ffmpeg: %s\n  ffprobe: %s", result.Media.Status, binaryDoctorStatus(result.Media.FFmpeg), binaryDoctorStatus(result.Media.FFprobe))
 	fmt.Fprintf(&b, "\nsandbox/cache: %s (%s)", result.Sandbox.Status, result.Sandbox.Note)
