@@ -121,7 +121,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
-	f, err := os.Open(p)
+	f, _, err := openRegularFile(p)
 	if err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
@@ -134,6 +134,12 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	if len(selected) == 0 {
 		return "", nil
 	}
+	// Binary or non-UTF-8 content would only fill the context with noise (and
+	// a receipt over it could never be used by apply_hashline), so say so
+	// instead of dumping raw bytes.
+	if reason := nonTextReason(selectedBytes, false); reason != "" {
+		return nonTextSkipMessage(reason), nil
+	}
 
 	anchored := buildAnchoredLines(selected, startLine)
 	var sb strings.Builder
@@ -142,7 +148,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		if err != nil {
 			return "", fmt.Errorf("read_file: %w", err)
 		}
-		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s\n", a.Path, startByte, len(selectedBytes), receipt.Hash)
+		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t\n", a.Path, startByte, len(selectedBytes), receipt.Hash, spanEndsWithNewline(selectedBytes))
 	}
 	for i, line := range anchored {
 		if a.Anchors {
@@ -180,7 +186,7 @@ func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes
 		if err := ctx.Err(); err != nil {
 			return nil, nil, 0, false, err
 		}
-		skipped, err := discardLine(br)
+		skipped, err := discardLine(ctx, br)
 		startByte += skipped
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -199,28 +205,22 @@ func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes
 		if err := ctx.Err(); err != nil {
 			return nil, nil, startByte, false, err
 		}
-		line, readErr := br.ReadString('\n')
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		lineBytes, atEOF, lineTruncated, readErr := readBoundedLine(ctx, br, maxBytes-used)
+		if readErr != nil {
 			return nil, nil, startByte, false, readErr
 		}
-		atEOF := errors.Is(readErr, io.EOF)
-		if line == "" && atEOF {
+		if len(lineBytes) == 0 && atEOF {
 			return lines, span, startByte, false, nil
 		}
-		lineBytes := []byte(line)
-		lineText := strings.TrimSuffix(line, "\n")
-
-		if used+len(lineBytes) > maxBytes {
-			// A single line that alone blows the budget still has to
-			// return something rather than nothing. The receipt covers exactly
-			// the returned byte prefix, not the full overlong source line.
+		if lineTruncated {
 			if len(lines) == 0 {
-				keep := min(len(lineBytes), maxBytes)
-				span = append(span, lineBytes[:keep]...)
-				lines = append(lines, strings.TrimSuffix(string(lineBytes[:keep]), "\n"))
+				kept := trimPartialRune(lineBytes)
+				span = append(span, kept...)
+				lines = append(lines, strings.TrimSuffix(string(kept), "\n"))
 			}
 			return lines, span, startByte, true, nil
 		}
+		lineText := strings.TrimSuffix(string(lineBytes), "\n")
 		lines = append(lines, lineText)
 		span = append(span, lineBytes...)
 		used += len(lineBytes)
@@ -229,19 +229,54 @@ func readLineWindow(ctx context.Context, r io.Reader, startLine, limit, maxBytes
 		}
 	}
 
-	// Stopped on the line limit — the marker depends on whether
-	// anything is actually left after the window.
+	// Stopped on the line limit — the marker depends on whether anything is
+	// actually left after the window.
 	_, peekErr := br.Peek(1)
 	return lines, span, startByte, peekErr == nil, nil
 }
 
+// readBoundedLine reads one line without ever retaining more than maxBytes
+// plus a small scanner chunk. It stops as soon as the output budget is known
+// to be exceeded; the unread remainder is irrelevant because the caller ends
+// this window. This prevents a single unterminated line from causing an
+// unbounded allocation.
+func readBoundedLine(ctx context.Context, br *bufio.Reader, maxBytes int) ([]byte, bool, bool, error) {
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	var line []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, false, err
+		}
+		chunk, err := br.ReadSlice('\n')
+		if len(chunk) > maxBytes-len(line) {
+			keep := max(0, maxBytes-len(line))
+			line = append(line, chunk[:keep]...)
+			return line, false, true, nil
+		}
+		line = append(line, chunk...)
+		if err == nil {
+			return line, false, false, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return line, true, false, nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, false, false, err
+		}
+	}
+}
+
 // discardLine consumes bytes through the next newline without retaining
-// them. ReadSlice reports ErrBufferFull when a line is longer than the
-// buffer, so looping on that skips even a pathologically long line in
-// bounded memory.
-func discardLine(br *bufio.Reader) (int, error) {
+// them. ReadSlice reports ErrBufferFull when a line is longer than the buffer,
+// so looping on that skips even a pathologically long line in bounded memory.
+func discardLine(ctx context.Context, br *bufio.Reader) (int, error) {
 	total := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
 		chunk, err := br.ReadSlice('\n')
 		total += len(chunk)
 		if errors.Is(err, bufio.ErrBufferFull) {
@@ -287,10 +322,13 @@ func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (
 		return MultimodalResult{Content: text}, err
 	}
 
-	info, err := os.Stat(p)
+	// Open (not just stat) so a FIFO or device named like an image is refused
+	// up front instead of blocking on the later read.
+	f, info, err := openRegularFile(p)
 	if err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
 	}
+	defer f.Close()
 	label := fmt.Sprintf("[image: %s, %s, %d bytes]", filepath.Base(p), mediaType, info.Size())
 
 	if !t.SupportsImages {
@@ -304,9 +342,14 @@ func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (
 		}, nil
 	}
 
-	data, err := os.ReadFile(p)
+	data, err := io.ReadAll(io.LimitReader(f, maxImageBytes+1))
 	if err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
+	}
+	if len(data) > maxImageBytes { // grew past the limit after the size check
+		return MultimodalResult{
+			Content: label + " — image exceeds 20 MiB size limit",
+		}, nil
 	}
 
 	return MultimodalResult{

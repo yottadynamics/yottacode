@@ -295,7 +295,7 @@ block that vision-capable models can see directly.
 | `limit` | int | `2000` | Max lines to return (text files only) |
 | `anchors` | bool | `false` | When true, prefix text rows as `line#anchor\tcontent` and include a hashline receipt for the exact returned byte span |
 
-When `anchors=true`, text output starts with a receipt line such as `# hashline path=main.go offset=0 length=128 hash=…`. The hash is over the exact bytes returned in the read window, including original line endings. Use that receipt with [`apply_hashline`](#apply_hashline) when you want the next edit to fail safely if the file changed after the read.
+When `anchors=true`, text output starts with a receipt line such as `# hashline path=main.go offset=0 length=128 hash=… ends_with_newline=true`. The hash is over the exact bytes returned in the read window, including original line endings. `ends_with_newline` says whether that span ends with a newline: rendered lines never show their terminator, so without it `a\nb` and `a\nb\n` look identical. Use the receipt with [`apply_hashline`](#apply_hashline) when you want the next edit to fail safely if the file changed after the read.
 
 **Paging large files.** A single read returns at most 512 KiB of content;
 when more follows the window, the output ends in `…[truncated]`. That
@@ -304,6 +304,16 @@ reach — lines before the window are streamed past and discarded, so a
 distant offset costs time rather than memory. Page a large log by
 advancing `offset` by the number of lines you got back. An empty result
 means one thing only: the offset is past the last line.
+
+**Non-text and special files.** Only regular files are read: a directory,
+FIFO, socket, or device returns a `not a regular file (…)` error, and a
+FIFO can no longer hang the call (this applies to image-named paths too).
+A window that contains NUL bytes or is not valid UTF-8 is not dumped into the
+context; the result is `[skipped: not UTF-8 text (…)]` instead, with no line
+numbers or receipt. This is a normal (non-error) result, like the
+image-unsupported label below. When one line alone exceeds the 512 KiB
+budget, the returned prefix stops on a character boundary so it is never
+cut into invalid UTF-8, and the receipt covers exactly that prefix.
 
 **Image support.** When the path points to a recognized image file and the
 provider supports images in tool results (currently Anthropic only), the
@@ -329,9 +339,11 @@ round-trips.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `paths` | []string or string | — | Required; max 20 files; a single string is accepted for one file |
-| `offset` | int | `0` | Bytes; negatives clamped to 0 |
-| `limit` | int | `524288` | Per-file cap; the combined output of one call is capped at 512 KiB |
+| `offset` | int | `0` | Bytes, per file; negatives clamped to 0. May land mid-line, in which case the first line is partial |
+| `limit` | int | `524288` | Bytes, per file. A file cut short by `limit` ends on a line boundary |
 | `anchors` | bool | `false` | When true, prefix each returned text line with `line#anchor\tcontent` |
+
+`offset` and `limit` are **byte** counts here, unlike [`read_file`](#read_file), where they are line counts.
 
 Returns sections in the form:
 
@@ -340,7 +352,19 @@ Returns sections in the form:
 <content>
 ```
 
-Each file gets its own `[truncated]` marker if needed. With `anchors=true`, each section also starts with `# hashline path=… offset=… length=… hash=…`; the hash covers exactly the returned bytes for that section and can be passed to [`apply_hashline`](#apply_hashline).
+Sections come back in **sorted path order**, not request order, so identical requests produce identical output. A section that was cut short (by `limit` or by the output cap) ends with `…[truncated]`. A cut window ends on a line boundary, or on a rune boundary inside a single overlong line, so a follow-up call can continue from a clean `offset`.
+
+**Output cap.** The sections together never exceed 512 KiB, including `anchors=true` prefixes and receipts. A file that only partly fits is returned truncated; once too little budget remains for another file, the rest are named in a trailing `…[read budget exceeded …]` note (extra to the 512 KiB, and it only echoes paths you supplied) so they can be requested in a follow-up call.
+
+**Failures.** Every path is checked against the read deny list before any file is opened, and a denied path refuses the whole call. Any other per-file problem does not abort the batch:
+
+| Situation | Result |
+|---|---|
+| Missing, unreadable, directory, FIFO, socket, or device | Inline `[error: no such file or directory]` (or similar) in that file's section. Non-regular files are never opened for reading, so a FIFO cannot hang the call |
+| Binary (contains NUL bytes) or not valid UTF-8 | Inline `[skipped: not UTF-8 text (…)]` |
+| No file could be read at all | The call returns an error naming each failed path |
+
+**Anchors.** With `anchors=true`, each section starts with `# hashline path=… offset=… length=… hash=… ends_with_newline=…` (see [`read_file`](#read_file) for the last field). Line numbers are absolute (counted from the start of the file, so they match `read_file` and [`edit_anchored`](#edit_anchored) even when `offset` is non-zero), and the hash covers exactly the bytes rendered as lines in that section, so it can be passed to [`apply_hashline`](#apply_hashline). If `offset` lands mid-line, that first line is partial and its anchor covers only the partial text, so `edit_anchored` rejects it as stale instead of editing the wrong line.
 
 ## read_document
 
@@ -756,6 +780,8 @@ Anchors should be passed as full `line#hash` references, for example `42#a8f13c2
 
 The standard approval modal offers allow once, allow for this session, always allow, deny, and always deny when their derived permission rules are available. For `edit_anchored`, these choices use the same `Edit(...)` permission namespace as `edit_file` and `apply_hashline`, so an existing `Edit(pattern)` rule can allow, ask, or deny all three edit paths consistently. Permission approval never bypasses stale-anchor, overlap, or no-op validation.
 
+Like `apply_hashline`, the target file is checked against a 64 MiB size limit before it is read (`file_too_large` if over).
+
 ## syntax_range
 
 Return offline syntax ranges around a source position. Go uses its standard-library AST parser; TypeScript/JavaScript, Python, and Rust use conservative structural scanners. This read-only helper chooses a local edit target and never writes files.
@@ -778,14 +804,27 @@ Apply one or more content-hash anchored text edits to a single file. This is the
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | File to edit; absolute or cwd-relative |
-| `offset` | int | — | Byte offset from the hashline receipt |
-| `length` | int | — | Byte length from the hashline receipt |
-| `hash` | string | — | 16-hex SHA-256 prefix from the receipt |
-| `old` | string | — | Exact old text covered by the anchor |
-| `new` | string | — | Replacement text; may be empty |
-| `hunks` | []object | — | Optional multi-hunk form using the same `offset`/`length`/`hash`/`old`/`new` fields per hunk |
+| `anchor` | string | — | Line-addressed form: the exact `line#hash` token printed by `read_file`/`read_many_files` (`anchors=true`) or accepted by `edit_anchored`, e.g. `42#a1b2c3d4`. Mutually exclusive with `offset`/`length`/`hash`/`old` |
+| `offset` | int | — | Byte-addressed form: byte offset from the hashline receipt |
+| `length` | int | — | Byte length from the hashline receipt; must equal the byte length of `old` |
+| `hash` | string | — | 16-hex SHA-256 prefix copied from the receipt (a model cannot compute it) |
+| `old` | string | — | Exact old text covered by the anchor; must be non-empty and end with a newline exactly when the receipt says `ends_with_newline=true` |
+| `new` | string | — | Replacement text; may be empty (deletes the line, for an `anchor` hunk) |
+| `hunks` | []object | — | Optional multi-hunk form; each hunk is either anchor-addressed (`anchor` + `new`) or byte-addressed (`offset`/`length`/`hash`/`old`/`new`) |
 
-Always prompts for approval, validates the same write-path rules as `edit_file`, and writes atomically via same-directory temp file plus rename. On success it returns a capped unified diff. On `stale_anchor` or `ambiguous_anchor`, re-read the suggested range with `anchors=true`, copy the current text and receipt, then retry.
+**Line addressing.** `anchor` is a second way to point at a hunk, alongside the byte-based `offset`/`length`/`hash`/`old`. It takes the exact `line#hash` token `read_file`/`read_many_files` print before each line with `anchors=true` (line numbers are absolute, so the token is valid regardless of what `offset`/`limit` window it came from) — copy it as-is, no parsing needed. The tool re-reads the file, resolves the anchor the same way `edit_anchored` does (stale-line and hash-mismatch errors read identically), and derives that line's exact byte span, text, and hash itself — `old`, `hash`, `offset`, and `length` are never needed for an anchor hunk. This is the point of `anchor`: touching one line inside a large `read_file` window no longer means reproducing the whole window as `old`. `new` replaces the anchored line (its own terminator included), so an empty `new` deletes the line, and a multi-line `new` can turn one line into several. Two hunks may not target the same line (rejected as `overlapping_hunks`), but adjacent lines each addressed by their own hunk compose into one multi-line edit in a single call. An `anchor` hunk may be freely mixed with byte-addressed hunks in the same `hunks` array.
+
+Always prompts for approval, validates the same write-path rules as `edit_file` (which refuse a symlinked leaf today), and writes atomically via same-directory temp file plus rename — resolved through any symlink chain first, so a symlinked target is written in place rather than replaced by a plain file. On `stale_anchor` or `ambiguous_anchor`, re-read the suggested range with `anchors=true`, copy the current text and receipt, then retry.
+
+**Inserting.** There is no separate insert: an empty span hashes to a constant, so it could not prove the file is unchanged, and an insert at a stale offset would land in the wrong place (or split a multi-byte character). An empty `old` is rejected with `empty_anchor`. To insert with a byte hunk, anchor on adjacent text: set `old` to the neighbouring line and `new` to that line plus the addition. To insert with a line `anchor`, set `new` to the anchored line's own text plus the addition — an `anchor` with no `new`, or an empty `new`, deletes the line instead. Use `write_file` to fill an empty or new file.
+
+**Length is verified.** `length` must equal the byte length of `old` (`invalid_range` otherwise). It decides how many bytes are replaced, so a value that disagreed with the hashed text could otherwise replace bytes nobody verified.
+
+**Line endings.** The hash is byte-exact, but models emit plain newlines and cannot reliably reproduce carriage returns. In a file that is predominantly CRLF, `old` is used exactly as sent when it matches its hash; only if it does not, and its CRLF form does, is the CRLF form used, so a real mismatch is never masked. `new` is converted to CRLF when `old` was CRLF-only or had no newline, so an edit cannot leave mixed endings. If `old` itself mixes endings, the model is managing them and neither side is rewritten. LF files are never converted.
+
+**Size limit.** The target file is stat'd and rejected (`file_too_large`) before it is read if it exceeds 64 MiB. This bounds a single file this tool will load into memory to apply an edit; it is unrelated to the 512 KiB read-window cap on `read_file`/`read_many_files`, which bounds what one read call returns, not how large the file itself may be.
+
+**Preview.** On success the tool returns a bounded unified diff: distant edits are separate hunks, lines are clipped, the whole preview is capped at 16 KiB and 80 changed lines, and `…[truncated diff]` always appears when anything was left out. The same renderer backs the diffs in `lsp_rename_preview`, `lsp_format_preview`, and `lsp_code_action_preview`, where a rename touches many places in one file.
 
 ## apply_diff
 

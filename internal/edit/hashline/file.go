@@ -12,7 +12,11 @@ import (
 // temp file rename. The same directory keeps the rename on the same filesystem,
 // which gives POSIX platforms atomic replacement semantics for readers.
 func ApplyFile(path string, hunks []Hunk) error {
-	src, err := os.ReadFile(path)
+	// Resolve once and use the resolved target for the entire compare-and-replace
+	// sequence. Resolving after locking the original path would leave a TOCTOU
+	// window where a symlink could be redirected between validation and rename.
+	path = realTargetPath(path)
+	src, err := ReadFileForEdit(path)
 	if err != nil {
 		return err
 	}
@@ -29,6 +33,9 @@ func ApplyFile(path string, hunks []Hunk) error {
 
 // ReplaceFileIfUnchanged atomically replaces path only when it still contains expected.
 func ReplaceFileIfUnchanged(path string, expected, content []byte) error {
+	// Resolve once before opening the lock file. All subsequent operations use
+	// this stable target path rather than following a mutable link again.
+	path = realTargetPath(path)
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -46,7 +53,10 @@ func writeAtomicIfUnchanged(path string, expected, content []byte, mode os.FileM
 		return err
 	}
 	defer unix.Flock(int(lockFile.Fd()), unix.LOCK_UN)
-	current, err := os.ReadFile(path)
+	// Re-read under the lock to detect a concurrent change since the caller's
+	// own read. Capped for the same reason the caller's read is: the file
+	// could have grown past the limit in between.
+	current, err := ReadFileForEdit(path)
 	if err != nil {
 		return err
 	}
@@ -54,6 +64,17 @@ func writeAtomicIfUnchanged(path string, expected, content []byte, mode os.FileM
 		return &ApplyError{Kind: ErrConcurrentWrite, Message: "file changed while the edit was being prepared"}
 	}
 	return writeAtomic(path, content, mode)
+}
+
+// realTargetPath resolves path through any symlinks in its own name or its
+// parent directories, so the caller can write to the real underlying file. It
+// falls back to path unchanged if resolution fails, which should not happen
+// here: every caller has just successfully read or stat'd path.
+func realTargetPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 func writeAtomic(path string, content []byte, mode os.FileMode) error {
