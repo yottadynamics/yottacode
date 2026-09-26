@@ -637,10 +637,10 @@ func matchPattern(pattern, value, cwd string, isPath bool) bool {
 		return value == ""
 	}
 	if isPath {
-		// Expand "~/foo" patterns to the resolved home dir so user-
-		// authored rules match the absolute descriptors the agent
-		// produces (descriptors are home-expanded in relPath).
-		pattern = expandHome(pattern)
+		// Keep relative descriptors relative; only absolute candidates need
+		// filesystem canonicalization. Absolute permission patterns are resolved
+		// by canonicalizePattern above.
+		pattern = canonicalizePattern(pattern)
 		ok, err := doublestar.PathMatch(pattern, value)
 		if err == nil && ok {
 			return true
@@ -652,7 +652,7 @@ func matchPattern(pattern, value, cwd string, isPath bool) bool {
 		if strings.HasPrefix(pattern, "/") && !strings.HasPrefix(value, "/") {
 			absValue := "/" + value
 			if cwd != "" {
-				absValue = filepath.ToSlash(filepath.Join(cwd, value))
+				absValue = filepath.ToSlash(canonicalizePath(filepath.Join(cwd, value)))
 			}
 			ok, err := doublestar.PathMatch(pattern, absValue)
 			if err == nil && ok {
