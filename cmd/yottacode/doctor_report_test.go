@@ -1,12 +1,40 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
+func TestGoCacheSizesIncludesExtraFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, file := range []struct {
+		path string
+		size int
+	}{{"cache/build", 3}, {"modcache/module", 5}, {"other", 7}} {
+		path := filepath.Join(root, file.path)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, make([]byte, file.size), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	total, build, modcache, err := goCacheSizes(root)
+	if err != nil || total != 15 || build != 3 || modcache != 5 {
+		t.Fatalf("sizes = %d, %d, %d, %v", total, build, modcache, err)
+	}
+}
+
+func TestGoCacheSizesMissingComponentsAreZero(t *testing.T) {
+	root := t.TempDir()
+	if total, build, modcache, err := goCacheSizes(root); err != nil || total != 0 || build != 0 || modcache != 0 {
+		t.Fatalf("sizes = %d, %d, %d, %v", total, build, modcache, err)
+	}
+}
 func TestFormatDoctorReportHappyPath(t *testing.T) {
 	provider := doctorProviderFixture(nil, nil)
 	github := GitHubProbeResult{Status: doctorStatusOK, TokenSource: "env", Reachable: true, AuthOK: true, Login: "octocat"}
