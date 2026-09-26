@@ -158,7 +158,7 @@ Useful interactive commands:
 - `/skills` — menu to enable/disable, install, uninstall, check, and update skills
 - `/sessions` — resume, rename, or export sessions
 - `/memory` — edit USER.md / YOTTACODE.md or browse agent-managed memories
-- `/doctor` — actively probe the configured endpoint
+- `/doctor` — run provider, GitHub, LSP, and media diagnostics (sandbox/cache checks are explicitly skipped)
 - `/init` — draft or refresh `.yottacode/YOTTACODE.md`
 
 ## 4. Use one-shot mode for scripts
