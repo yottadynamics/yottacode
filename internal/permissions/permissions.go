@@ -637,10 +637,10 @@ func matchPattern(pattern, value, cwd string, isPath bool) bool {
 		return value == ""
 	}
 	if isPath {
-		// Keep relative descriptors relative; only absolute candidates need
-		// filesystem canonicalization. Absolute permission patterns are resolved
-		// by canonicalizePattern above.
 		pattern = canonicalizePattern(pattern)
+		if strings.HasPrefix(value, "/") {
+			value = filepath.ToSlash(canonicalizePath(value))
+		}
 		ok, err := doublestar.PathMatch(pattern, value)
 		if err == nil && ok {
 			return true
