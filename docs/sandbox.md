@@ -176,7 +176,8 @@ documents_image = "ghcr.io/yottadynamics/yottacode-documents:latest"
 network         = "host"        # "none" | "host" (default)
 dns             = ["1.1.1.1", "8.8.8.8"] # default resolvers passed as podman --dns
 mounts          = ["."]         # project-relative only; cannot escape root
-env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"]
+env_passthrough = []            # opt-in credential injection, e.g. ["GITHUB_TOKEN"] — value comes from
+                                 # the OS env or ~/.yottacode/.env (see Credentials below)
 memory          = "4g"
 cpus            = 4
 pids_limit      = 256
@@ -233,8 +234,25 @@ backend change (`podman` ↔ `none`) still needs a new session.
   your VPN/corporate resolver IPs if public DNS is not appropriate. Prefer
   runtime DNS config over baking `/etc/resolv.conf` into a custom image,
   because Podman regenerates resolver state for each run.
-- **Credentials**: nothing is injected by default. `env_passthrough` forwards
-  named variables with bare `-e NAME`, so values do not appear in Podman's argv.
+- **Credentials**: nothing is injected by default. `env_passthrough` names a
+  variable to make available inside the container as an env var of the same
+  name; the value comes from yottacode's own process environment, which
+  already includes anything set in `~/.yottacode/.env` or
+  `<repo>/.yottacode/.env` (the same file used for LLM provider API keys —
+  see [`docs/providers.md`](providers.md)) by the time a session starts. So to give `gh`,
+  `git`, `npm`, or another sandboxed CLI a credential, add e.g.
+  `GITHUB_TOKEN=ghp_...` to `~/.yottacode/.env` and list `GITHUB_TOKEN` in
+  `env_passthrough` — no shell export required.
+  Delivery is a per-session Podman secret (`podman secret create` + `--secret
+  NAME,target=NAME`), not a container-level `-e NAME=value`: the value never
+  appears in Podman's argv, in `podman inspect`, or in the container's
+  on-disk config, unlike a baked env var. Since most CLIs read credentials
+  from an env var rather than a file, `run_bash`'s exec wrapper re-exports
+  each mounted secret (`export NAME="$(cat /run/secrets/NAME)"`) at the start
+  of every command. Secrets are named `<container-name>-secret-<VAR>`, are
+  labeled with the owning process the same way containers are (see the
+  pruning bullet above), and are removed on session Close — a startup sweep
+  reclaims any left behind by a crash, mirroring container pruning.
 - **Hardening**: the container uses `--userns=keep-id`, `--cap-drop=ALL`,
   `--security-opt=no-new-privileges`, private cgroups, no swap beyond the memory
   limit, a `noexec,nosuid,nodev` `/tmp`, SELinux `:Z` bind labels, and configured
@@ -333,3 +351,19 @@ only applies to profiles that have not created a container yet.
   can still set `[sandbox].image` to a custom image.
 - Not tested on macOS Podman machine latency; Linux rootless Podman is the
   supported path today.
+- Cancellation/timeout does not reliably kill a command's full descendant
+  tree when the command backgrounds and orphans a process via the classic
+  double-fork idiom (e.g. `(cmd &) &`, `nohup cmd & disown`, or anything
+  that daemonizes itself). `run_bash`'s cancellation kills the marked
+  top-level process and any descendants still structurally reachable at
+  that moment, which covers a plain `cmd &`, but a nested background job
+  can land in its own new process group before cancellation fires — verified
+  directly against a real container: killing the top-level process's group
+  did not reach it. Closing this gap properly needs per-exec cgroup-scoped
+  kill (`cgroup.kill`), which in turn needs cgroup delegation to an
+  unprivileged, `--cap-drop=ALL` process inside the container — not
+  reliably available today (the same class of host-dependent limitation
+  `pids_limit`/`memory`/`cpus` already probe for and degrade on, see
+  Hardening above) — so it isn't implemented yet. Impact is bounded to the
+  container's own resource budget for the rest of the session; it is not a
+  host escape.
