@@ -2391,10 +2391,10 @@ Behavior worth knowing:
   verdict the site already attached to them. Only the current URL
   carries over; anything else you did in the headless session (a login,
   a filled form) has to be redone.
-- **Fills the window.** Unlike the headless session (which emulates a
-  fixed 1280×800 laptop viewport), the visible window uses your
-  display's real window size and Chrome's real user agent, so the page
-  follows the window when you resize or maximize it.
+- **A normal, resizable window.** It starts at the same 1280×800 size as
+  the headless session, but unlike headless (which has no real display to
+  resize), this is an ordinary OS window: the page follows along when you
+  resize or maximize it.
 - **Launch-first, then swap.** The visible browser is started before the
   headless one is torn down, so a failure leaves the existing session
   untouched.

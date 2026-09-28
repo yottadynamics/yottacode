@@ -227,9 +227,7 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		chromedp.Flag("disable-hang-monitor", true),
 		chromedp.Flag("metrics-recording-only", true),
 	}
-	if headless {
-		opts = append(opts, chromedp.Headless)
-	}
+	opts = append(opts, stealthLaunchOptions(ctx, bin, headless)...)
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	bc, browserCancel := chromedp.NewContext(allocCtx)
 	// Keep the long-lived browser context alive after startup. A child context
@@ -258,6 +256,10 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 	if s.browser != nil && s.browser.Process() != nil {
 		s.pid = s.browser.Process().Pid
 	}
+	// Read once per session; applied to every page (initial and later
+	// targets) below. Missing (ok=false) just means running with only the
+	// launch flags, which is still better than chromedp's defaults.
+	stealth, haveStealth := stealthInit(bc, s.browser)
 	pc, pcancel := chromedp.NewContext(bc)
 	if err := chromedp.Run(pc, chromedp.Navigate("about:blank")); err != nil {
 		cancel()
@@ -265,19 +267,28 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 	}
 	id := chromedp.FromContext(pc).Target.TargetID
-	// The initial target is created outside a browser event callback. Enable
-	// its domains synchronously so callers such as handoff do not race the
-	// background setup goroutine when they immediately act on the page.
+	// The initial target is created outside a browser event callback. Run
+	// its ready actions (domain-enable + stealth) synchronously, before
+	// publishing it via track, so callers such as handoff — or, for later
+	// targets, followNewPage — can't reach the page before it's attach-safe.
 	readyCtx, readyCancel := context.WithTimeout(pc, 5*time.Second)
-	if err := chromedp.Run(readyCtx, runtime.Enable(), network.Enable(), page.Enable()); err != nil {
+	if err := chromedp.Run(readyCtx, pageReadyActions(stealth, haveStealth)...); err != nil {
 		readyCancel()
 		cancel()
 		pcancel()
 		return nil, fmt.Errorf("%w: page readiness setup failed: %v", ErrLaunchFailed, err)
 	}
 	readyCancel()
+	if !headless {
+		// --start-maximized's actual resize is an OS window-manager
+		// operation, asynchronous relative to Chrome's own page-load
+		// lifecycle: "load" (just above) can fire before it's applied, so an
+		// action immediately following launch (e.g. handoff's own first
+		// type/click) can see a 0x0 viewport and a bogus element rect.
+		waitMaximizedViewport(pc, 2*time.Second)
+	}
 	tp := s.track(id, pc, pcancel)
-	attachPageCapture(pc, tp)
+	attachPageCaptureListeners(pc, tp)
 	chromedp.ListenBrowser(bc, func(ev any) {
 		s.dispatchBrowserEvent(ev)
 		switch e := ev.(type) {
@@ -291,14 +302,27 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 			if _, ok := s.pageByID(e.TargetInfo.TargetID); ok {
 				return
 			}
-			ctx, cancel := chromedp.NewContext(bc, chromedp.WithTargetID(e.TargetInfo.TargetID))
-			p, created := s.trackPage(e.TargetInfo.TargetID, ctx)
-			p.setURL(e.TargetInfo.URL)
-			if created {
-				attachPageCapture(ctx, p)
-			} else {
-				cancel()
-			}
+			id, url := e.TargetInfo.TargetID, e.TargetInfo.URL
+			ctx, cancel := chromedp.NewContext(bc, chromedp.WithTargetID(id))
+			// Off the event-dispatch goroutine, same as the dialog
+			// auto-dismiss inside attachPageCaptureListeners: chromedp's
+			// browser dispatcher holds its execution lock while invoking
+			// listeners, so a blocking chromedp.Run here would deadlock
+			// target-created events. The page is not published (trackPage)
+			// until pageReadyActions completes — publishing first would let
+			// a concurrent caller (e.g. followNewPage, polling pageCount())
+			// reach this context and issue its own first Run before the
+			// attach-triggering one has finished (see pageReadyActions).
+			go func() {
+				_ = chromedp.Run(ctx, pageReadyActions(stealth, haveStealth)...)
+				p, created := s.trackPage(id, ctx)
+				p.setURL(url)
+				if created {
+					attachPageCaptureListeners(ctx, p)
+				} else {
+					cancel()
+				}
+			}()
 		case *target.EventTargetDestroyed:
 			s.untrackPage(e.TargetID)
 		}
@@ -420,7 +444,29 @@ func (s *session) untrack(id target.ID) {
 		}
 	}
 }
-func attachPageCapture(ctx context.Context, p *trackedPage) {
+
+// pageReadyActions are the CDP actions that must run, in one chromedp.Run
+// call, before anything else touches a freshly created target context:
+// chromedp.Context lazily attaches to a new target on its first Run, and
+// that attach is not safe to race — a second Run issued concurrently by
+// anyone else who can already reach this context (another setup step, or a
+// caller like followNewPage once the page is published) corrupts chromedp's
+// internal bookkeeping, caught by go test -race. Callers must finish this
+// Run before publishing the page (e.g. via trackPage) to anything that might
+// act on it independently.
+func pageReadyActions(stealth stealthProfile, haveStealth bool) []chromedp.Action {
+	actions := []chromedp.Action{runtime.Enable(), network.Enable(), page.Enable()}
+	if haveStealth {
+		actions = append(actions, stealth.actions()...)
+	}
+	return actions
+}
+
+// attachPageCaptureListeners registers the per-page CDP event listeners:
+// console/network capture and JS-dialog auto-dismiss. It does not itself
+// call chromedp.Run, so — unlike pageReadyActions — it is safe to call any
+// time, including concurrently with other activity on the same context.
+func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch e := ev.(type) {
 		case *page.EventJavascriptDialogOpening:
@@ -462,10 +508,6 @@ func attachPageCapture(ctx context.Context, p *trackedPage) {
 			p.recordRequestUpdate(string(e.RequestID), func(n *NetworkEntry) { n.Failed = true; n.ErrorText = e.ErrorText })
 		}
 	})
-	// Do not synchronously execute CDP commands from a browser event listener:
-	// chromedp's browser dispatcher holds its execution lock while invoking
-	// listeners, so doing so would deadlock target-created events.
-	go func() { _ = chromedp.Run(ctx, runtime.Enable(), network.Enable(), page.Enable()) }()
 }
 
 // actionContext retains the target context while propagating the caller's

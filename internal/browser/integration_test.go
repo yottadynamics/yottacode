@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -108,6 +110,18 @@ const networkFixturePage = `<!DOCTYPE html>
 </script>
 </body></html>`
 
+const stealthFixturePage = `<!DOCTYPE html>
+<html><head><title>Stealth Fixture</title></head>
+<body>
+<div id="stealth"></div>
+<script>
+  document.getElementById('stealth').textContent =
+    'webdriver:' + navigator.webdriver +
+    '|w:' + window.innerWidth + 'x' + window.innerHeight +
+    '|ua:' + navigator.userAgent;
+</script>
+</body></html>`
+
 func newFixtureServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +163,8 @@ func newFixtureServer(t *testing.T) *httptest.Server {
 			page = consoleFixturePage
 		case "/network":
 			page = networkFixturePage
+		case "/stealth":
+			page = stealthFixturePage
 		}
 		_, _ = w.Write([]byte(page))
 	}))
@@ -655,6 +671,54 @@ func TestIntegration_ConsoleLogsCaptured(t *testing.T) {
 	}
 }
 
+// TestIntegration_StealthHidesAutomationSignals proves the two headline
+// automation tells are actually gone against a real launched Chrome, not
+// just asserted at the flag/option level: navigator.webdriver reads false,
+// the user agent no longer announces "HeadlessChrome", and the window uses
+// the configured desktop size instead of headless Chrome's small default.
+func TestIntegration_StealthHidesAutomationSignals(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/stealth", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.Wait(ctx, "#stealth", "webdriver:", false, 5*time.Second); err != nil {
+		t.Fatalf("Wait for stealth fixture to populate: %v", err)
+	}
+	tree, err := m.Inspect(ctx, "")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !strings.Contains(tree, "webdriver:false") {
+		t.Errorf("navigator.webdriver was not hidden, inspect output:\n%s", tree)
+	}
+	if strings.Contains(tree, "Headless") {
+		t.Errorf("user agent still announces itself as Headless, inspect output:\n%s", tree)
+	}
+	// --window-size sets the outer frame; innerHeight (the viewport) comes in
+	// a bit under that even in headless mode, so only width is checked
+	// exactly. Either dimension still rules out headless Chrome's small
+	// (e.g. 800x600) default.
+	m2 := stealthWindowSizeRE.FindStringSubmatch(tree)
+	if m2 == nil {
+		t.Fatalf("inspect output missing window size, got:\n%s", tree)
+	}
+	width, _ := strconv.Atoi(m2[1])
+	height, _ := strconv.Atoi(m2[2])
+	if width != 1280 {
+		t.Errorf("window width = %d, want 1280", width)
+	}
+	if height < 700 {
+		t.Errorf("window height = %d, still looks like headless Chrome's small default", height)
+	}
+}
+
+var stealthWindowSizeRE = regexp.MustCompile(`w:(\d+)x(\d+)`)
+
 // TestIntegration_NetworkRequestsCaptured proves network capture is
 // wired against a real page: a successful fetch and a failed (404)
 // fetch both show up with the right method/status.
@@ -880,6 +944,21 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Browser.getWindowForTarget: %v", err)
 	}
+
+	// The handoff window now launches maximized (so a person can't miss it);
+	// CDP ignores width/height in setWindowBounds while WindowState is still
+	// "maximized", so the first call below must clear that before any resize
+	// can take effect.
+	normalCtx, normalCancel := context.WithTimeout(sess.browserCtx, 5*time.Second)
+	err = browser.SetWindowBounds(win, &browser.Bounds{WindowState: browser.WindowStateNormal}).Do(cdp.WithExecutor(normalCtx, sess.browser))
+	normalCancel()
+	if err != nil {
+		t.Fatalf("Browser.setWindowBounds(normal): %v", err)
+	}
+	// The window manager's un-maximize is async on top of CDP's own
+	// acknowledgement; give it a moment to actually settle before the resize
+	// loop below starts asserting against it.
+	time.Sleep(500 * time.Millisecond)
 
 	// Both widths differ clearly from the 1280 rod would pin the page to, and
 	// both fit any real screen: a desktop window manager (macOS in

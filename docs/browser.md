@@ -6,12 +6,14 @@ The `browser_*` tools drive an isolated, disposable system Chrome/Chromium insta
 
 ## Human verification and handoff
 
-The browser never solves CAPTCHAs, bypasses bot checks, uses stealth, or persists profiles. `browser_handoff` only opens the same isolated flow in a visible window so a human can complete verification. It requires a local display (`DISPLAY` or `WAYLAND_DISPLAY`); SSH, containers, and headless CI should instead ask the user to complete the step in their own browser and provide the result. Handoff uses a fresh isolated profile and carries only the URL.
+The browser never solves CAPTCHAs, bypasses bot checks, or persists profiles. `browser_handoff` only opens the same isolated flow in a visible window so a human can complete verification. It requires a local display (`DISPLAY` or `WAYLAND_DISPLAY`); SSH, containers, and headless CI should instead ask the user to complete the step in their own browser and provide the result. Handoff uses a fresh isolated profile and carries only the URL.
+
+Every session (headless and headed) does suppress the automation signals a stock headless Chrome volunteers for free — `navigator.webdriver`, the `HeadlessChrome` user agent/client hints, and headless Chrome's small default window size — so a page doesn't get flagged as a bot purely for looking like an out-of-the-box automation rig. This is cosmetic self-consistency (`internal/browser/stealth.go`), not evasion: no JavaScript is injected, nothing the browser reports is falsified beyond replacing "Headless" in its own version strings, and it does not affect whether a real challenge fires or how it's resolved.
 
 ## Non-goals and limits
 
 - No local-file, `chrome://`, `javascript:`, or `data:` navigation; only HTTP(S) and `about:blank`.
-- No sandbox or network-policy changes, proxying, stealth, CAPTCHA bypass, or persistent login profiles.
+- No proxying, CAPTCHA-solving, or persistent login profiles. No sandbox or network-policy changes.
 - No response bodies, iframe targeting, device emulation, drag-and-drop, or default visible window.
 - Downloads are temporary, cleaned after success/failure, and rejected above the fixed safety limit.
 
