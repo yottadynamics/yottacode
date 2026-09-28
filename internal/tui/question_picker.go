@@ -182,15 +182,32 @@ func (p *questionPickerState) buildAnswer() *agent.QuestionAnswer {
 	return reply
 }
 
+// renderQuestionPicker keeps one stable questionnaire frame for the entire call.
+// It reserves the maximum question-text height across tabs so changing tabs
+// never moves or resizes the popup.
 func renderQuestionPicker(p *questionPickerState, width int) string {
-	title, desc := p.titleAndDescription()
 	contentWidth := width - 8
 	if contentWidth < 20 {
 		contentWidth = 20
 	}
-	desc = truncateDisplay(desc, contentWidth)
+	maxQuestionLines := 1
+	for _, q := range p.questions {
+		lines := strings.Count(wrapPlain(strings.TrimSpace(q.Question), contentWidth), "\n") + 1
+		if lines > maxQuestionLines {
+			maxQuestionLines = lines
+		}
+	}
+	title := fmt.Sprintf("Questions · %d/%d", min(p.activeTab+1, len(p.questions)), len(p.questions))
+	if p.onSubmitTab() {
+		title = "Questions · review"
+	}
+	_, desc := p.titleAndDescription()
+	descLines := strings.Split(wrapPlain(strings.TrimSpace(desc), contentWidth), "\n")
+	for len(descLines) < maxQuestionLines {
+		descLines = append(descLines, "\u200b")
+	}
 	var b strings.Builder
-	b.WriteString(renderMenuHeader(title, desc))
+	b.WriteString(renderMenuHeader(title, strings.Join(descLines, "\n"), contentWidth))
 	if len(p.questions) > 1 {
 		b.WriteString(renderQuestionTabStrip(p))
 		b.WriteString("\n")
@@ -215,8 +232,11 @@ func (p *questionPickerState) titleAndDescription() (string, string) {
 	q := p.questions[p.activeTab]
 	return q.Header, q.Question
 }
+
+// renderQuestionTabStrip uses progress-oriented labels rather than settings-style
+// selected buttons, keeping the tabs as secondary navigation for the questions.
 func renderQuestionTabStrip(p *questionPickerState) string {
-	activeStyle := lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
+	activeStyle := lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	doneStyle := lipgloss.NewStyle().Foreground(colorSuccess)
 	disabledStyle := lipgloss.NewStyle().Foreground(colorMuted).Faint(true)
@@ -226,22 +246,23 @@ func renderQuestionTabStrip(p *questionPickerState) string {
 		if p.answered(i) {
 			prefix = "✓ "
 		}
+		label := fmt.Sprintf("%d %s%s", i+1, prefix, q.Header)
 		switch {
 		case i == p.activeTab:
-			tabs = append(tabs, activeStyle.Render("[ "+prefix+q.Header+" ]"))
+			tabs = append(tabs, activeStyle.Render("· "+label+" ·"))
 		case p.answered(i):
-			tabs = append(tabs, doneStyle.Render(prefix+q.Header))
+			tabs = append(tabs, doneStyle.Render(label))
 		default:
-			tabs = append(tabs, mutedStyle.Render(q.Header))
+			tabs = append(tabs, mutedStyle.Render(label))
 		}
 	}
 	switch {
 	case p.onSubmitTab():
-		tabs = append(tabs, activeStyle.Render("[ Submit ]"))
+		tabs = append(tabs, activeStyle.Render("· Review ·"))
 	case p.allAnswered():
-		tabs = append(tabs, mutedStyle.Render("Submit"))
+		tabs = append(tabs, mutedStyle.Render("Review"))
 	default:
-		tabs = append(tabs, disabledStyle.Render("Submit"))
+		tabs = append(tabs, disabledStyle.Render("Review"))
 	}
 	return "  " + strings.Join(tabs, "   ")
 }

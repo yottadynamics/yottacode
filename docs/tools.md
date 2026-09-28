@@ -2142,12 +2142,8 @@ most one option per question should set `recommended:true` — the safe default
 | `questions` | array (1-4) | required | Each: `header`, `question`, `options` (2-4), optional `multi_select` |
 | `questions[].options[].recommended` | bool | `false` | At most one per question; ambiguous (0 or 2+) is treated as "no default" |
 
-Renders as a picker overlay (same `renderMenuHeader`/`renderMenuItem`/tab-strip
-chrome as `/model`) with one tab per question plus a trailing `Submit` tab that
-only activates once every question has an answer — nothing is sent back to the
-model until Submit is confirmed, so revisiting and changing an earlier answer
-before submitting is always safe. `Esc` at any point cancels the whole set, not
-just the current question.
+Render as a stable questionnaire card: the popup reserves the maximum question-text height across all tabs, so switching questions does not resize or reposition the window. Tabs act as progress/navigation indicators (`1 Auth`, `2 Notify`, `Review`) rather than settings-style buttons, while the question text remains the primary focus.
+
 
 `RequiresApproval` is always `false` — this tool never mutates anything, so
 `--yolo`/auto mode never block the interactive exchange (there's no approval

@@ -33,6 +33,22 @@ func twoQuestions() []agent.Question {
 
 // --- questionPickerState unit tests ----------------------------------------
 
+func TestRenderQuestionPicker_StableHeightAcrossTabs(t *testing.T) {
+	questions := twoQuestions()
+	questions[0].Question = "Short?"
+	questions[1].Question = strings.Repeat("This is a deliberately long question. ", 8)
+	p := newQuestionPickerState(questions)
+	p.activeTab = 0
+	first := stripANSI(renderQuestionPicker(&p, 80))
+	p.activeTab = 1
+	second := stripANSI(renderQuestionPicker(&p, 80))
+	if strings.Count(first, "\n") != strings.Count(second, "\n") {
+		t.Fatalf("question tabs should preserve frame height: first=%d second=%d", strings.Count(first, "\n"), strings.Count(second, "\n"))
+	}
+	if !strings.Contains(first, "Questions · 1/2") || !strings.Contains(second, "Questions · 2/2") {
+		t.Fatalf("expected questionnaire progress headers: first=%q second=%q", first, second)
+	}
+}
 func TestNewQuestionPickerState_PreSelectsRecommendedOption(t *testing.T) {
 	p := newQuestionPickerState(twoQuestions())
 	if !p.answered(0) {
@@ -247,8 +263,8 @@ func TestQuestionNeeded_OtherRowFreeTextEndToEnd(t *testing.T) {
 	}})
 	reply := m.questionReq.Reply
 
-	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // option 0
-	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // Other row
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // option 0
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})  // Other row
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // start editing
 	if !m.questionPicker.isEditingOther() {
 		t.Fatalf("Enter on the Other row should start editing")
