@@ -815,14 +815,23 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 		t.Errorf("visible page URL = %q, want it on %s", st.CurrentURL, srv.URL)
 	}
 
-	// The visible session is a normal session: it keeps serving actions.
+	// Handoff returns after navigation, but an OS-managed headed window can
+	// still be settling underneath Chrome. Wait for the actual interactive
+	// document state before sending input; load completion alone does not
+	// guarantee that the target's viewport and controls are usable.
+	if err := m.Wait(ctx, "#q", "", false, 10*time.Second); err != nil {
+		t.Fatalf("Wait for headed fixture readiness: %v", err)
+	}
 	if err := m.Type(ctx, "#q", "visible", false); err != nil {
 		t.Fatalf("Type in headed session: %v", err)
+	}
+	if err := m.Wait(ctx, "#go", "", false, 10*time.Second); err != nil {
+		t.Fatalf("Wait for headed button readiness: %v", err)
 	}
 	if err := m.Click(ctx, "#go"); err != nil {
 		t.Fatalf("Click in headed session: %v", err)
 	}
-	if err := m.Wait(ctx, "#out", "clicked:visible", false, 5*time.Second); err != nil {
+	if err := m.Wait(ctx, "#out", "clicked:visible", false, 10*time.Second); err != nil {
 		t.Fatalf("Wait in headed session: %v", err)
 	}
 
