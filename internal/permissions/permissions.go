@@ -163,20 +163,38 @@ type fileShape struct {
 }
 
 // canonicalizePath makes equivalent macOS paths such as /var and /private/var
-// compare consistently while preserving a useful absolute fallback when the
-// path does not exist yet.
+// compare consistently. EvalSymlinks rejects a path when its final component
+// does not exist yet, so resolve the deepest existing parent and append the
+// missing suffix instead of falling back to the uncanonicalized spelling.
 func canonicalizePath(path string) string {
 	if path == "" {
 		return ""
 	}
-	path = filepath.Clean(path)
 	if absolute, err := filepath.Abs(path); err == nil {
 		path = absolute
 	}
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
+	path = filepath.Clean(path)
+
+	missing := []string{}
+	candidate := path
+	for {
+		if _, err := os.Lstat(candidate); err == nil {
+			if real, err := filepath.EvalSymlinks(candidate); err == nil {
+				for i := len(missing) - 1; i >= 0; i-- {
+					real = filepath.Join(real, missing[i])
+				}
+				return filepath.Clean(real)
+			}
+			break
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
 	}
-	return filepath.Clean(path)
+	return path
 }
 
 func Load(cwd string) (*Permissions, error) {
