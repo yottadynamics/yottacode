@@ -76,7 +76,17 @@ the project uses semantic versioning once it's past `1.0.0`.
   or reach an internal address unattended; the read-only tools and
   navigation on this machine stay auto-approved. A killed session's temp
   profile (with its cookies) is now removed by the next browser launch when
-  it is over an hour old, owned by you, and no live browser holds it. Off
+  it is over an hour old, owned by you, and no live browser holds it.
+  Sessions now launch with the automation signals a stock headless Chrome
+  volunteers for free suppressed: `navigator.webdriver` is turned off via
+  CDP's own `Emulation.setAutomationOverride` (belt-and-suspenders with
+  `--disable-blink-features=AutomationControlled`), the window uses a plain
+  1280x800 desktop size instead of headless Chrome's small default, and the
+  user agent/client hints no longer announce `HeadlessChrome`. This is
+  cosmetic self-consistency, not evasion — it changes nothing the browser
+  can do, no JavaScript is injected, and it does not solve, click through,
+  or bypass any actual human-verification challenge; `browser_handoff`
+  remains the only way past one. Off
   by default; enable with
   `--experimental browser`. A new CI workflow
   (`.github/workflows/browser-integration.yml`) runs the real-Chrome
@@ -296,6 +306,18 @@ worktree-permissions-fine-grained-review
 ### Fixed
 
 worktree-sharded-honking-nebula
+- **`browser_click`/`browser_type`'s new-tab follow could corrupt session
+  state under real concurrency.** A freshly opened tab was published to the
+  session (visible to `followNewPage`'s polling loop) before its one-time
+  domain-enable/stealth setup had run against it; if the two raced,
+  chromedp's own lazy target-attach bookkeeping — not safe to call from two
+  goroutines at once — could corrupt, occasionally surfacing as `go test
+  -race` failures in `TestIntegration_ClickFollowsNewTab`,
+  `TestIntegration_CloseTab`, and
+  `TestIntegration_BackgroundTabSelfCloseFallsBackToRemainingTab`. Fixed by
+  not publishing a new tab (`trackPage`) until its setup actions have
+  finished running, the same attach-then-publish order the initial page
+  already used.
 - **`read_many_files` is now safe to rely on for large or messy batches.**
   The 512 KiB combined-output cap is enforced on the output itself; it used
   to be checked only between files, so a batch could return roughly twice
