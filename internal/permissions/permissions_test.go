@@ -1203,3 +1203,27 @@ func TestStringGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkEvaluate_AbsoluteRulesMiss measures the symlink-canonicalizing
+// fallback, which runs for every absolute rule that misses literally.
+func BenchmarkEvaluate_AbsoluteRulesMiss(b *testing.B) {
+	cwd := b.TempDir()
+	deny := make([]string, 0, 20)
+	for i := 0; i < 20; i++ {
+		deny = append(deny, "Edit(/etc/yc-bench-"+string(rune('a'+i))+"/**)")
+	}
+	path := filepath.Join(cwd, ".yottacode", "permissions.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	data, _ := json.Marshal(map[string]any{"permissions": map[string]any{"deny": deny}})
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		b.Fatal(err)
+	}
+	p, _ := LoadWithSystemPath(cwd, "")
+	args := `{"path":"` + filepath.Join(cwd, "src", "main.go") + `"}`
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		p.Evaluate("edit_file", args)
+	}
+}

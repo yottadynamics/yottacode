@@ -60,6 +60,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
@@ -196,6 +197,36 @@ func canonicalizePath(path string) string {
 	return path
 }
 
+// gitProbeTimeout bounds the git subprocess used to find the repository root
+// so a hung git (e.g. on a stalled network filesystem) cannot block startup.
+const gitProbeTimeout = 5 * time.Second
+
+// StorageRoot returns the directory whose .yottacode/ holds the personal
+// permissions.local.json for a session running in cwd. Inside a linked git
+// worktree it is the main repository root (canonicalized); otherwise it is cwd
+// exactly as spelled. Exported so the write-path deny list can protect the
+// same file the permissions store actually writes.
+//
+// Not being in a git repo is the normal non-worktree case, so errors fall back
+// to cwd silently. The .git-directory check keeps submodules (common dir under
+// <super>/.git/modules/) and bare repos from redirecting storage into git
+// internals.
+func StorageRoot(cwd string) string {
+	if cwd == "" {
+		return cwd
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+	repoRoot, err := worktree.ResolveRepoRoot(ctx, cwd)
+	if err != nil {
+		return cwd
+	}
+	if fi, serr := os.Stat(filepath.Join(repoRoot, ".git")); serr == nil && fi.IsDir() {
+		return canonicalizePath(repoRoot)
+	}
+	return cwd
+}
+
 // Load reads the optional system policy and the two project policy files.
 func Load(cwd string) (*Permissions, error) {
 	return LoadWithSystemPath(cwd, "/etc/yottacode/permissions.json")
@@ -203,8 +234,9 @@ func Load(cwd string) (*Permissions, error) {
 
 // LoadWithSystemPath loads permissions using an explicit system-policy path.
 // The project-local permissions file (where grants persist) is stored at the
-// main repository root when cwd is inside a git worktree. Rule evaluation still uses cwd so path rules
-// remain relative to the active worktree.
+// main repository root when cwd is inside a git worktree (see StorageRoot).
+// Rule evaluation still uses cwd so path rules remain relative to the active
+// worktree.
 // An empty systemPath disables the system source, which is useful for isolated
 // callers and tests that must not depend on the host administrator policy.
 func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
@@ -215,18 +247,8 @@ func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	// cwd stays exactly as the caller spelled it: descriptors are made
 	// relative to it, so rewriting it (e.g. /var -> /private/var on macOS)
 	// would stop rules like Write(plan.md) from matching /var/... targets.
-	// Only a redirected storage root is canonicalized; without a worktree
-	// redirect the local file stays at <cwd>/.yottacode as before.
-	storageRoot := cwd
-	// Not being in a git repo is the normal non-worktree case, so errors
-	// fall back to cwd silently. The .git-directory check keeps submodules
-	// (common dir under <super>/.git/modules/) and bare repos from
-	// redirecting storage into git internals.
-	if repoRoot, err := worktree.ResolveRepoRoot(context.Background(), cwd); err == nil {
-		if fi, serr := os.Stat(filepath.Join(repoRoot, ".git")); serr == nil && fi.IsDir() {
-			storageRoot = canonicalizePath(repoRoot)
-		}
-	}
+	// Only the storage root is redirected (and canonicalized).
+	storageRoot := StorageRoot(cwd)
 	p := &Permissions{
 		cwd:        cwd,
 		systemPath: systemPath,

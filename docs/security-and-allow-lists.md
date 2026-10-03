@@ -395,6 +395,8 @@ Use:
 - `permissions.json` for team-shared rules that can be committed
 - `permissions.local.json` for personal rules that should be gitignored
 
+When yottacode runs inside a linked git worktree, `permissions.local.json` is read from and written to the **main repository root**, so always-allow and always-deny grants survive worktree removal. `permissions.json` is still read from the worktree's own checkout, and path rules are evaluated relative to the worktree. Grants previously saved inside a worktree's own `.yottacode/` are not migrated.
+
 The optional machine-wide administrator policy is `/etc/yottacode/permissions.json`. It is read-only to yottacode and is evaluated together with the project files. Rules use `deny > ask > allow` precedence.
 
 Add this to `.gitignore`:
