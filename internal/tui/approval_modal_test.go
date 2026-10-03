@@ -32,6 +32,8 @@ func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	}
 }
 
+// Brackets-first hotkeys, command-only-bright, no permissions.local.json
+// inline detail. The toast carries that detail post-decision.
 func TestRenderApprovalModal_DoesNotDuplicateTitleInBody(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
