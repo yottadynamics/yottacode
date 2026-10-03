@@ -645,8 +645,33 @@ func TestLoadWithSystemPath_NonGitDirUsesCwdStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithSystemPath: %v", err)
 	}
-	if want := canonicalizePath(filepath.Join(cwd, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
+	if want := filepath.Join(cwd, ".yottacode", "permissions.local.json"); p.LocalPath() != want {
 		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
+	}
+}
+
+// Regression (macOS CI): a cwd spelled through a symlink must stay as given,
+// so cwd-relative rules still match targets spelled the same way.
+func TestLoadWithSystemPath_SymlinkedCwdKeepsSpelling(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	seed(t, filepath.Join(link, ".yottacode", "permissions.json"), nil, nil, []string{"Write(plan.md)"})
+	p, err := LoadWithSystemPath(link, "")
+	if err != nil {
+		t.Fatalf("LoadWithSystemPath: %v", err)
+	}
+	if want := filepath.Join(link, ".yottacode", "permissions.local.json"); p.LocalPath() != want {
+		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
+	}
+	if got := p.Evaluate("write_file", `{"path":"`+filepath.Join(link, "plan.md")+`"}`); got != Deny {
+		t.Fatalf("Write(plan.md) should deny %s; got %v", filepath.Join(link, "plan.md"), got)
 	}
 }
 

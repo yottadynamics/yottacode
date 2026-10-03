@@ -212,7 +212,11 @@ func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 		return nil, errors.New("permissions: cwd is required")
 	}
 
-	cwd = canonicalizePath(cwd)
+	// cwd stays exactly as the caller spelled it: descriptors are made
+	// relative to it, so rewriting it (e.g. /var -> /private/var on macOS)
+	// would stop rules like Write(plan.md) from matching /var/... targets.
+	// Only a redirected storage root is canonicalized; without a worktree
+	// redirect the local file stays at <cwd>/.yottacode as before.
 	storageRoot := cwd
 	// Not being in a git repo is the normal non-worktree case, so errors
 	// fall back to cwd silently. The .git-directory check keeps submodules
