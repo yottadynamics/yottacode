@@ -127,34 +127,33 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		return result
 	}
 	result.GoCacheDir = cacheDir
-	_, err = dirSize(cacheDir)
+	probeGoCacheUsage(&result, cacheDir)
+	return result
+}
+
+// probeGoCacheUsage fills the Go cache size fields and the cleanup hints.
+func probeGoCacheUsage(result *SandboxDoctorResult, cacheDir string) {
+	total, build, modcache, err := goCacheSizes(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
 			result.Hints = append(result.Hints, "sandbox Go cache has not been created yet; it appears after the first sandboxed Go test/build")
-			return result
+			return
 		}
 		result.Status = doctorStatusWarning
 		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache: %v", err))
-		return result
+		return
 	}
-	var sizeErr error
-	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes, sizeErr = goCacheSizes(cacheDir)
-	if sizeErr != nil {
+	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes = total, build, modcache
+	if total > 2*1024*1024*1024 {
 		result.Status = doctorStatusWarning
-		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache components: %v", sizeErr))
-		return result
-	}
-	if result.GoCacheBytes > 2*1024*1024*1024 {
-		result.Status = doctorStatusWarning
-		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(result.GoCacheBytes)))
+		result.Warnings = append(result.Warnings, fmt.Sprintf("sandbox Go cache exceeds 2 GB (%s)", humanBytes(total)))
 		result.Hints = append(result.Hints,
-			"for build/test artifacts only, run `go clean -cache` inside a sandboxed shell",
-			"to also remove downloaded modules, run `go clean -modcache` inside a sandboxed shell, or remove /var/tmp/yottacode-<uid>/sandbox-go-cache when no sandboxed Go jobs are running")
-		return result
+			"for build/test artifacts only, run `go clean -cache` inside a sandboxed shell (GOCACHE is the sandbox cache dir, not your host cache)",
+			"to also remove downloaded modules, run `go clean -modcache` inside a sandboxed shell, or remove "+cacheDir+" when no sandboxed Go jobs are running")
+		return
 	}
 	result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
-	return result
 }
 
 func probeLocalResources(result *SandboxDoctorResult) {
@@ -273,34 +272,15 @@ func doctorZombieCount(procRoot string) int {
 	return count
 }
 
-func goCacheSizes(path string) (total, build, modcache int64, err error) {
-	total, err = dirSize(path)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	build, err = cacheComponentSize(filepath.Join(path, "cache"))
-	if err != nil {
-		return total, 0, 0, err
-	}
-	modcache, err = cacheComponentSize(filepath.Join(path, "modcache"))
-	if err != nil {
-		return total, build, 0, err
-	}
-	return total, build, modcache, nil
-}
-
-func cacheComponentSize(path string) (int64, error) {
-	size, err := dirSize(path)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	return size, err
-}
-
-func dirSize(path string) (int64, error) {
-	var total int64
-	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {
+// goCacheSizes walks the cache once, attributing each file to the
+// build/test cache ("cache"), the module cache ("modcache"), or neither
+// (counted only in the total).
+func goCacheSizes(root string) (total, build, modcache int64, err error) {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path != root && os.IsNotExist(err) {
+				return nil // removed mid-walk by a running sandboxed job
+			}
 			return err
 		}
 		if d.IsDir() {
@@ -308,12 +288,27 @@ func dirSize(path string) (int64, error) {
 		}
 		info, err := d.Info()
 		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
-		total += info.Size()
+		size := info.Size()
+		total += size
+		if rel, relErr := filepath.Rel(root, path); relErr == nil {
+			switch strings.SplitN(rel, string(filepath.Separator), 2)[0] {
+			case "cache":
+				build += size
+			case "modcache":
+				modcache += size
+			}
+		}
 		return nil
 	})
-	return total, err
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return total, build, modcache, nil
 }
 
 func formatDoctorReport(summary DoctorSummary, provider adapter.ProbeResult, github GitHubProbeResult, lsp LSPDoctorResult, media MediaDoctorResult, sandbox SandboxDoctorResult, permissionReports ...permissions.ValidationReport) string {

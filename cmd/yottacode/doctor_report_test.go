@@ -35,6 +35,57 @@ func TestGoCacheSizesMissingComponentsAreZero(t *testing.T) {
 		t.Fatalf("sizes = %d, %d, %d, %v", total, build, modcache, err)
 	}
 }
+
+func TestProbeGoCacheUsageMissingDirHint(t *testing.T) {
+	var r SandboxDoctorResult
+	probeGoCacheUsage(&r, filepath.Join(t.TempDir(), "nope"))
+	if r.Status == doctorStatusWarning || len(r.Hints) != 1 || !strings.Contains(r.Hints[0], "not been created") {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestProbeGoCacheUsageSmallCacheNoWarning(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cache"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cache", "f"), make([]byte, 4), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var r SandboxDoctorResult
+	probeGoCacheUsage(&r, root)
+	if r.GoCacheBytes != 4 || r.GoBuildCacheBytes != 4 || r.GoModCacheBytes != 0 || len(r.Warnings) != 0 || len(r.Hints) != 0 {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestProbeGoCacheUsageLargeCacheHints(t *testing.T) {
+	root := t.TempDir()
+	f, err := os.Create(filepath.Join(root, "modcache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(3 << 30); err != nil { // sparse; no real disk use
+		t.Fatal(err)
+	}
+	f.Close()
+	var r SandboxDoctorResult
+	probeGoCacheUsage(&r, root)
+	if r.Status != doctorStatusWarning || len(r.Warnings) != 1 || len(r.Hints) != 2 ||
+		!strings.Contains(r.Hints[0], "go clean -cache") || !strings.Contains(r.Hints[1], root) {
+		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestRenderSandboxSectionShowsCacheComponents(t *testing.T) {
+	var b strings.Builder
+	renderSandboxSection(&b, SandboxDoctorResult{Status: doctorStatusOK, Backend: "podman", GoCacheDir: "/c", GoCacheBytes: 3072, GoBuildCacheBytes: 1024, GoModCacheBytes: 2048})
+	out := b.String()
+	if !strings.Contains(out, "build/test: 1.0 KB") || !strings.Contains(out, "modules: 2.0 KB") {
+		t.Fatalf("output = %q", out)
+	}
+}
+
 func TestFormatDoctorReportHappyPath(t *testing.T) {
 	provider := doctorProviderFixture(nil, nil)
 	github := GitHubProbeResult{Status: doctorStatusOK, TokenSource: "env", Reachable: true, AuthOK: true, Login: "octocat"}
