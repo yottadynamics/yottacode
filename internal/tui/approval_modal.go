@@ -267,13 +267,22 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 	// permissions.local.json — the middle ground between "once" and
 	// "forever".
 	if allowAlways {
+		sessionDesc := "session — allow " + derivedRule + " for this session"
+		alwaysDesc := "always — adds " + derivedRule
+		if rules := strings.Split(derivedRule, ", "); len(rules) > 1 {
+			// A chained command derives several rules. One per line keeps each
+			// rule whole instead of being wrapped mid-token.
+			list := "\n" + strings.Join(rules, "\n")
+			sessionDesc = "session — allow for this session:" + list
+			alwaysDesc = "always — adds:" + list
+		}
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[S]"),
-			desc:   styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session"),
+			desc:   styleApprovalChoiceDim.Render(sessionDesc),
 		})
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[A]"),
-			desc:   styleApprovalChoiceDim.Render("always — adds " + derivedRule),
+			desc:   styleApprovalChoiceDim.Render(alwaysDesc),
 		})
 	}
 	if denyAlways {

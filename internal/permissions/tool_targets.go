@@ -90,6 +90,28 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Write", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
 	case "edit_file", "edit_anchored", "apply_hashline":
 		return Target{PermName: "Edit", Descriptor: relPath(extractPath(argsJSON), cwd), IsPath: true}
+	case "lsp_apply_workspace_edit":
+		// The edited files live inside the WorkspaceEdit payload
+		// ({"edit":{"edits":[{"path":...}]}}). Same shape as apply_diff: one
+		// Edit descriptor per touched path, evaluated all-must-match.
+		var a struct {
+			Edit struct {
+				Edits []struct {
+					Path string `json:"path"`
+				} `json:"edits"`
+			} `json:"edit"`
+		}
+		_ = json.Unmarshal([]byte(argsJSON), &a)
+		seen := map[string]bool{}
+		var descs []string
+		for _, e := range a.Edit.Edits {
+			d := relPath(e.Path, cwd)
+			if !seen[d] {
+				seen[d] = true
+				descs = append(descs, d)
+			}
+		}
+		return Target{PermName: "Edit", Descriptors: descs, Multi: true, IsPath: true}
 	case "apply_diff":
 		// apply_diff carries a unified-diff blob in `diff`. Parse the
 		// header lines for target paths so per-path Edit(...) rules
@@ -124,6 +146,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Media", Descriptor: "analyze " + relPath(extractPath(argsJSON), cwd)}
 	case "media_render":
 		return Target{PermName: "Media", Descriptor: "render " + relPath(extractField(argsJSON, "output"), cwd)}
+	case "media_compose":
+		return Target{PermName: "Media", Descriptor: "compose " + relPath(extractField(argsJSON, "output"), cwd)}
 	case "create_document":
 		// Distinct from "Write" (write_file/edit_file/...): create_document
 		// also shells out to pandoc for docx/pdf, so a Document(...) rule can
@@ -145,6 +169,8 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Memory", Descriptor: "search " + extractField(argsJSON, "query")}
 	case "memory_get":
 		return Target{PermName: "Memory", Descriptor: "get " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
+	case "memory_curate_apply":
+		return Target{PermName: "Memory", Descriptor: "curate_apply " + extractField(argsJSON, "scope") + ":" + extractField(argsJSON, "name")}
 	case "memory_archive_prune":
 		return Target{PermName: "Memory", Descriptor: "archive_prune " + extractField(argsJSON, "scope")}
 	case "session_recall":
@@ -156,7 +182,18 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 	case "git":
 		return Target{PermName: "Git", Descriptor: extractGitArgs(argsJSON)}
 	case "git_checkpoint":
-		return Target{PermName: "Git", Descriptor: "checkpoint"}
+		// Trailing message keeps the descriptor shaped "<verb> <rest>" like
+		// every other Git target, so the derived `Git(checkpoint *)` rule
+		// actually matches it (it never matched the bare "checkpoint").
+		return Target{PermName: "Git", Descriptor: "checkpoint " + extractField(argsJSON, "message")}
+	case "enter_worktree":
+		return Target{PermName: "Worktree", Descriptor: "enter " + extractField(argsJSON, "name")}
+	case "exit_worktree":
+		cleanup := extractField(argsJSON, "cleanup")
+		if cleanup == "" {
+			cleanup = "auto"
+		}
+		return Target{PermName: "Worktree", Descriptor: "exit " + cleanup + " " + extractField(argsJSON, "name")}
 	case "rollback":
 		return Target{PermName: "Rollback", Descriptor: ""}
 	case "run_tests":
@@ -171,7 +208,10 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		"git_commits_between", "git_branch_ahead_behind", "git_branch_diff",
 		"git_stage_files", "git_unstage_files", "git_create_branch",
 		"git_commit", "git_commit_amend", "git_commit_fixup",
-		"git_log_file", "git_blame_lines", "git_merge_base":
+		"git_log_file", "git_blame_lines", "git_merge_base",
+		"git_commit_apply", "git_push",
+		"git_worktree_list", "git_worktree_add", "git_worktree_remove",
+		"git_worktree_lock", "git_worktree_unlock", "git_worktree_prune":
 		// Discrete git_* helpers. Surfaced under Git so a single
 		// `Git(commit *)` style rule covers the unified tool too.
 		sub := strings.TrimPrefix(toolName, "git_")
@@ -204,6 +244,44 @@ func targetFor(toolName, argsJSON, cwd string) Target {
 		return Target{PermName: "Github", Descriptor: "create_issue"}
 	}
 	return Target{}
+}
+
+// commitScopeTools are the Git helpers that write history. Their descriptors
+// carry a trailing scope token so a rule can be limited to yottacode worktrees.
+var commitScopeTools = map[string]bool{
+	"git_commit": true, "git_commit_apply": true, "git_commit_amend": true,
+	"git_commit_fixup": true, "git_checkpoint": true,
+}
+
+const (
+	scopeWorktree = " @worktree"
+	scopeCheckout = " @checkout"
+)
+
+// inYottacodeWorktree reports whether cwd is inside a yottacode-managed
+// worktree (<repo>/.yottacode/worktrees/<name>/…). It is location-based: it
+// says where the session is working, not which branch is checked out there.
+func inYottacodeWorktree(cwd string) bool {
+	return strings.Contains(filepath.ToSlash(cwd)+"/", "/.yottacode/worktrees/")
+}
+
+// scopeCommitTarget appends the scope token to a commit-family Git target.
+// The token is always the LAST thing in the descriptor, so a commit message
+// that happens to end in "@worktree" cannot fake it. Existing rules such as
+// `Git(commit *)` still match both scopes; `Git(commit * @worktree)` matches
+// only commits made from inside a worktree. liveCwd is the session's current
+// directory, which differs from the policy's load-time cwd after
+// enter_worktree.
+func scopeCommitTarget(toolName string, t Target, liveCwd string) Target {
+	if t.PermName != "Git" || !commitScopeTools[toolName] {
+		return t
+	}
+	if inYottacodeWorktree(liveCwd) {
+		t.Descriptor += scopeWorktree
+	} else {
+		t.Descriptor += scopeCheckout
+	}
+	return t
 }
 
 // SupportsToolName reports whether toolName produces a permission target

@@ -212,14 +212,20 @@ tool-call log; the TUI renames it for readability. Mapping:
 | `git_diff_files` | `Git(diff <base>..<head>)` |
 | `git_stage_files` / `git_unstage_files` | `Git(stage N files)` or `Git(stage all)` / `Git(unstage N files)` |
 | `git_create_branch` | `Git(create branch <name>)` or `Git(create branch <name> from <start_point>)` |
-| `git_commit` | `Git(commit)` |
+| `git_commit` | `Git(commit <args> @worktree)` or `… @checkout` — the trailing token records whether the session is inside a yottacode worktree; the other commit-family tools (`git_commit_apply`, `git_commit_amend`, `git_commit_fixup`, `git_checkpoint`) carry it too |
 | `git_log_file` | `Git(log <path>)` |
 | `git_blame_lines` | `Git(blame <path>:L<a>-L<b>)` |
 | `git_merge_base` | `Git(merge-base <base>..<head>)` |
 | `git_diff_stat` / `git_diff_staged` / `git_diff_unstaged` | `Git(diff_stat …)` / `Git(diff_staged …)` / `Git(diff_unstaged …)` |
 | `git_commits_between` / `git_branch_ahead_behind` / `git_branch_diff` | `Git(commits_between …)` / `Git(branch_ahead_behind …)` / `Git(branch_diff …)` |
 | `git_commit_amend` / `git_commit_fixup` | `Git(commit_amend …)` / `Git(commit_fixup …)` |
-| `git_checkpoint` | `Git(checkpoint)` |
+| `git_checkpoint` | `Git(checkpoint <message>)` |
+| `git_commit_apply` / `git_push` | `Git(commit_apply …)` / `Git(push …)` |
+| `git_worktree_{list,add,remove,lock,unlock,prune}` | `Git(worktree_<verb> …)` |
+| `enter_worktree` / `exit_worktree` | `Worktree(enter <name>)` / `Worktree(exit <cleanup> <name>)` |
+| `lsp_apply_workspace_edit` | `Edit(<path>)`, one per touched file |
+| `media_compose` | `Media(compose <output>)` |
+| `memory_curate_apply` | `Memory(curate_apply <scope>:<name>)` |
 | `list_git_changed_files` | `Git(list changed)` |
 
 ASCII control characters inside an arg (a stray `\n` in a path, a tab

@@ -299,7 +299,19 @@ func (p *Permissions) EvaluateWithRule(toolName, argsJSON string) (Decision, Rul
 	if p == nil {
 		return Default, Rule{}
 	}
-	target := targetFor(toolName, argsJSON, p.cwd)
+	return p.EvaluateWithRuleAt(p.cwd, toolName, argsJSON)
+}
+
+// EvaluateWithRuleAt is EvaluateWithRule for a caller that knows the session's
+// live working directory. Path rules still resolve against the cwd the policy
+// was loaded with; liveCwd only feeds the worktree scope of commit-family Git
+// calls (see scopeCommitTarget), because enter_worktree moves the session
+// without reloading the policy.
+func (p *Permissions) EvaluateWithRuleAt(liveCwd, toolName, argsJSON string) (Decision, Rule) {
+	if p == nil {
+		return Default, Rule{}
+	}
+	target := scopeCommitTarget(toolName, targetFor(toolName, argsJSON, p.cwd), liveCwd)
 	if target.PermName == "" {
 		return Default, Rule{}
 	}
