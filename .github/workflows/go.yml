@@ -164,9 +164,20 @@ jobs:
         run: |
           set -eu
           test -f dist/SHA256SUMS
-          for want in '_darwin_arm64.tar.gz' '_darwin_amd64.tar.gz'; do
-            grep -qF "$want" dist/SHA256SUMS || { echo "::error::release checksum is missing: $want"; exit 1; }
-          done
+          formula_version=$(awk '$2 ~ /^yottacode_[^_]+_darwin_arm64\.tar\.gz$/ { name=$2; sub(/^yottacode_/, "", name); sub(/_darwin_arm64\.tar\.gz$/, "", name); print name; exit }' dist/SHA256SUMS)
+          test -n "$formula_version"
+          formula_dir="$RUNNER_TEMP/homebrew-formula-test/Formula"
+          mkdir -p "$formula_dir"
+          bash .github/scripts/generate-homebrew-formula.sh "$formula_version" dist/SHA256SUMS "$formula_dir/yottacode.rb"
+          grep -F "version \"$formula_version\"" "$formula_dir/yottacode.rb"
+          test "$(grep -c 'sha256 "' "$formula_dir/yottacode.rb")" -eq 2
+          formula_version=$(awk '$2 ~ /^yottacode_[^_]+_darwin_arm64\.tar\.gz$/ { name=$2; sub(/^yottacode_/, "", name); sub(/_darwin_arm64\.tar\.gz$/, "", name); print name; exit }' dist/SHA256SUMS)
+          test -n "$formula_version"
+          formula_dir="$RUNNER_TEMP/homebrew-formula-test/Formula"
+          mkdir -p "$formula_dir"
+          bash .github/scripts/generate-homebrew-formula.sh "$formula_version" dist/SHA256SUMS "$formula_dir/yottacode.rb"
+          grep -F "version \"$formula_version\"" "$formula_dir/yottacode.rb"
+          test "$(grep -c 'sha256 "' "$formula_dir/yottacode.rb")" -eq 2
 
   shellcheck:
     runs-on: ubuntu-latest
