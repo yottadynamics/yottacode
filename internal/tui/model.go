@@ -1551,6 +1551,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width = msg.Width // terminal too narrow; bypass the margin
 		}
 		m.height = msg.Height
+		m.recomputeMemoryBrowseWindow()
 		m.md = newMarkdownRenderer(msg.Width - 4)
 		m.textInput.SetWidth(liveContentWidth(msg.Width))
 		m.fitTextareaHeight()

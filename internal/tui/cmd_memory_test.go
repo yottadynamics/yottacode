@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,7 +332,60 @@ func TestMemoryPickerRowCount_WithEmbedClient(t *testing.T) {
 	}
 }
 
-var (
-	_ = memory.ProjectSlug
-	_ = seedUserFile
-)
+func TestMemoryPicker_BrowseWindowKeepsCursorVisible(t *testing.T) {
+	m := newMemoryTestModel(t)
+	entries := make([]memory.MemoryEntry, 12)
+	for i := range entries {
+		entries[i].Name = fmt.Sprintf("memory-%02d", i)
+	}
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: entries, browseVisible: 4}
+	m.memoryPickerOpen = true
+
+	for i := 0; i < 7; i++ {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	p := m.memoryPicker
+	if p.entryCursor != 7 || p.browseOffset != 4 {
+		t.Fatalf("cursor/window = %d/%d, want 7/4", p.entryCursor, p.browseOffset)
+	}
+	view := stripANSI(renderMemoryBrowse(p, nil))
+	if strings.Contains(view, "memory-00") || !strings.Contains(view, "memory-07") || strings.Contains(view, "memory-11") {
+		t.Fatalf("browse view does not show the bounded window:\n%s", view)
+	}
+	if !strings.Contains(view, "showing 5–8 of 12") {
+		t.Fatalf("browse view missing range hint:\n%s", view)
+	}
+}
+
+func TestMemoryPicker_BrowsePagingAndBoundaries(t *testing.T) {
+	m := newMemoryTestModel(t)
+	entries := make([]memory.MemoryEntry, 10)
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: entries, browseVisible: 3}
+	m.memoryPickerOpen = true
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.memoryPicker.entryCursor != 3 || m.memoryPicker.browseOffset != 1 {
+		t.Fatalf("after PgDown cursor/window = %d/%d, want 3/1", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if m.memoryPicker.entryCursor != 9 || m.memoryPicker.browseOffset != 7 {
+		t.Fatalf("after End cursor/window = %d/%d, want 9/7", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyHome})
+	if m.memoryPicker.entryCursor != 0 || m.memoryPicker.browseOffset != 0 {
+		t.Fatalf("after Home cursor/window = %d/%d, want 0/0", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+}
+
+func TestMemoryPicker_BrowseWindowRecomputesOnResize(t *testing.T) {
+	m := newMemoryTestModel(t)
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: make([]memory.MemoryEntry, 20), entryCursor: 19, browseVisible: 3, browseOffset: 17}
+	m.memoryPickerOpen = true
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 12})
+	if m.memoryPicker.browseVisible != 2 {
+		t.Fatalf("browseVisible = %d, want 2", m.memoryPicker.browseVisible)
+	}
+	if m.memoryPicker.entryCursor != 19 || m.memoryPicker.browseOffset != 18 {
+		t.Fatalf("cursor/window = %d/%d, want 19/18", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+}
