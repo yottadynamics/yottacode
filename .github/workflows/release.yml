@@ -26,6 +26,29 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
+      - name: Prepare Homebrew tap on stable tags
+        # Validate the tap and token before GoReleaser publishes the GitHub
+        # Release. The tap is provisioned separately, so a missing or
+        # inaccessible tap must fail before any release becomes visible.
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set; it must have contents:write on yottadynamics/homebrew-yottacode"
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::stable release tags must use vMAJOR.MINOR.PATCH; got $GITHUB_REF_NAME"
+            exit 1
+          fi
+          tap_dir="$RUNNER_TEMP/homebrew-yottacode"
+          git clone --branch main "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/yottadynamics/homebrew-yottacode.git" "$tap_dir"
+          test -d "$tap_dir/Formula"
+          echo "HOMEBREW_TAP_DIR=$tap_dir" >> "$GITHUB_ENV"
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -34,3 +57,42 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish Homebrew formula
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          tap_dir="$HOMEBREW_TAP_DIR"
+          bash .github/scripts/generate-homebrew-formula.sh "$version" dist/SHA256SUMS "$tap_dir/Formula/yottacode.rb"
+          tap_dir="$HOMEBREW_TAP_DIR"
+          git -C "$tap_dir" config user.name YottaDynamics
+          git -C "$tap_dir" config user.email hello@yottadynamics.com
+          git -C "$tap_dir" add Formula/yottacode.rb
+          if git -C "$tap_dir" diff --cached --quiet; then
+            echo "Homebrew formula is already current"
+          else
+            git -C "$tap_dir" commit -m "yottacode ${GITHUB_REF_NAME}"
+            published=false
+            for attempt in 1 2 3; do
+              if git -C "$tap_dir" push origin HEAD:main; then
+                published=true
+                break
+              fi
+              git -C "$tap_dir" fetch origin main
+              git -C "$tap_dir" rebase --abort 2>/dev/null || true
+              git -C "$tap_dir" reset --hard origin/main
+              bash .github/scripts/generate-homebrew-formula.sh "$version" dist/SHA256SUMS "$tap_dir/Formula/yottacode.rb"
+              git -C "$tap_dir" add Formula/yottacode.rb
+              if git -C "$tap_dir" diff --cached --quiet; then
+                published=true
+                break
+              fi
+              git -C "$tap_dir" commit -m "yottacode ${GITHUB_REF_NAME}"
+            done
+            if [ "$published" != true ]; then
+              echo "::error::failed to publish Homebrew formula after three attempts"
+              exit 1
+            fi
+          fi
+          git -C "$tap_dir" show HEAD:Formula/yottacode.rb | grep -F "version \"$version\""

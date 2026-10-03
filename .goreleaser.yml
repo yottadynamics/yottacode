@@ -44,3 +44,8 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+# Homebrew formula generation is handled by release.yml. GoReleaser's formula
+# publisher is deprecated in v2.10, while a formula remains the conventional
+# Homebrew package for a CLI. The workflow generates Formula/yottacode.rb from
+# the just-built darwin archives and pushes it to the dedicated tap.

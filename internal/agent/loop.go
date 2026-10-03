@@ -949,9 +949,7 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 		// branch goes straight to Execute via the read-only fast
 		// path).
 		if cfg.PlanMode.IsActive() {
-			if _, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
-				break
-			}
+			break
 		}
 		n++
 	}
@@ -1123,12 +1121,22 @@ func executeToolCallImpl(
 	preview := tool.PreviewCall(argsJSON)
 	var approvalSource string
 
-	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
-	// rules still beat the gate (the model never gets to call a denied
-	// tool, plan mode or not), but the gate beats the tool's own
-	// RequiresApproval policy. Returning the gate's error string as a
-	// tool result lets the model recover by switching to a read-only
-	// or plan-file alternative on the next iteration.
+	verdict := permissions.Default
+	var verdictRule permissions.Rule
+	if cfg.Permissions != nil {
+		verdict, verdictRule = cfg.Permissions.EvaluateWithRule(tool.Name(), argsJSON)
+	}
+
+	if verdict == permissions.Deny {
+		_ = send(ctx, events, ApprovalAuto{
+			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
+		})
+		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
+	}
+
+	// Plan-mode gate runs after permission denies: explicit deny rules must
+	// still block every mutating tool, while non-plan-file mutations remain
+	// blocked by the plan-mode gate.
 	if cfg.PlanMode.IsActive() {
 		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
@@ -1136,22 +1144,6 @@ func executeToolCallImpl(
 			})
 			return msg, nil, true, "plan-mode-block", nil
 		}
-	}
-
-	verdict := permissions.Default
-	var verdictRule permissions.Rule
-	if cfg.Permissions != nil {
-		verdict, verdictRule = cfg.Permissions.EvaluateWithRule(tool.Name(), argsJSON)
-	}
-
-	// Permission Deny always wins, even over plan-mode auto-allow. A
-	// user who explicitly denies write_file via permissions.json wants
-	// no writes at all, plan file included.
-	if verdict == permissions.Deny {
-		_ = send(ctx, events, ApprovalAuto{
-			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
-		})
-		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
 	}
 
 	// Background policy runs before the mode chain so unattended children cannot
