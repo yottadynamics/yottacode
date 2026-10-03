@@ -1166,6 +1166,18 @@ func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
 }
 
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
+	if m.memoryPickerOpen && m.memoryPicker != nil && m.memoryPicker.mode == memoryBrowseMode {
+		step := 1
+		if msg.Button == tea.MouseWheelUp {
+			step = -1
+		}
+		if msg.Button != tea.MouseWheelUp && msg.Button != tea.MouseWheelDown {
+			return m, nil
+		}
+		m.memoryPicker.entryCursor += step * max(1, m.memoryPicker.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	}
 	if !m.enteredConversation {
 		return m, nil
 	}

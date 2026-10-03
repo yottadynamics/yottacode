@@ -56,6 +56,8 @@ type memoryPickerState struct {
 	browseDir     string
 	entries       []memory.MemoryEntry
 	entryCursor   int
+	browseOffset  int
+	browseVisible int
 	browseMessage string
 
 	showEnableSemanticRow bool
@@ -67,6 +69,51 @@ func (p *memoryPickerState) rowCount() int {
 		n++
 	}
 	return n
+}
+
+func (m *Model) recomputeMemoryBrowseWindow() {
+	if m.memoryPicker == nil {
+		return
+	}
+	visible := m.height - 10
+	if visible < 1 {
+		visible = 1
+	}
+	m.memoryPicker.browseVisible = visible
+	m.clampMemoryBrowseCursor()
+}
+
+func (m *Model) clampMemoryBrowseCursor() {
+	p := m.memoryPicker
+	if p == nil {
+		return
+	}
+	if p.entryCursor < 0 {
+		p.entryCursor = 0
+	}
+	if len(p.entries) == 0 {
+		p.entryCursor, p.browseOffset = 0, 0
+		return
+	}
+	if p.entryCursor >= len(p.entries) {
+		p.entryCursor = len(p.entries) - 1
+	}
+	if p.browseVisible < 1 {
+		p.browseVisible = 1
+	}
+	if p.entryCursor < p.browseOffset {
+		p.browseOffset = p.entryCursor
+	}
+	if p.entryCursor >= p.browseOffset+p.browseVisible {
+		p.browseOffset = p.entryCursor - p.browseVisible + 1
+	}
+	maxOffset := len(p.entries) - p.browseVisible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if p.browseOffset > maxOffset {
+		p.browseOffset = maxOffset
+	}
 }
 
 func (m *Model) openMemoryPicker() {
@@ -85,6 +132,7 @@ func (m *Model) openMemoryPicker() {
 	}
 	st.showEnableSemanticRow = (m.embedClient == nil)
 	m.memoryPicker = st
+	m.recomputeMemoryBrowseWindow()
 	m.memoryPickerOpen = true
 }
 
@@ -236,8 +284,10 @@ func (m Model) enterMemoryBrowse(scope, dir string) (Model, tea.Cmd) {
 	p.browseDir = dir
 	p.entries = entries
 	p.entryCursor = 0
+	p.browseOffset = 0
 	p.browseMessage = ""
 	p.mode = memoryBrowseMode
+	m.recomputeMemoryBrowseWindow()
 	return m, nil
 }
 
@@ -272,11 +322,29 @@ func (m Model) updateMemoryBrowse(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if p.entryCursor > 0 {
 			p.entryCursor--
 		}
+		m.clampMemoryBrowseCursor()
 		return m, nil
 	case tea.KeyDown:
 		if p.entryCursor < len(p.entries)-1 {
 			p.entryCursor++
 		}
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyPgUp:
+		p.entryCursor -= max(1, p.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyPgDown:
+		p.entryCursor += max(1, p.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyHome:
+		p.entryCursor = 0
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyEnd:
+		p.entryCursor = len(p.entries) - 1
+		m.clampMemoryBrowseCursor()
 		return m, nil
 	case tea.KeyEnter:
 		return m.commitMemoryBrowseOpen()
@@ -321,6 +389,7 @@ func (m Model) commitMemoryBrowseDelete() (Model, tea.Cmd) {
 	}
 	entries, _ := scanMemoryEntriesForBrowse(p.browseScope, m.cwd)
 	p.entries = entries
+	m.clampMemoryBrowseCursor()
 	if p.entryCursor >= len(p.entries) && p.entryCursor > 0 {
 		p.entryCursor = len(p.entries) - 1
 	}
@@ -448,7 +517,19 @@ func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
 	if len(p.entries) == 0 {
 		b.WriteString(styleEmpty.Render("  (no memories)"))
 	} else {
-		for i, e := range p.entries {
+		start := p.browseOffset
+		end := start + p.browseVisible
+		if end > len(p.entries) {
+			end = len(p.entries)
+		}
+		if start > end {
+			start = end
+		}
+		if start > 0 || end < len(p.entries) {
+			fmt.Fprintf(&b, "  %s\n\n", styleMeta.Render(fmt.Sprintf("showing %d–%d of %d", start+1, end, len(p.entries))))
+		}
+		for i := start; i < end; i++ {
+			e := p.entries[i]
 			label := e.Name
 			if e.Type != "" {
 				label = e.Name + " [" + e.Type + "]"
