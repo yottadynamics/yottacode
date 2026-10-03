@@ -1117,6 +1117,27 @@ func executeToolCallImpl(
 	if !ok {
 		return fmt.Sprintf("error: unknown tool %q", tc.Name), nil, false, "", nil
 	}
+	// Resolve a dead session cwd once, before tool-specific path or
+	// subprocess handling. Read-only tools may continue from the stable
+	// project root; mutating tools stop rather than silently redirecting a
+	// command intended for a deleted worktree into another checkout.
+	if cfg.Cwd != nil {
+		if recovery, recoverErr := cfg.Cwd.Recover(); recoverErr != nil {
+			return "error: cwd unavailable: " + recoverErr.Error(), nil, false, "", nil
+		} else if recovery.Recovered {
+			if err := send(ctx, events, CwdChanged{
+				NewCwd: recovery.Actual, Previous: recovery.Requested,
+				Recovered: true, Reason: "directory_deleted",
+			}); err != nil {
+				return "", nil, false, "", err
+			}
+			if !IsReadOnlyTool(tc.Name) {
+				msg := fmt.Sprintf("error: session cwd %q no longer exists; recovered to %q, but %s was not executed. Reconfirm the intended working directory before retrying", recovery.Requested, recovery.Actual, tc.Name)
+				_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tc.Name, Output: msg, Errored: true})
+				return msg, nil, false, "cwd-recovery", nil
+			}
+		}
+	}
 	argsJSON := coerceArgsToSchema(tc.ArgsJSON, tool.Schema())
 	normalizedTC := tc
 	normalizedTC.ArgsJSON = argsJSON
