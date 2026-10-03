@@ -687,6 +687,136 @@ func TestLoop_ApprovalAllowAlwaysAppendsToPermissionsLocal(t *testing.T) {
 	}
 }
 
+// A chained run_bash command saves one rule per segment verb, and the saved
+// rules then let that same chain through without a prompt.
+func TestLoop_ApprovalAllowAlwaysChainedBashSavesEachSegmentRule(t *testing.T) {
+	perms, cwd := permsForTest(t, nil, nil, nil)
+	chain := `{"command":"gofmt -w a.go && go test ./..."}`
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "run_bash", ArgsJSON: chain})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "run_bash", requiresApproval: true, output: "x"})
+	cfg := LoopConfig{
+		Adapter: streamer, Registry: reg, Permissions: perms,
+		Cwd: NewCwdRef(cwd), MaxIterations: 5,
+	}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	_, _ = runTurnSync(t, context.Background(), cfg, &hist, func(_ ApprovalNeeded) Decision {
+		return AllowAlways
+	})
+
+	b, err := os.ReadFile(filepath.Join(cwd, ".yottacode", "permissions.local.json"))
+	if err != nil {
+		t.Fatalf("permissions.local.json was not written: %v", err)
+	}
+	for _, want := range []string{"Bash(gofmt *)", "Bash(go *)"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("expected %s in permissions.local.json; got: %s", want, b)
+		}
+	}
+	if got := perms.Evaluate("run_bash", chain); got != permissions.Allow {
+		t.Errorf("saved rules should Allow the same chain; got %v", got)
+	}
+}
+
+// enter_worktree is an auto-mode safety-floor tool; a saved Worktree rule is
+// the explicit opt-in that lets it through unprompted afterwards.
+func TestLoop_ApprovalAllowAlwaysWorktreeRuleSilencesLaterPrompts(t *testing.T) {
+	perms, cwd := permsForTest(t, nil, nil, nil)
+	call := func(id string) adapter.StreamEvent {
+		return sseDone("", adapter.ToolCall{ID: id, Name: "enter_worktree", ArgsJSON: `{"name":"feat-a"}`})
+	}
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{call("c1")}, {call("c2")}, {sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "enter_worktree", requiresApproval: true, output: "x"})
+	cfg := LoopConfig{
+		Adapter: streamer, Registry: reg, Permissions: perms,
+		Cwd: NewCwdRef(cwd), MaxIterations: 5,
+	}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+
+	prompts := 0
+	_, _ = runTurnSync(t, context.Background(), cfg, &hist, func(_ ApprovalNeeded) Decision {
+		prompts++
+		return AllowAlways
+	})
+	if prompts != 1 {
+		t.Errorf("prompts = %d, want 1 (second enter_worktree covered by the saved rule)", prompts)
+	}
+	b, _ := os.ReadFile(filepath.Join(cwd, ".yottacode", "permissions.local.json"))
+	if !strings.Contains(string(b), "Worktree(enter *)") {
+		t.Errorf("expected Worktree(enter *) in permissions.local.json; got: %s", b)
+	}
+}
+
+// The commit scope follows the session's live cwd (which enter_worktree moves),
+// not the cwd the policy was loaded with.
+func TestLoop_WorktreeScopedCommitRuleFollowsLiveCwd(t *testing.T) {
+	perms, repo := permsForTest(t, nil, nil, nil)
+	if err := perms.AddAllow("Git(commit * @worktree)"); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(repo, ".yottacode", "worktrees", "feat-a")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(cwd string) (prompts int) {
+		streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+			{sseDone("", adapter.ToolCall{ID: "c1", Name: "git_commit", ArgsJSON: `{"message":"x"}`})},
+			{sseToken("ok"), sseDone("ok")},
+		}}
+		reg := NewRegistry()
+		reg.Register(&mockTool{name: "git_commit", requiresApproval: true, output: "x"})
+		cfg := LoopConfig{
+			Adapter: streamer, Registry: reg, Permissions: perms,
+			Cwd: NewCwdRef(cwd), MaxIterations: 5,
+		}
+		hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+		_, _ = runTurnSync(t, context.Background(), cfg, &hist, func(_ ApprovalNeeded) Decision {
+			prompts++
+			return AllowOnce
+		})
+		return prompts
+	}
+	if n := run(wt); n != 0 {
+		t.Errorf("commit from the worktree prompted %d time(s), want 0 (covered by the scoped rule)", n)
+	}
+	if n := run(repo); n != 1 {
+		t.Errorf("commit from the main checkout prompted %d time(s), want 1", n)
+	}
+}
+
+// [A] on a commit from inside a worktree saves the worktree-scoped rule.
+func TestLoop_ApprovalAllowAlwaysCommitInWorktreeSavesScopedRule(t *testing.T) {
+	perms, repo := permsForTest(t, nil, nil, nil)
+	wt := filepath.Join(repo, ".yottacode", "worktrees", "feat-a")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
+		{sseDone("", adapter.ToolCall{ID: "c1", Name: "git_commit", ArgsJSON: `{"message":"x"}`})},
+		{sseToken("ok"), sseDone("ok")},
+	}}
+	reg := NewRegistry()
+	reg.Register(&mockTool{name: "git_commit", requiresApproval: true, output: "x"})
+	cfg := LoopConfig{
+		Adapter: streamer, Registry: reg, Permissions: perms,
+		Cwd: NewCwdRef(wt), MaxIterations: 5,
+	}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "go"}}
+	_, _ = runTurnSync(t, context.Background(), cfg, &hist, func(_ ApprovalNeeded) Decision { return AllowAlways })
+
+	b, _ := os.ReadFile(filepath.Join(repo, ".yottacode", "permissions.local.json"))
+	if !strings.Contains(string(b), "Git(commit * @worktree)") {
+		t.Errorf("expected the worktree-scoped rule in permissions.local.json; got: %s", b)
+	}
+}
+
 func TestLoop_DeniedToolReportsToModel(t *testing.T) {
 	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{
 		{sseDone("", adapter.ToolCall{ID: "c1", Name: "mut", ArgsJSON: `{}`})},

@@ -41,6 +41,9 @@ func modelsServer(t *testing.T, body string) *httptest.Server {
 		if got := r.URL.Query().Get("client_version"); got == "" {
 			t.Errorf("missing client_version query param")
 		}
+		if got := r.Header.Get("chatgpt-account-id"); got != "acct-123" {
+			t.Errorf("chatgpt-account-id = %q, want acct-123", got)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(body))
 	}))
@@ -62,6 +65,9 @@ func probeServer(t *testing.T, fn func(model string) (int, string)) *httptest.Se
 		}
 		if got := r.Header.Get("OpenAI-Beta"); got != "responses=experimental" {
 			t.Errorf("OpenAI-Beta = %q, want responses=experimental", got)
+		}
+		if got := r.Header.Get("chatgpt-account-id"); got != "acct-123" {
+			t.Errorf("chatgpt-account-id = %q, want acct-123", got)
 		}
 		var body struct {
 			Model  string `json:"model"`
@@ -93,7 +99,7 @@ func TestFetchModels_FiltersAndSortsByPriority(t *testing.T) {
 	))
 	defer srv.Close()
 
-	got, err := FetchModels(context.Background(), "tkn", ScanOptions{ModelsEndpoint: srv.URL})
+	got, err := FetchModels(context.Background(), "tkn", "acct-123", ScanOptions{ModelsEndpoint: srv.URL})
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
@@ -111,6 +117,26 @@ func TestFetchModels_FiltersAndSortsByPriority(t *testing.T) {
 	}
 }
 
+// TestFetchModels_OmitsAccountIDHeaderWhenEmpty covers the backward-
+// compat case: a token store saved before ChatGPTAccountID existed
+// (or a login whose JWT omitted the claim) must not send a
+// chatgpt-account-id header with an empty value — omitted entirely,
+// not "chatgpt-account-id: ".
+func TestFetchModels_OmitsAccountIDHeaderWhenEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Header["Chatgpt-Account-Id"]; ok {
+			t.Errorf("chatgpt-account-id header should be absent, got %q", r.Header.Get("chatgpt-account-id"))
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(catalogBody()))
+	}))
+	defer srv.Close()
+
+	if _, err := FetchModels(context.Background(), "tkn", "", ScanOptions{ModelsEndpoint: srv.URL}); err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+}
+
 func TestFetchModels_NonOKStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -118,7 +144,7 @@ func TestFetchModels_NonOKStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := FetchModels(context.Background(), "tkn", ScanOptions{ModelsEndpoint: srv.URL})
+	_, err := FetchModels(context.Background(), "tkn", "acct-123", ScanOptions{ModelsEndpoint: srv.URL})
 	if err == nil {
 		t.Fatal("expected error on 401")
 	}
@@ -131,14 +157,14 @@ func TestFetchModels_DecodeError(t *testing.T) {
 	srv := modelsServer(t, "not json")
 	defer srv.Close()
 
-	_, err := FetchModels(context.Background(), "tkn", ScanOptions{ModelsEndpoint: srv.URL})
+	_, err := FetchModels(context.Background(), "tkn", "acct-123", ScanOptions{ModelsEndpoint: srv.URL})
 	if err == nil {
 		t.Fatal("expected decode error")
 	}
 }
 
 func TestFetchModels_NetworkError(t *testing.T) {
-	_, err := FetchModels(context.Background(), "tkn", ScanOptions{
+	_, err := FetchModels(context.Background(), "tkn", "acct-123", ScanOptions{
 		// 127.0.0.1:1 is reliably unreachable.
 		ModelsEndpoint: "http://127.0.0.1:1/never",
 		HTTPClient:     &http.Client{Timeout: 200 * time.Millisecond},
@@ -170,7 +196,7 @@ func TestScanWithToken_HappyPath(t *testing.T) {
 	})
 	defer probe.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -194,7 +220,7 @@ func TestScanWithToken_CatalogFetchErrorAborts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := ScanWithToken(context.Background(), "tkn", ScanOptions{ModelsEndpoint: srv.URL})
+	_, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{ModelsEndpoint: srv.URL})
 	if err == nil {
 		t.Fatal("expected error when the catalog fetch itself fails")
 	}
@@ -211,7 +237,7 @@ func TestScanWithToken_429TreatedAsAvailable(t *testing.T) {
 	})
 	defer probe.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -248,7 +274,7 @@ func TestScanWithToken_4xxNoRetry(t *testing.T) {
 	})
 	defer probe.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -283,7 +309,7 @@ func TestScanWithToken_5xxRetriesUpTo3(t *testing.T) {
 	})
 	defer probe.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -315,7 +341,7 @@ func TestScanWithToken_5xxThenSuccess(t *testing.T) {
 	})
 	defer probe.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -335,7 +361,7 @@ func TestScanWithToken_NetworkErrorRetries(t *testing.T) {
 	catalog := oneCandidateModelsServer(t, "gpt-5.5")
 	defer catalog.Close()
 
-	results, err := ScanWithToken(context.Background(), "tkn", ScanOptions{
+	results, err := ScanWithToken(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		// 127.0.0.1:1 is reliably unreachable; the probe will see
 		// connection-refused on every attempt.
@@ -372,7 +398,7 @@ func TestScanWithToken_ContextCancelStopsLoop(t *testing.T) {
 	// runs" path the original test covered by cancelling up front —
 	// FetchModels will fail fast on a cancelled context too.
 	cancel()
-	_, err := ScanWithToken(ctx, "tkn", ScanOptions{
+	_, err := ScanWithToken(ctx, "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -430,7 +456,7 @@ func TestScanAndPersist_WritesFileOnSuccess(t *testing.T) {
 	})
 	defer probe.Close()
 
-	models, err := ScanAndPersistWithOptions(context.Background(), "tkn", ScanOptions{
+	models, err := ScanAndPersistWithOptions(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -475,7 +501,7 @@ func TestScanAndPersist_NoFileOnZeroOK(t *testing.T) {
 	})
 	defer probe.Close()
 
-	_, err := ScanAndPersistWithOptions(context.Background(), "tkn", ScanOptions{
+	_, err := ScanAndPersistWithOptions(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	})
@@ -510,7 +536,7 @@ func TestScanAndPersist_PreservesPriorFileOnFailure(t *testing.T) {
 	})
 	defer probe.Close()
 
-	if _, err := ScanAndPersistWithOptions(context.Background(), "tkn", ScanOptions{
+	if _, err := ScanAndPersistWithOptions(context.Background(), "tkn", "acct-123", ScanOptions{
 		ModelsEndpoint: catalog.URL,
 		ProbeEndpoint:  probe.URL,
 	}); !errors.Is(err, ErrNoModelsAvailable) {

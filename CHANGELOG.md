@@ -8,6 +8,41 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Approval prompts can save a rule for more tools and for chained
+  commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
+  now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb
+  (all-or-nothing: one dangerous segment and none are offered).
+  `enter_worktree` / `exit_worktree` get a `Worktree(...)` rule family
+  (`cleanup=remove` is never offered), and `git_commit_apply`, `git_push`,
+  `git_worktree_*`, `media_compose` and `memory_curate_apply` now have
+  permission targets so rules and `[D]` blocks can match them. `git_push`
+  never derives an allow rule. Commit-family tools record whether the session
+  is inside a yottacode worktree, so `[A]` from a worktree saves
+  `Git(commit * @worktree)`, which does not unlock commits in the main
+  checkout. The scope is set by the harness, outside the call's arguments,
+  so a commit message can't forge it. From the main checkout (and for the
+  unified `git` tool's `commit`, or a `git` call that leads with an option
+  such as `-C`) no `[A]`/`[S]` is offered for commits at all, since the only
+  derivable rule would also unlock every worktree; hand-written unscoped
+  rules keep working. `lsp_apply_workspace_edit`
+  now has an `Edit(...)` target, with one rule per touched path. A multi-rule
+  row in the approval modal lists each rule on its own line instead of
+  wrapping mid-token. Fixed: `apply_diff` derived a cwd-wide rule even when
+  the diff touched files elsewhere. Fixed: the `Git(checkpoint *)` rule derived
+  for `git_checkpoint` never matched. A new registry sweep test fails if a
+  tool that prompts has neither a permission target nor an explicit
+  reason it can't have one.
+
+- **`apply_hashline` gains line-addressed hunks.** A hunk can now be
+  addressed by `anchor` — the exact `line#hash` token `read_file`/
+  `read_many_files` print with `anchors=true`, or that `edit_anchored`
+  already accepts — instead of `offset`/`length`/`hash`/`old`. The tool
+  resolves the anchor against the current file (rejecting a stale line or
+  changed content the same way `edit_anchored` does) and derives that
+  line's exact span, text, and hash itself, so touching one line inside a
+  large read window no longer means reproducing the whole window as `old`.
+  `new` replaces the anchored line including its own terminator; empty
+  deletes it. Anchor and byte-addressed hunks can be mixed in one call.
 - **`browser_*` tools (experimental).** Eighteen agent tools —
   `browser_status`, `browser_navigate`, `browser_screenshot`,
   `browser_inspect`, `browser_click`, `browser_type`, `browser_hotkey`,
@@ -15,7 +50,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `browser_tabs`, `browser_switch_tab`, `browser_close_tab`, `browser_upload`,
   `browser_download`, `browser_console_logs`, `browser_network_requests`
   — drive a real, headless Chrome/Chromium instance over the Chrome
-  DevTools Protocol via `go-rod/rod`, with no Node.js or Playwright
+  DevTools Protocol via `chromedp/cdproto`, with no Node.js or Playwright
   dependency. A fresh, isolated temp profile per session (never your
 
   real, logged-in browser), headless by default, and not available to
@@ -54,7 +89,7 @@ the project uses semantic versioning once it's past `1.0.0`.
   `read_file`; the approval prompt shows the typed text, the uploaded files
   and the download source instead of only a selector or destination; Chrome
   launches with site isolation and an out-of-process network service again
-  (rod turns both off by default); rod's `/tmp` leakless helper is only run
+  (chromedp leaves both enabled by default); chromedp's `/tmp` leakless helper is only run
   if it is owned by you and not writable by others (it used a predictable
   path and no ownership check); and the download copy refuses to write
   through a symlink. Known limitations (prompt injection, internal-network
@@ -66,7 +101,17 @@ the project uses semantic versioning once it's past `1.0.0`.
   or reach an internal address unattended; the read-only tools and
   navigation on this machine stay auto-approved. A killed session's temp
   profile (with its cookies) is now removed by the next browser launch when
-  it is over an hour old, owned by you, and no live browser holds it. Off
+  it is over an hour old, owned by you, and no live browser holds it.
+  Sessions now launch with the automation signals a stock headless Chrome
+  volunteers for free suppressed: `navigator.webdriver` is turned off via
+  CDP's own `Emulation.setAutomationOverride` (belt-and-suspenders with
+  `--disable-blink-features=AutomationControlled`), the window uses a plain
+  1280x800 desktop size instead of headless Chrome's small default, and the
+  user agent/client hints no longer announce `HeadlessChrome`. This is
+  cosmetic self-consistency, not evasion — it changes nothing the browser
+  can do, no JavaScript is injected, and it does not solve, click through,
+  or bypass any actual human-verification challenge; `browser_handoff`
+  remains the only way past one. Off
   by default; enable with
   `--experimental browser`. A new CI workflow
   (`.github/workflows/browser-integration.yml`) runs the real-Chrome
@@ -285,6 +330,96 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
+worktree-sharded-honking-nebula
+- **`browser_click`/`browser_type`'s new-tab follow could corrupt session
+  state under real concurrency.** A freshly opened tab was published to the
+  session (visible to `followNewPage`'s polling loop) before its one-time
+  domain-enable/stealth setup had run against it; if the two raced,
+  chromedp's own lazy target-attach bookkeeping — not safe to call from two
+  goroutines at once — could corrupt, occasionally surfacing as `go test
+  -race` failures in `TestIntegration_ClickFollowsNewTab`,
+  `TestIntegration_CloseTab`, and
+  `TestIntegration_BackgroundTabSelfCloseFallsBackToRemainingTab`. Fixed by
+  not publishing a new tab (`trackPage`) until its setup actions have
+  finished running, the same attach-then-publish order the initial page
+  already used.
+- **`read_many_files` is now safe to rely on for large or messy batches.**
+  The 512 KiB combined-output cap is enforced on the output itself; it used
+  to be checked only between files, so a batch could return roughly twice
+  that (and more with `anchors=true`). With `anchors=true` and a non-zero
+  `offset`, line numbers are now absolute instead of restarting at 1, so
+  they line up with `read_file` and `edit_anchored`. A window cut short by
+  `limit` or the cap now ends on a line boundary (or a rune boundary inside
+  one overlong line) rather than mid-line or mid-character, and a hashline
+  receipt covers exactly the bytes that were rendered. A missing,
+  unreadable, or non-regular file no longer aborts the whole batch: it gets
+  an inline `[error: …]` section, and binary or non-UTF-8 files an inline
+  `[skipped: …]` section (a call where no file could be read still returns
+  an error). A FIFO or other non-regular file can no longer hang the call.
+  A path on the read deny list still refuses the whole call.
+- **`apply_hashline` can no longer replace bytes it did not verify.** A
+  hunk's `length` is now required to equal the byte length of its `old`
+  text; previously a hunk found by relocation replaced `length` bytes
+  regardless, so a wrong length silently deleted or kept the wrong text (or
+  panicked when it ran past the end of the file). An empty `old` is
+  rejected (`empty_anchor`): an empty span hashes to a constant, so an
+  "anchored insert" verified nothing and could land at a stale offset or
+  split a multi-byte character. Insert by anchoring on adjacent text
+  instead. **Behavior change:** `apply_hashline` can no longer insert into
+  an empty file; use `write_file`. The hash-mismatch message no longer asks
+  the model to "recompute" a SHA-256 it cannot compute.
+- **`apply_hashline` and `read_file`/`read_many_files` handle line endings
+  and trailing newlines.** In a predominantly-CRLF file, `old` written with
+  plain newlines now matches its receipt and `new` is converted so an edit
+  cannot leave mixed endings (LF files and genuinely mixed `old` text are
+  left alone, and a real mismatch is never masked). Receipts gain
+  `ends_with_newline=true|false`, so a model can tell `a\nb` from `a\nb\n`
+  and build `old` correctly instead of guessing.
+- **Edit previews show every change.** The diff returned by `apply_hashline`
+  and by `lsp_rename_preview`/`lsp_format_preview`/`lsp_code_action_preview`
+  is now a real multi-hunk diff. Before, two edits far apart were shown as
+  one hunk that removed everything in between, cut additions silently, could
+  not be bounded in bytes (a 1-byte edit beside a 1 MiB line returned
+  ~1 MiB), and hid a change to the final newline. Distant edits are now
+  separate hunks, lines are clipped, output is capped at 16 KiB and 80
+  changed lines, and `…[truncated diff]` always marks omitted content.
+- **Hardened `internal/edit/hashline`'s atomic write against symlinks.**
+  Replacing a file went through `rename()` onto the path it was given, which
+  operates on a symlink itself rather than its target — writing through a
+  symlinked path would silently delete the symlink and leave whatever it
+  pointed at unmodified. The write now resolves through any symlink chain
+  first, so the real target is updated and the symlink is left in place.
+  Not reachable today: the write-path validator rejects a symlinked leaf
+  before `apply_hashline` reaches it, and no flag currently sets
+  `AllowSymlinks`; this closes the gap for whichever caller sets it next.
+- **`apply_hashline` and `edit_anchored` cap the size of the file they will
+  read to apply an edit.** Both read their target with a plain, unbounded
+  file read before doing any hash or anchor validation, so pointing either
+  tool at an implausibly large file (a stray multi-GB log or data file)
+  loaded it fully into memory first. The target is now stat'd and rejected
+  (`file_too_large`) before being read if it exceeds 64 MiB; the internal
+  re-read `apply_hashline`, `edit_anchored`, and `hashline.ApplyFile` do
+  under their write lock to detect a concurrent change is capped the same
+  way, so a file that grows past the limit in that narrow window is
+  reported honestly instead of being read anyway.
+- **`read_file` no longer hangs on a FIFO or dumps binary content.** Only
+  regular files are read; a directory, FIFO, socket, or device (including
+  one named like an image) returns a `not a regular file` error instead of
+  blocking. A window containing NUL bytes or invalid UTF-8 now returns
+  `[skipped: not UTF-8 text (…)]` rather than raw bytes, and an overlong
+  line is cut on a character boundary so the returned text (and its hashline
+  receipt) is never invalid UTF-8.
+- **`openai-auth login` could reject every discovered model with an unrelated
+  "Incorrect API key provided" 401, even for a valid, paid ChatGPT account.**
+  OpenAI's access-token JWT nests email and `chatgpt_account_id` under two
+  custom claim namespaces (`https://api.openai.com/profile` and
+  `.../auth`) that the token decoder never looked at, so logins showed
+  `<no email claim>` and no request to `chatgpt.com/backend-api/codex/*`
+  ever carried the `chatgpt-account-id` header that endpoint needs to
+  resolve which account to bill. Claims are now decoded from both
+  namespaces, `ChatGPTAccountID` is persisted on the token store (surviving
+  refresh), and it's sent on every codex-backend call — model catalog
+  fetch, per-model probe, chat requests, and the `/usage` account probe.
 - **Go debug tools (`debug_eval`, `debug_step`, and friends) could report a
   spurious "DAP session closed" or timeout error for a request that had
   actually already succeeded.** The DAP client's response wait raced the

@@ -123,6 +123,9 @@ func (s *TokenSource) refreshLocked(ctx context.Context) (string, error) {
 	if fresh.Email == "" {
 		fresh.Email = s.cache.Email
 	}
+	if fresh.ChatGPTAccountID == "" {
+		fresh.ChatGPTAccountID = s.cache.ChatGPTAccountID
+	}
 	if err := Save(s.path, fresh); err != nil {
 		return "", fmt.Errorf("openai-auth: persist refreshed token: %w", err)
 	}

@@ -87,6 +87,15 @@ var execMarkerSeq atomic.Int64
 // for why a fresh container per command is rejected).
 type PodmanSandbox struct {
 	name string
+	// secretNames are the podman secrets created for this container's
+	// EnvPassthrough values (see createSessionSecrets) — torn down by
+	// Close alongside the container itself.
+	secretNames []string
+	// secretExportPrelude is prepended to every Command's wrapped script,
+	// re-exposing each mounted secret as the env var name it stands in
+	// for. Precomputed once at creation instead of per-Command call since
+	// the mounted set never changes for a container's lifetime.
+	secretExportPrelude string
 }
 
 // NewPodmanSandbox starts a session-scoped container per cfg, bind-mounting
@@ -132,9 +141,24 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		StorageOpt:   storageOptSupported(ctx, cfg.Image),
 		CgroupLimits: cgroupLimitsSupported(ctx, cfg.Image),
 	}
+	owner := currentSandboxOwner()
 
-	args, err := podmanRunArgs(cfg, name, mountRoot, caps, currentSandboxOwner())
+	// Secrets are created BEFORE the container so podman run can mount them
+	// immediately; cfg.EnvPassthrough names with no matching process-env
+	// value are skipped entirely (no secret, no mount — matching the old
+	// bare `-e NAME` behavior where an unset var just stayed unset inside
+	// the container). A creation failure here is fatal to sandbox startup
+	// rather than degraded silently: unlike hostCapabilities' resource
+	// limits, a missing credential the user explicitly configured is not a
+	// safe thing to just drop.
+	secretMounts, err := createSessionSecrets(ctx, name, cfg.EnvPassthrough, owner)
 	if err != nil {
+		return nil, err
+	}
+
+	args, err := podmanRunArgs(cfg, name, mountRoot, caps, owner, secretMounts)
+	if err != nil {
+		removeSecrets(context.Background(), secretMounts)
 		return nil, err
 	}
 
@@ -147,13 +171,18 @@ func NewPodmanSandbox(ctx context.Context, cfg config.SandboxConfig, id, mountRo
 		// starting the container server-side even though ctx cancellation
 		// killed OUR client before it read the result. Clean up
 		// best-effort so a caller that gives up on the returned error
-		// doesn't leave an orphaned container behind. Uses a fresh
-		// context, not ctx — ctx itself may be why we're here (already
-		// canceled), and this cleanup must still get to run.
+		// doesn't leave an orphaned container or its secrets behind. Uses
+		// a fresh context, not ctx — ctx itself may be why we're here
+		// (already canceled), and this cleanup must still get to run.
 		_ = removeContainer(context.Background(), name)
+		removeSecrets(context.Background(), secretMounts)
 		return nil, fmt.Errorf("sandbox: podman run failed: %w (output: %s)", err, strings.TrimSpace(out.String()))
 	}
-	return &PodmanSandbox{name: name}, nil
+	return &PodmanSandbox{
+		name:                name,
+		secretNames:         secretMountNames(secretMounts),
+		secretExportPrelude: secretExportPrelude(secretMounts),
+	}, nil
 }
 
 // sandboxOwner identifies the yottacode process starting a container,
@@ -224,14 +253,13 @@ func processStartTicks(pid int) (int64, bool) {
 // flags that not every host can honor — see hostCapabilities. owner is
 // stamped as labels so PruneOrphaned can later tell a genuinely abandoned
 // container from one still backing a live session (see reap.go).
-func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities, owner sandboxOwner) ([]string, error) {
+func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCapabilities, owner sandboxOwner, secretMounts []secretMount) ([]string, error) {
 	args := []string{
 		"run", "-d", "--name", name,
 		// This long-lived container hosts many execs. A real init reparents and
 		// reaps descendants that race cancellation instead of accumulating
 		// zombies under `sleep infinity` as PID 1.
 		"--init",
-		"--label", fmt.Sprintf("yottacode.owner_pid=%d", owner.PID),
 		// Namespace isolation (PID/IPC/UTS/mount/user/network) is podman's
 		// own default for every rootless container — verified via
 		// /proc/1/ns inside a throwaway container, not something these
@@ -247,8 +275,15 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCa
 		fmt.Sprintf("--network=%s", cfg.Network),
 		fmt.Sprintf("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=%s", tmpTmpfsSize),
 	}
-	if owner.HaveStartTicks {
-		args = append(args, "--label", fmt.Sprintf("yottacode.owner_started=%d", owner.StartTicks))
+	for _, label := range ownerLabels(owner) {
+		args = append(args, "--label", label)
+	}
+	for _, m := range secretMounts {
+		// target= is deliberately the env var NAME, not the podman secret
+		// name (which is namespaced with the container name to stay
+		// globally unique) — Command's exec wrapper re-exports whatever
+		// lands at /run/secrets/<target> under that same NAME.
+		args = append(args, "--secret", m.SecretName+",target="+m.EnvName)
 	}
 	// Gated on caps.CgroupLimits: a host without the cpu/memory/pids
 	// cgroup controllers delegated to this process (unprivileged LXCs,
@@ -320,16 +355,20 @@ func podmanRunArgs(cfg config.SandboxConfig, name, mountRoot string, caps hostCa
 
 	args = append(args, "-v", goCacheDir+":"+goCacheDir+":z")
 	args = append(args, "-w", mountRoot)
-	for _, envName := range cfg.EnvPassthrough {
-		// Bare `-e NAME` (no `=value`): podman reads the value from its
-		// OWN process environment and forwards it into the container.
-		// The value itself never appears in podman's argv, so it never
-		// shows up in `ps`/`/proc/<pid>/cmdline` for other local users —
-		// the whole point of opt-in credential injection.
-		args = append(args, "-e", envName)
-	}
 	args = append(args, cfg.Image, "sleep", "infinity")
 	return args, nil
+}
+
+// ownerLabels renders owner as the `--label` values podman run and podman
+// secret create both stamp (see sandboxOwner and reap.go's ownerAlive) —
+// shared so a container and its EnvPassthrough secrets always agree on who
+// owns them.
+func ownerLabels(owner sandboxOwner) []string {
+	labels := []string{fmt.Sprintf("yottacode.owner_pid=%d", owner.PID)}
+	if owner.HaveStartTicks {
+		labels = append(labels, fmt.Sprintf("yottacode.owner_started=%d", owner.StartTicks))
+	}
+	return labels
 }
 
 func sandboxDNSForNetwork(network string, dns []string) []string {
@@ -422,8 +461,8 @@ func sameOrContains(root, path string) bool {
 // already exists for the host path today.
 //
 // The command is tagged with a unique marker and cmd.Cancel is set to
-// best-effort terminate the marked process and its full descendant tree
-// inside the container when ctx is canceled or times out. Without this, the
+// best-effort terminate the marked process and its descendant tree inside
+// the container when ctx is canceled or times out. Without this, the
 // default Cancel behavior (kill the local `podman exec` client) does NOT
 // kill the process it started inside the long-lived container — verified
 // empirically: a canceled `sleep 30` kept running, reparented to the
@@ -431,9 +470,17 @@ func sameOrContains(root, path string) bool {
 // process-group kill doesn't reach it either — this container setup
 // gives no per-exec process group (children inherit the container's own
 // group rather than a fresh one), also verified by direct test.
+//
+// This is NOT a complete guarantee: a command that daemonizes itself via
+// the classic double-fork idiom (e.g. `(cmd &) &`, `nohup cmd & disown`)
+// can land a descendant in a process group cancellation's cleanup never
+// reaches — verified directly against a real container. See
+// docs/sandbox.md's Known limitations for why (closing this needs
+// per-exec cgroup-scoped kill, which needs cgroup delegation this
+// container setup doesn't reliably have).
 func (s *PodmanSandbox) Command(ctx context.Context, command, cwd string) *exec.Cmd {
 	marker := fmt.Sprintf("__yc_job_%d__", execMarkerSeq.Add(1))
-	wrapped := ": " + marker + "\n" + command
+	wrapped := ": " + marker + "\n" + s.secretExportPrelude + command
 	cmd := exec.CommandContext(ctx, "podman", "exec", "-w", cwd, s.name, "/bin/sh", "-c", wrapped)
 	cmd.Cancel = func() error {
 		killCtx, killCancel := context.WithTimeout(context.Background(), execKillTimeout)
@@ -525,8 +572,16 @@ func (s *PodmanSandbox) Label() string { return "[podman-sandbox]" }
 // swallow it, consistent with this codebase's existing best-effort
 // cleanup convention (dispatch_cleanup.go).
 func (s *PodmanSandbox) Close() error {
-	if err := removeContainer(context.Background(), s.name); err != nil {
-		return fmt.Errorf("sandbox: %w", err)
+	mounts := make([]secretMount, len(s.secretNames))
+	for i, n := range s.secretNames {
+		mounts[i] = secretMount{SecretName: n}
+	}
+	containerErr := removeContainer(context.Background(), s.name)
+	// Podman refuses to remove a secret while the container still references
+	// it, so container teardown must precede secret cleanup.
+	removeSecrets(context.Background(), mounts)
+	if containerErr != nil {
+		return fmt.Errorf("sandbox: %w", containerErr)
 	}
 	return nil
 }

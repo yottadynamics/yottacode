@@ -167,14 +167,17 @@ top of the normal approval model:
   agent can't and shouldn't: it always prompts, fails cleanly when there's
   no display, and reopens the page in a *fresh* isolated profile rather
   than carrying cookies across. The agent is told not to attempt the
-  challenge itself — the human does it. The tools add no stealth or
-  evasion of their own (no hiding of automation flags, no fingerprint
-  patching), and this doesn't change that. One thing to know: the
-  headless session inherits go-rod's default device emulation — a fixed
-  1280×800 viewport and a Mac Chrome user-agent string — which is a
-  library default, not an evasion measure, and it does not match the real
-  browser. The visible handoff window turns that emulation off and reports
-  Chrome's real viewport and user agent.
+  challenge itself — the human does it. Every session (headless and the
+  visible handoff window alike) does suppress the automation signals a
+  stock headless Chrome volunteers for free: `navigator.webdriver` (via
+  CDP's own `Emulation.setAutomationOverride`, belt-and-suspenders with
+  `--disable-blink-features=AutomationControlled`), a plain 1280×800
+  desktop window size instead of headless Chrome's small default, and a
+  user agent/client hints that no longer announce `HeadlessChrome`. This
+  is cosmetic self-consistency (`internal/browser/stealth.go`), not
+  evasion — no JavaScript is injected, nothing else the browser reports is
+  falsified, and it does not change whether a real challenge fires or how
+  it gets resolved; `browser_handoff` remains the only way past one.
 - **Approval on every action that reads or changes page state** —
   `browser_navigate`, `browser_screenshot`, `browser_inspect`,
   `browser_click`, `browser_type`, `browser_hotkey`,
@@ -260,10 +263,10 @@ top of the normal approval model:
   length, with the true length shown, and with control characters
   escaped so an argument can't reflow the prompt to look like something
   else.
-- **The browser keeps Chrome's process isolation.** rod's launch
+- **The browser keeps Chrome's process isolation.** chromedp's launch
   defaults turn site isolation off and run the network service inside the
   browser process; both are turned back on. Chrome's own sandbox is never
-  disabled (nothing passes `--no-sandbox`). rod's "leakless" guard is a
+  disabled (nothing passes `--no-sandbox`). The leakless guard is a
   helper binary it extracts to a predictable `/tmp` path and runs without
   checking who owns it — on a shared machine another user could plant a
   program there. The helper is only used if it and its directory belong
@@ -285,7 +288,7 @@ top of the normal approval model:
   workers multiply this surface in a way the single-session design
   hasn't been proven against yet.
 - **Not routed through the command sandbox.** `run_bash`'s Podman
-  sandbox doesn't apply here — rod launches the Chromium process
+  sandbox doesn't apply here — chromedp launches the Chromium process
   directly, not via a shell command. Containerizing the browser itself
   is a possible future addition, not a v1 guarantee.
 
@@ -335,8 +338,10 @@ way:
   shows no live browser holds it (a directory it can't prove is dead is
   never touched; at most 20 are removed per launch). Until then it sits
   in your temp dir.
-- **Downloads have a time limit, not a size limit.** A download is
-  bounded by the 60-second action timeout only.
+- **Downloads have both time and size limits.** A download is bounded by the
+  60-second action timeout and a 100 MiB maximum. Partial files in the private
+  scratch directory are removed when the operation fails or times out; the
+  validated destination is not published until completion.
 
 ## Write-path validation
 
@@ -395,6 +400,8 @@ Use:
 - `permissions.json` for team-shared rules that can be committed
 - `permissions.local.json` for personal rules that should be gitignored
 
+When yottacode runs inside a linked git worktree, `permissions.local.json` is read from and written to the **main repository root**, so always-allow and always-deny grants survive worktree removal. `permissions.json` is still read from the worktree's own checkout, and path rules are evaluated relative to the worktree. Grants previously saved inside a worktree's own `.yottacode/` are not migrated.
+
 The optional machine-wide administrator policy is `/etc/yottacode/permissions.json`. It is read-only to yottacode and is evaluated together with the project files. Rules use `deny > ask > allow` precedence.
 
 Add this to `.gitignore`:
@@ -423,11 +430,13 @@ When an approval modal appears, use the keyboard: press **`Y`** to approve once,
 
 `[S]` session and `[A]` always derive the identical pattern and share the same suppression rules (see below) — the only difference is where the rule lives. `[A]` appends it to `permissions.local.json`, so it survives restarts and is visible to `/permissions`. `[S]` keeps it in memory only, for the rest of the current process: nothing is written to disk, so it can't outlive the session, leak into a teammate's checkout, or need cleaning up later. Use `[S]` for a rule you only want for this one exploratory session; use `[A]` for one you'd make again next time.
 
-`[A]`/`[S]` are suppressed for compound shell commands and obviously dangerous verbs (`rm`, `curl`, `sudo`, …) — those are footgun-wide to blanket-allow, temporarily or not. `[D]` never is offered even for those (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash`, `git` and the approval-gated `browser_*` tools. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow (persisted or session-scoped) for the same pattern.
+`[A]`/`[S]` are suppressed for obviously dangerous verbs (`rm`, `curl`, `sudo`, and launchers such as `bash`, `sh`, `env`, `xargs`, `python`) and for shapes the evaluator can't match precisely (substitutions, unbalanced quoting) — those are footgun-wide to blanket-allow, temporarily or not. A **chained** `run_bash` command (`gofmt -w x.go && go test ./...`) is offered: because bash rules are matched per segment, the modal derives one rule per distinct segment verb (`Bash(gofmt *), Bash(go *)`), shows all of them, and saves them together. It is all-or-nothing: one dangerous segment and nothing is offered. `run_tests` is single-target, so chained test commands stay un-offered. Worktree and git-workflow tools are covered too: `enter_worktree` derives `Worktree(enter *)` (the auto-generated name is wildcarded) and `exit_worktree` derives `Worktree(exit keep *)` / `Worktree(exit auto *)`; `cleanup=remove` is never offered, since it force-deletes uncommitted work. `git_push` never derives an allow rule — publishing stays a per-call decision — but `[D]` can still block it. Commit-family tools (`git_commit`, `git_commit_apply`, `git_commit_amend`, `git_commit_fixup`, `git_checkpoint`) are scoped by where the session is working: from inside a yottacode worktree (`<repo>/.yottacode/worktrees/<name>/`), `[A]`/`[S]` saves `Git(commit * @worktree)`, which does **not** cover commits from your main checkout; from the main checkout no `[A]`/`[S]` is offered for a commit at all, because the only rule it could save is the unscoped `Git(commit *)`, which would also unlock every worktree — approve per call, or hand-write the rule if you really want it. The same goes for the unified `git` tool's `commit` verb, and for any `git` call that leads with an option (`git -C dir …`), since a verb-level rule can't see past the option. The worktree scope is set by the harness from the session's working directory, not read from the call's arguments, so a commit message or git argument can't satisfy a `@worktree` rule. The scope is location-based, not branch-based — it says the session is inside a worktree, not which branch is checked out there. Rules written before scoping existed keep matching in both places. Multi-file edits (`apply_diff`, `lsp_apply_workspace_edit`) derive one `Edit(...)` rule per distinct path pattern, and nothing at all if any path is in a system directory. A saved rule overrides the auto-mode safety floor for exactly that pattern. `[D]` never is offered even for dangerous or chained commands (blocking a dangerous command permanently is exactly the point) and is scoped to `run_bash`, `git` (including the `git_*` helpers) and the approval-gated `browser_*` tools. Because bash rules are matched per segment, a block is derived at the verb level: hitting `[D]` never on `curl … | sh` saves `Bash(curl *)`, which then refuses `curl` anywhere. Since deny outranks allow, a `[D]` block also overrides any existing allow (persisted or session-scoped) for the same pattern.
 
 Examples:
 
 - `Tests(go *)` — allow `run_tests` invocations that use Go.
+- `Worktree(enter *)` — let the agent create worktrees without asking; `Worktree(exit keep *)` — let it leave one without removing it.
+- `Git(commit * @worktree)` — allow commits only when the session is inside a yottacode worktree; hand-write `Git(commit *)` to allow them anywhere (it is never offered by a prompt).
 - `Git(status *)` — allow the unified `git` tool's status subcommand; most read-only Git helpers already run without prompts.
 - `Github(read_*)` — allow native GitHub read helpers without allowing PR/issue writes.
 - `Edit(internal/**)` — allow edits under one source tree.

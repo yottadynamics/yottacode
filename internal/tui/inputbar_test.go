@@ -671,7 +671,50 @@ func TestCursor_BlinkMsgTogglesVisibility(t *testing.T) {
 	}
 }
 
-// renderEmptyCursor returns a 1-cell-wide block in either state — the
+func TestCursor_BusyStateIsSteadyAndDim(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m.cursorVisible = false
+
+	busyEmpty := renderEmptyCursorState(m.cursorVisible, m.cursorBusy())
+	if got := lipgloss.Width(busyEmpty); got != 1 {
+		t.Fatalf("busy empty cursor width = %d, want 1", got)
+	}
+	if busyEmpty != renderEmptyCursorState(true, true) {
+		t.Fatal("busy empty cursor should not blink")
+	}
+
+	busyText := insertCursorState("hello", 5, false, true)
+	if got := lipgloss.Width(busyText); got != 6 {
+		t.Fatalf("busy text cursor width = %d, want 6", got)
+	}
+	if busyText != insertCursorState("hello", 5, true, true) {
+		t.Fatal("busy text cursor should not blink")
+	}
+}
+
+func TestCursor_BusyTickKeepsSteadyCursorAndIdleResumesBlink(t *testing.T) {
+	m := newTestModel(t)
+	m.turnActive = true
+	m.cursorVisible = false
+	m, cmd := applyMsg(m, cursorBlinkMsg{})
+	if !m.cursorVisible {
+		t.Fatal("busy cursor should be forced visible")
+	}
+	if cmd == nil {
+		t.Fatal("busy cursor tick should re-arm the timer")
+	}
+
+	m.turnActive = false
+	m, cmd = applyMsg(m, cursorBlinkMsg{})
+	if m.cursorVisible {
+		t.Fatal("idle cursor should resume blinking and toggle invisible")
+	}
+	if cmd == nil {
+		t.Fatal("idle cursor should re-arm blinking")
+	}
+}
+
 // width stability guarantee that prevents the placeholder from
 // shifting on each blink. Both phases produce a 1-column-wide string.
 func TestCursor_EmptyStateWidthStable(t *testing.T) {

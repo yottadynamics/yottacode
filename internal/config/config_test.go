@@ -126,6 +126,43 @@ dns = ["` + dns + `"]
 	}
 }
 
+func TestLoad_SandboxEnvPassthrough(t *testing.T) {
+	src := `[sandbox]
+backend = "podman"
+env_passthrough = ["GITHUB_TOKEN", "NPM_TOKEN"]
+`
+	cfg, err := Load(writeFile(t, src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"GITHUB_TOKEN", "NPM_TOKEN"}
+	if !reflect.DeepEqual(cfg.Sandbox.EnvPassthrough, want) {
+		t.Fatalf("Sandbox.EnvPassthrough = %v, want %v", cfg.Sandbox.EnvPassthrough, want)
+	}
+}
+
+// TestLoad_RejectsInvalidSandboxEnvPassthrough guards a real injection
+// surface, not just cosmetic validation: internal/sandbox's exec wrapper
+// interpolates each name directly into a shell script to re-expose a
+// mounted podman secret as an env var (see config.validEnvVarName's doc
+// comment), so a name outside the bare POSIX env-var shape must be
+// rejected at config load rather than reaching that interpolation.
+func TestLoad_RejectsInvalidSandboxEnvPassthrough(t *testing.T) {
+	for _, name := range []string{"", "FOO BAR", "FOO=BAR", "FOO;rm -rf /", "1FOO", "FOO-BAR"} {
+		src := `[sandbox]
+backend = "podman"
+env_passthrough = ["` + strings.ReplaceAll(name, `"`, `\"`) + `"]
+`
+		_, err := Load(writeFile(t, src))
+		if err == nil {
+			t.Fatalf("expected invalid sandbox.env_passthrough entry %q to fail", name)
+		}
+		if !strings.Contains(err.Error(), "sandbox.env_passthrough") {
+			t.Fatalf("error should mention sandbox.env_passthrough, got %v", err)
+		}
+	}
+}
+
 func TestLoad_AppliesOverrides(t *testing.T) {
 	src := `
 [context]

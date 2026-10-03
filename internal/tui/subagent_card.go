@@ -111,18 +111,6 @@ func renderSubagentStart(e agent.SubagentStart) string {
 	return header + "\n" + transcript
 }
 
-// renderSubagentProgress is a one-line activity tick. The header
-// already established the agent type; the tick stays minimal — just
-// indent + tree bullet + the activity. Coalesced duplicates already
-// land as the synthetic "  …repeated ×N" form from the runner, which
-// we surface verbatim (no extra bullet so it reads as a continuation).
-func renderSubagentProgress(e agent.SubagentProgress) string {
-	if strings.HasPrefix(strings.TrimLeft(e.Activity, " "), "…") {
-		return styleSubagentMeta.Render("  " + e.Activity)
-	}
-	return styleSubagentMeta.Render("  ├ " + e.Activity)
-}
-
 // renderSubagentDone marks the end of a foreground subagent. Result
 // content lands in the model's context (as the tool result string) and
 // is also surfaced inline so the user sees what the child concluded.

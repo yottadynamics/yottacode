@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -73,11 +74,16 @@ func renderRunBashApproval(argsJSON, cwd string) (body string, segments int, ok 
 	return b.String(), len(segs), true
 }
 
+// truncSegment keeps the visible command preview within max terminal columns
+// without splitting a rune or a wide (CJK/emoji) cell.
 func truncSegment(s string, max int) string {
-	if len(s) <= max {
+	if ansi.StringWidth(s) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	if max <= 1 {
+		return "…"
+	}
+	return ansi.Truncate(s, max, "…")
 }
 
 // renderRiskInline returns a leading marker for a segment based on its
