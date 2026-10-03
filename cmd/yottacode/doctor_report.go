@@ -127,7 +127,7 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		return result
 	}
 	result.GoCacheDir = cacheDir
-	_, err = dirSize(cacheDir)
+	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes, err = goCacheSizesWithError(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			result.Status = statusFromIssuesWarnings(result.Issues, result.Warnings)
@@ -136,13 +136,6 @@ func probeSandboxDoctor(cfg config.SandboxConfig) SandboxDoctorResult {
 		}
 		result.Status = doctorStatusWarning
 		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache: %v", err))
-		return result
-	}
-	var sizeErr error
-	result.GoCacheBytes, result.GoBuildCacheBytes, result.GoModCacheBytes, sizeErr = goCacheSizes(cacheDir)
-	if sizeErr != nil {
-		result.Status = doctorStatusWarning
-		result.Warnings = append(result.Warnings, fmt.Sprintf("could not inspect sandbox Go cache components: %v", sizeErr))
 		return result
 	}
 	if result.GoCacheBytes > 2*1024*1024*1024 {
@@ -273,30 +266,28 @@ func doctorZombieCount(procRoot string) int {
 	return count
 }
 
-func goCacheSizes(path string) (total, build, modcache int64, err error) {
+func goCacheSizes(path string) (total, build, modcache int64) {
+	total, build, modcache, _ = goCacheSizesWithError(path)
+	return total, build, modcache
+}
+
+func goCacheSizesWithError(path string) (total, build, modcache int64, err error) {
+	// The total includes files outside cache and modcache (for example, stale
+	// toolchain artifacts), while the components explain the usual contributors.
 	total, err = dirSize(path)
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	build, err = cacheComponentSize(filepath.Join(path, "cache"))
-	if err != nil {
+	build, err = dirSize(filepath.Join(path, "cache"))
+	if err != nil && !os.IsNotExist(err) {
 		return total, 0, 0, err
 	}
-	modcache, err = cacheComponentSize(filepath.Join(path, "modcache"))
-	if err != nil {
+	modcache, err = dirSize(filepath.Join(path, "modcache"))
+	if err != nil && !os.IsNotExist(err) {
 		return total, build, 0, err
 	}
 	return total, build, modcache, nil
 }
-
-func cacheComponentSize(path string) (int64, error) {
-	size, err := dirSize(path)
-	if os.IsNotExist(err) {
-		return 0, nil
-	}
-	return size, err
-}
-
 func dirSize(path string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(path, func(_ string, d fs.DirEntry, err error) error {

@@ -9,32 +9,6 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
-func TestGoCacheSizesIncludesExtraFiles(t *testing.T) {
-	root := t.TempDir()
-	for _, file := range []struct {
-		path string
-		size int
-	}{{"cache/build", 3}, {"modcache/module", 5}, {"other", 7}} {
-		path := filepath.Join(root, file.path)
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, make([]byte, file.size), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	total, build, modcache, err := goCacheSizes(root)
-	if err != nil || total != 15 || build != 3 || modcache != 5 {
-		t.Fatalf("sizes = %d, %d, %d, %v", total, build, modcache, err)
-	}
-}
-
-func TestGoCacheSizesMissingComponentsAreZero(t *testing.T) {
-	root := t.TempDir()
-	if total, build, modcache, err := goCacheSizes(root); err != nil || total != 0 || build != 0 || modcache != 0 {
-		t.Fatalf("sizes = %d, %d, %d, %v", total, build, modcache, err)
-	}
-}
 func TestFormatDoctorReportHappyPath(t *testing.T) {
 	provider := doctorProviderFixture(nil, nil)
 	github := GitHubProbeResult{Status: doctorStatusOK, TokenSource: "env", Reachable: true, AuthOK: true, Login: "octocat"}
@@ -114,6 +88,43 @@ func TestFormatModelSampleTruncatesLargeLists(t *testing.T) {
 	}
 	if strings.Contains(got, "m4") || strings.Contains(got, "m5") {
 		t.Fatalf("sample leaked truncated models: %q", got)
+	}
+}
+
+func TestGoCacheSizes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "modcache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(path string, size int) {
+		t.Helper()
+		if err := os.WriteFile(path, make([]byte, size), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(dir, "cache", "build"), 11)
+	write(filepath.Join(dir, "modcache", "module"), 17)
+	write(filepath.Join(dir, "other"), 23)
+
+	total, build, modcache, err := goCacheSizesWithError(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 51 || build != 11 || modcache != 17 {
+		t.Fatalf("sizes = total %d, build %d, modcache %d; want 51, 11, 17", total, build, modcache)
+	}
+}
+
+func TestGoCacheSizesMissingComponents(t *testing.T) {
+	total, build, modcache, err := goCacheSizesWithError(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || build != 0 || modcache != 0 {
+		t.Fatalf("sizes = total %d, build %d, modcache %d; want all zero", total, build, modcache)
 	}
 }
 

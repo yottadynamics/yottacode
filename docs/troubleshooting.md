@@ -168,10 +168,8 @@ if the cgroup is owned by a container/service, restart that owner) so its init
 process can reap children. A generic foreground `run_bash` is intentionally
 still available for diagnosis and cleanup.
 
-If the doctor warning identifies a large cache, use `go clean -cache` for build/test
-artifacts only, or `go clean -modcache` when downloaded modules should also be removed.
-Deleting `/var/tmp/yottacode-$(id -u)/sandbox-go-cache` is the stronger cleanup; stop
-sandboxed jobs first.
+When no sandboxed jobs or yottacode sessions are running, caches may be removed
+safely; they are rebuilt on demand:
 
 ```bash
 rm -rf /var/tmp/yottacode-$(id -u)/sandbox-go-cache

@@ -33,6 +33,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/cost"
+	"github.com/yottadynamics/yottacode/internal/doctor"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	"github.com/yottadynamics/yottacode/internal/lsp"
@@ -1087,6 +1088,10 @@ type providerProbeMsg struct {
 	announce bool
 }
 
+type doctorMsg struct {
+	result doctor.Result
+}
+
 type doctorPermissionsMsg struct {
 	report permissions.ValidationReport
 }
@@ -1494,6 +1499,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if _, ok := msg.(cmdlineClickFlashDoneMsg); ok {
 		m.cmdlineClickFlash = false
+		return m, nil
+	}
+	if doctorResult, ok := msg.(doctorMsg); ok {
+		m.appendLine(formatDoctor(doctorResult.result))
+		if doctorResult.result.Provider.Profile.Provider != "" {
+			m.providerProfile = doctorResult.result.Provider.Profile
+		}
 		return m, nil
 	}
 	if doctor, ok := msg.(doctorPermissionsMsg); ok {
