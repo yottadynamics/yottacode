@@ -190,8 +190,12 @@ func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
 		// resolved BEFORE exit_plan_mode. The approval modal is
 		// hotkey-only — a plan with dangling open questions next to
 		// it is a UX dead-end (the user can't type answers there).
+		// ask_user_question is the preferred resolution path once the
+		// plan file has a draft; ending the turn in prose is reserved
+		// for the pre-draft case.
 		"Resolve material ambiguity BEFORE calling exit_plan_mode",
-		"END THE TURN. Do NOT call exit_plan_mode in the same turn",
+		"the tool is blocked until the plan file has content",
+		"mark your recommended answer recommended:true",
 		"approval modal accepts hotkeys only",
 		// Foreground-subagent nudge: plan-mode research benefits from
 		// same-turn findings, so the addendum steers the parent toward

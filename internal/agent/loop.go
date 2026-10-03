@@ -1205,6 +1205,12 @@ func executeToolCallImpl(
 	//   3. Auto-mode auto-allow for non-floor tools.
 	//   4. Default: permissions verdict (Allow only — Ask is handled
 	//      above) → tool's own RequiresApproval.
+	// ask_user_question is carved out of cases 1 and 3 (yolo/auto-mode)
+	// so it falls through to the no-op default path uniformly across
+	// every mode: its RequiresApproval is always false, so nothing
+	// there blocks Execute — the carve-out only avoids logging a
+	// misleading "[yolo-mode]"/"[auto-mode] auto-approved" line for a
+	// call that was never actually gated on approval.
 	switch {
 	case isPlanBoundaryTool(tool.Name()):
 		// Without this case, yolo / auto / bypass / a permissions
@@ -1224,7 +1230,7 @@ func executeToolCallImpl(
 			return content, images, d, src, rerr
 		}
 		approvalSource = "user"
-	case cfg.YoloMode.IsActive():
+	case cfg.YoloMode.IsActive() && tool.Name() != AskUserQuestionToolName:
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 		}); err != nil {
@@ -1245,7 +1251,7 @@ func executeToolCallImpl(
 			return "", nil, false, "", err
 		}
 		approvalSource = "auto-mode-safe-bash"
-	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
+	case cfg.AutoMode.IsActive() && tool.Name() != AskUserQuestionToolName && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {

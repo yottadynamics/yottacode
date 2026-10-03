@@ -276,6 +276,19 @@ func streamWithOptions(
 			}
 			decisions <- agent.Deny
 
+		case agent.QuestionNeeded:
+			if ok := answerWithRecommendedDefaults(e, stderr); ok {
+				decisions <- agent.AllowOnce
+			} else {
+				err := fmt.Errorf("ask_user_question needs a human answer and at least one question has no (or more than one) recommended:true default; run interactively, or have the model mark exactly one safe default option per question")
+				fmt.Fprintf(stderr, "[error] %v\n", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				e.Reply.Cancelled = true
+				decisions <- agent.Deny
+			}
+
 		case agent.ToolStart:
 			fmt.Fprintf(stderr, "[tool] %s\n", e.Preview)
 			result.ToolCalls = append(result.ToolCalls, ToolCallSummary{
@@ -494,6 +507,28 @@ func emitJSONStatus(w io.Writer, status RunStatus) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(status)
+}
+
+// answerWithRecommendedDefaults resolves an ask_user_question call
+// with no human attached: it succeeds (returning true, with e.Reply
+// filled in) only when EVERY question has exactly one
+// recommended:true option — a question with zero or with more than
+// one is treated identically as "no safe default" and fails the
+// whole call closed, since a partial answer is not something the
+// model asked for. Deterministic per the tool's documented one-shot
+// contract: same input, same outcome, every time.
+func answerWithRecommendedDefaults(e agent.QuestionNeeded, stderr io.Writer) bool {
+	selections := make([]agent.QuestionSelection, len(e.Questions))
+	for i, q := range e.Questions {
+		idx, ok := q.RecommendedIndex()
+		if !ok {
+			return false
+		}
+		selections[i] = agent.QuestionSelection{Header: q.Header, Labels: []string{q.Options[idx].Label}}
+		fmt.Fprintf(stderr, "[ask_user_question] %s: auto-answered %q (recommended default, no interactive session)\n", q.Header, q.Options[idx].Label)
+	}
+	e.Reply.Selections = selections
+	return true
 }
 
 // truncateOneLine returns at most max chars of s, collapsing any

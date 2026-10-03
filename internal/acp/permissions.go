@@ -76,6 +76,25 @@ func requestPathElevation(ctx context.Context, conn *coderacp.AgentSideConnectio
 	return decisionFromPathOutcome(resp.Outcome)
 }
 
+// requestUserQuestion handles agent.QuestionNeeded. ACP v1 has no
+// client-facing primitive for it: session/request_permission returns a
+// single OptionId from a flat list, which can't express multiple
+// questions, multi_select, or free text. A per-question sequential
+// approximation (one request_permission call per question, dropping
+// multi_select/free-text fidelity) was considered and rejected — a
+// lossy mapping that silently narrows what the model asked for is
+// worse than a clear failure the model can react to. So this always
+// fails closed, the same posture internal/oneshot takes when no
+// recommended:true default is available: cancel the whole call and
+// let the model fall back to a prose question in its reply. Revisit
+// if/when the ACP spec grows a real elicitation method.
+func requestUserQuestion(e agent.QuestionNeeded) agent.Decision {
+	if e.Reply != nil {
+		e.Reply.Cancelled = true
+	}
+	return agent.Deny
+}
+
 func decisionFromOutcome(outcome coderacp.RequestPermissionOutcome) agent.Decision {
 	if outcome.Selected == nil {
 		// Cancelled (or a malformed response with neither variant set):
