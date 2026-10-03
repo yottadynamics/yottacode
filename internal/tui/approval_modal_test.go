@@ -344,3 +344,32 @@ func TestApprovalDenyToast_ContainsRule(t *testing.T) {
 		t.Errorf("deny toast should name the file it saved to: %q", got)
 	}
 }
+
+// A chained command derives several comma-joined rules; the [S]/[A] rows must
+// still fit the terminal at narrow widths instead of widening the box.
+func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
+	for _, width := range []int{50, 60, 80, 120} {
+		m := newTestModel(t)
+		m.width = width
+		m.height = 40
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"}`
+		m.approvalPreview = "gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"
+		m.approvalAllowAlwaysOK = true
+		m.approvalDerivedRule = "Bash(gofmt *), Bash(go *), Bash(staticcheck *), Bash(golangci-lint *)"
+		out := renderApprovalModal(m)
+		for i, line := range strings.Split(out, "\n") {
+			if w := ansi.StringWidth(line); w > width {
+				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
+			}
+		}
+		// Each rule stays whole on a line of its own (twice: [S] and [A]).
+		plain := ansi.Strip(out)
+		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
+			if n := strings.Count(plain, rule); n != 2 {
+				t.Errorf("width %d: rule %q appears whole %d times, want 2 (one per [S]/[A] row)", width, rule, n)
+			}
+		}
+	}
+}

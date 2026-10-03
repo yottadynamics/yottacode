@@ -41,7 +41,7 @@ func (p *Permissions) LintWarnings() []string {
 var knownPermNames = map[string]struct{}{
 	"Bash": {}, "Read": {}, "Write": {}, "Edit": {}, "Mkdir": {}, "Copy": {}, "Move": {}, "Delete": {},
 	"List": {}, "Glob": {}, "Grep": {}, "Fetch": {}, "Git": {}, "Github": {}, "Memory": {}, "Tests": {},
-	"Rollback": {}, "MCP": {}, "Media": {}, "Document": {}, "Browser": {},
+	"Rollback": {}, "MCP": {}, "Media": {}, "Document": {}, "Browser": {}, "Worktree": {},
 }
 
 // KnownPermName reports whether name is a permission rule namespace that the
