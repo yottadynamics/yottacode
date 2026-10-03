@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
@@ -19,8 +18,6 @@ type CwdRef struct {
 	mu          syncutil.Mutex
 	projectRoot string
 }
-
-var processCwdMu syncutil.Mutex
 
 // NewCwdRef constructs a CwdRef holding the given initial value. When the
 // initial directory exists, it becomes the stable fallback for later cwd
@@ -60,17 +57,14 @@ func (r *CwdRef) Recover() (CwdRecovery, error) {
 	}
 	if info, err := os.Stat(current); err == nil && info.IsDir() {
 		return CwdRecovery{}, nil
+	} else if !os.IsNotExist(err) {
+		return CwdRecovery{}, fmt.Errorf("working directory %q is unavailable: %w", current, err)
 	}
 	if r.projectRoot == "" {
 		return CwdRecovery{}, nil
 	}
 	if info, err := os.Stat(r.projectRoot); err != nil || !info.IsDir() {
 		return CwdRecovery{}, fmt.Errorf("working directory %q no longer exists and stable project root %q is unavailable", current, r.projectRoot)
-	}
-	processCwdMu.Lock()
-	defer processCwdMu.Unlock()
-	if err := os.Chdir(r.projectRoot); err != nil {
-		return CwdRecovery{}, fmt.Errorf("recover working directory from %q to %q: %w", current, r.projectRoot, err)
 	}
 	r.store(r.projectRoot)
 	return CwdRecovery{Requested: current, Actual: r.projectRoot, Recovered: true}, nil
@@ -113,5 +107,8 @@ func pathWithin(path, root string) bool {
 		return false
 	}
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !filepath.IsAbs(rel) && (len(rel) < 3 || rel[:3] != ".."+string(filepath.Separator))
 }
