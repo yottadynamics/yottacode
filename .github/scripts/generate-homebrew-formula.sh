@@ -35,14 +35,35 @@ sha_for() {
 
 arm_archive="yottacode_${version}_darwin_arm64.tar.gz"
 intel_archive="yottacode_${version}_darwin_amd64.tar.gz"
-arm_sha=$(sha_for "$arm_archive") || {
-  printf 'missing checksum for %s\n' "$arm_archive" >&2
-  exit 1
-}
-intel_sha=$(sha_for "$intel_archive") || {
-  printf 'missing checksum for %s\n' "$intel_archive" >&2
-  exit 1
-}
+arm_sha=$(sha_for "$arm_archive") || exit 1
+intel_sha=$(sha_for "$intel_archive") || exit 1
 
 mkdir -p "$(dirname "$output")"
+cat >"$output" <<FORMULA
+class Yottacode < Formula
+  desc "Sovereign AI coding agent for your terminal"
+  homepage "https://yottacode.ai"
+  version "$version"
 
+  on_macos do
+    on_arm do
+      url "$base/$arm_archive"
+      sha256 "$arm_sha"
+    end
+    on_intel do
+      url "$base/$intel_archive"
+      sha256 "$intel_sha"
+    end
+  end
+
+  def install
+    bin.install "yottacode"
+  end
+
+  def caveats
+    <<~EOS
+      Run `yottacode setup` once to choose a model provider.
+    EOS
+  end
+end
+FORMULA
