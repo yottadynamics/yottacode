@@ -421,9 +421,10 @@ func relPath(p, cwd string) string {
 	if !filepath.IsAbs(p) {
 		abs = filepath.Join(cwd, p)
 	}
-	abs = filepath.Clean(abs)
+	abs = canonicalizePath(abs)
 	if cwd != "" {
-		if rel, err := filepath.Rel(cwd, abs); err == nil && !strings.HasPrefix(rel, "..") {
+		canonicalCWD := canonicalizePath(cwd)
+		if rel, err := filepath.Rel(canonicalCWD, abs); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(rel)
 		}
 	}
