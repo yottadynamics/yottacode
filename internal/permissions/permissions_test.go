@@ -625,7 +625,7 @@ func TestLoadWithSystemPath_WorktreeUsesRepositoryStorage(t *testing.T) {
 	if want := canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
 		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
 	}
-	if want := canonicalizePath(filepath.Join(worktreeDir, ".yottacode", "permissions.json")); p.SharedPath() != want {
+	if want := filepath.Join(worktreeDir, ".yottacode", "permissions.json"); p.SharedPath() != want {
 		t.Fatalf("SharedPath = %q, want %q (committed policy stays per-worktree)", p.SharedPath(), want)
 	}
 	if err := p.AddAllow("Bash(go test *)"); err != nil {
@@ -708,7 +708,7 @@ func TestLoadWithSystemPath_SubmoduleUsesOwnStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithSystemPath: %v", err)
 	}
-	if want := canonicalizePath(filepath.Join(modDir, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
+	if want := filepath.Join(modDir, ".yottacode", "permissions.local.json"); p.LocalPath() != want {
 		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
 	}
 }
