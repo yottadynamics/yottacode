@@ -26,7 +26,8 @@ func newPermissionsCmd() *cobra.Command {
 		Short: "Inspect and test permission rules",
 		Long: `Permission rules may come from /etc/yottacode/permissions.json, the
 current directory's .yottacode/permissions.json, and
-current directory's .yottacode/permissions.local.json. See docs/security-and-allow-lists.md
+.yottacode/permissions.local.json (in the main repository root when run from
+a linked git worktree, else the current directory). See docs/security-and-allow-lists.md
 for rule syntax.
 
   test      dry-run a hypothetical tool call against the loaded rules`,
@@ -42,13 +43,18 @@ func newPermissionsTestCmd() *cobra.Command {
 		Short: "Show the permission verdict for a hypothetical tool call",
 		Long: `Loads the optional system policy at /etc/yottacode/permissions.json and the
 current directory's .yottacode/permissions.json and
-current directory's .yottacode/permissions.local.json and evaluates a hypothetical call against them —
+.yottacode/permissions.local.json (in the main repository root when run from
+a linked git worktree, else the current directory) and evaluates a hypothetical call against them —
 without executing anything — using the same Evaluate the agent loop
 calls on every real tool call.
 
 <tool> is the internal tool name (run_bash, write_file, edit_file, git,
 read_file, fetch_url, ...; see docs/tools.md). [args-json] is that
 tool's JSON argument object, e.g. '{"command":"git push origin main"}'.
+
+The verdict reflects the directory you run this from: commit-family tools
+(git_commit, ...) are scoped to yottacode worktrees, so run it from inside
+<repo>/.yottacode/worktrees/<name>/ to test a Git(commit * @worktree) rule.
 
 As a shortcut, "bash" is accepted as an alias for run_bash, and its
 argument may be a bare command string instead of JSON:

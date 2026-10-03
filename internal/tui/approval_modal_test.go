@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// On a very wide terminal the approval modal caps at 120 columns
-// (per Phase 6) instead of stretching across the whole screen.
-// Asserted via the rendered top-border line width.
-func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
+// On a very wide terminal the approval modal stays compact instead of
+// stretching across the whole screen. Asserted via the rendered top-border
+// line width.
+func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 240
 	m.awaitingApproval = true
@@ -24,8 +24,8 @@ func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
 	got := renderApprovalModal(m)
 	first := strings.SplitN(got, "\n", 2)[0]
 	w := ansi.StringWidth(first)
-	if w > 124 {
-		t.Errorf("approval modal top border width = %d, expected ≤ 124 (120 + 2 corners + 2 outer chars)", w)
+	if w > approvalModalMaxInnerWidth+4 {
+		t.Errorf("approval modal top border width = %d, expected ≤ %d", w, approvalModalMaxInnerWidth+4)
 	}
 	if w < 30 {
 		t.Errorf("approval modal too narrow on a 240-col terminal: width=%d", w)
@@ -342,5 +342,34 @@ func TestApprovalDenyToast_ContainsRule(t *testing.T) {
 	}
 	if !strings.Contains(got, "permissions.local.json") {
 		t.Errorf("deny toast should name the file it saved to: %q", got)
+	}
+}
+
+// A chained command derives several comma-joined rules; the [S]/[A] rows must
+// still fit the terminal at narrow widths instead of widening the box.
+func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
+	for _, width := range []int{50, 60, 80, 120} {
+		m := newTestModel(t)
+		m.width = width
+		m.height = 40
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"}`
+		m.approvalPreview = "gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"
+		m.approvalAllowAlwaysOK = true
+		m.approvalDerivedRule = "Bash(gofmt *), Bash(go *), Bash(staticcheck *), Bash(golangci-lint *)"
+		out := renderApprovalModal(m)
+		for i, line := range strings.Split(out, "\n") {
+			if w := ansi.StringWidth(line); w > width {
+				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
+			}
+		}
+		// Each rule stays whole on a line of its own (twice: [S] and [A]).
+		plain := ansi.Strip(out)
+		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
+			if n := strings.Count(plain, rule); n != 2 {
+				t.Errorf("width %d: rule %q appears whole %d times, want 2 (one per [S]/[A] row)", width, rule, n)
+			}
+		}
 	}
 }

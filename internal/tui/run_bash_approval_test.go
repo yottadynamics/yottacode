@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestRenderRunBashApproval_SingleCommand(t *testing.T) {
@@ -113,6 +116,44 @@ func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
 	}
 	if !strings.Contains(body, "…") {
 		t.Errorf("long segment should be truncated with ellipsis: %q", body)
+	}
+}
+
+func TestRenderRunBashApproval_TruncatesUnicodeWithoutCorruption(t *testing.T) {
+	long := strings.Repeat("界", 200)
+	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !utf8.ValidString(body) {
+		t.Fatalf("truncation split a UTF-8 rune: %q", body)
+	}
+	if !strings.Contains(body, "…") {
+		t.Fatalf("long segment should be truncated with ellipsis: %q", body)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if w := ansi.StringWidth(line); w > 120 {
+			t.Fatalf("segment line width = %d, want within display budget: %q", w, line)
+		}
+	}
+}
+
+func TestTruncSegment(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"abc", 5, "abc"},
+		{"abcdef", 4, "abc…"},
+		{"界界界界", 5, "界界…"},
+		{"abc", 1, "…"},
+	}
+	for _, c := range cases {
+		got := truncSegment(c.in, c.max)
+		if got != c.want || !utf8.ValidString(got) {
+			t.Errorf("truncSegment(%q,%d) = %q, want %q", c.in, c.max, got, c.want)
+		}
 	}
 }
 

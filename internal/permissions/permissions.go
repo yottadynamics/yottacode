@@ -51,6 +51,7 @@ package permissions
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -59,10 +60,12 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
+	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
 // skeleton is the canonical empty permissions file: the full
@@ -159,24 +162,101 @@ type fileShape struct {
 	} `json:"permissions"`
 }
 
+// canonicalizePath makes equivalent macOS paths such as /var and /private/var
+// compare consistently. EvalSymlinks rejects a path when its final component
+// does not exist yet, so resolve the deepest existing parent and append the
+// missing suffix instead of falling back to the uncanonicalized spelling.
+func canonicalizePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	path = filepath.Clean(path)
+
+	missing := []string{}
+	candidate := path
+	for {
+		if _, err := os.Lstat(candidate); err == nil {
+			if real, err := filepath.EvalSymlinks(candidate); err == nil {
+				for i := len(missing) - 1; i >= 0; i-- {
+					real = filepath.Join(real, missing[i])
+				}
+				return filepath.Clean(real)
+			}
+			break
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			break
+		}
+		missing = append(missing, filepath.Base(candidate))
+		candidate = parent
+	}
+	return path
+}
+
+// gitProbeTimeout bounds the git subprocess used to find the repository root
+// so a hung git (e.g. on a stalled network filesystem) cannot block startup.
+const gitProbeTimeout = 5 * time.Second
+
+// StorageRoot returns the directory whose .yottacode/ holds the personal
+// permissions.local.json for a session running in cwd. Inside a linked git
+// worktree it is the main repository root (canonicalized); otherwise it is cwd
+// exactly as spelled. Exported so the write-path deny list can protect the
+// same file the permissions store actually writes.
+//
+// Not being in a git repo is the normal non-worktree case, so errors fall back
+// to cwd silently. The .git-directory check keeps submodules (common dir under
+// <super>/.git/modules/) and bare repos from redirecting storage into git
+// internals.
+func StorageRoot(cwd string) string {
+	if cwd == "" {
+		return cwd
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+	repoRoot, err := worktree.ResolveRepoRoot(ctx, cwd)
+	if err != nil {
+		return cwd
+	}
+	if fi, serr := os.Stat(filepath.Join(repoRoot, ".git")); serr == nil && fi.IsDir() {
+		return canonicalizePath(repoRoot)
+	}
+	return cwd
+}
+
 // Load reads the optional system policy and the two project policy files.
 func Load(cwd string) (*Permissions, error) {
 	return LoadWithSystemPath(cwd, "/etc/yottacode/permissions.json")
 }
 
 // LoadWithSystemPath loads permissions using an explicit system-policy path.
+// The project-local permissions file (where grants persist) is stored at the
+// main repository root when cwd is inside a git worktree (see StorageRoot).
+// Rule evaluation still uses cwd so path rules remain relative to the active
+// worktree.
 // An empty systemPath disables the system source, which is useful for isolated
 // callers and tests that must not depend on the host administrator policy.
 func LoadWithSystemPath(cwd, systemPath string) (*Permissions, error) {
 	if cwd == "" {
 		return nil, errors.New("permissions: cwd is required")
 	}
-	dir := filepath.Join(cwd, ".yottacode")
+
+	// cwd stays exactly as the caller spelled it: descriptors are made
+	// relative to it, so rewriting it (e.g. /var -> /private/var on macOS)
+	// would stop rules like Write(plan.md) from matching /var/... targets.
+	// Only the storage root is redirected (and canonicalized).
+	storageRoot := StorageRoot(cwd)
 	p := &Permissions{
 		cwd:        cwd,
 		systemPath: systemPath,
-		sharedPath: filepath.Join(dir, "permissions.json"),
-		localPath:  filepath.Join(dir, "permissions.local.json"),
+		// The shared policy is committed, so each worktree reads its own
+		// branch's copy; only the personal, gitignored local file (where
+		// grants are written) is anchored at the repository root.
+		sharedPath: filepath.Join(cwd, ".yottacode", "permissions.json"),
+		localPath:  filepath.Join(storageRoot, ".yottacode", "permissions.local.json"),
 	}
 	if systemPath != "" {
 		if err := p.loadFile(p.systemPath, p.systemPath); err != nil {
@@ -299,7 +379,19 @@ func (p *Permissions) EvaluateWithRule(toolName, argsJSON string) (Decision, Rul
 	if p == nil {
 		return Default, Rule{}
 	}
-	target := targetFor(toolName, argsJSON, p.cwd)
+	return p.EvaluateWithRuleAt(p.cwd, toolName, argsJSON)
+}
+
+// EvaluateWithRuleAt is EvaluateWithRule for a caller that knows the session's
+// live working directory. Path rules still resolve against the cwd the policy
+// was loaded with; liveCwd only feeds the worktree scope of commit-family Git
+// calls (see scopeCommitTarget), because enter_worktree moves the session
+// without reloading the policy.
+func (p *Permissions) EvaluateWithRuleAt(liveCwd, toolName, argsJSON string) (Decision, Rule) {
+	if p == nil {
+		return Default, Rule{}
+	}
+	target := scopeCommitTarget(toolName, targetFor(toolName, argsJSON, p.cwd), liveCwd)
 	if target.PermName == "" {
 		return Default, Rule{}
 	}
@@ -622,7 +714,16 @@ func matchFirst(target Target, rules []Rule, cwd string) (Rule, bool) {
 		if r.Tool != target.PermName {
 			continue
 		}
-		if matchPattern(r.Pattern, target.Descriptor, cwd, target.IsPath) {
+		pattern := r.Pattern
+		if target.PermName == "Git" && strings.HasSuffix(pattern, scopeWorktree) {
+			// Worktree-scoped rule: only a call the harness scoped to a
+			// worktree can match, then the rest is matched as usual.
+			if target.Scope != scopeInWT {
+				continue
+			}
+			pattern = strings.TrimSuffix(pattern, scopeWorktree)
+		}
+		if matchPattern(pattern, target.Descriptor, cwd, target.IsPath) {
 			return r, true
 		}
 	}
@@ -636,32 +737,40 @@ func matchPattern(pattern, value, cwd string, isPath bool) bool {
 	if pattern == "" {
 		return value == ""
 	}
-	if isPath {
-		// Expand "~/foo" patterns to the resolved home dir so user-
-		// authored rules match the absolute descriptors the agent
-		// produces (descriptors are home-expanded in relPath).
-		pattern = expandHome(pattern)
-		ok, err := doublestar.PathMatch(pattern, value)
-		if err == nil && ok {
-			return true
-		}
-		// Absolute pattern + relative value: descriptors are cwd-
-		// relative when the file is under cwd, but auto-derived rules
-		// are now cwd-anchored absolute (`Write(/abs/cwd/**)`). Join
-		// the value onto cwd before retrying so the rule matches.
-		if strings.HasPrefix(pattern, "/") && !strings.HasPrefix(value, "/") {
-			absValue := "/" + value
-			if cwd != "" {
-				absValue = filepath.ToSlash(filepath.Join(cwd, value))
-			}
-			ok, err := doublestar.PathMatch(pattern, absValue)
-			if err == nil && ok {
-				return true
-			}
-		}
+	if !isPath {
+		return stringGlobMatch(pattern, value)
+	}
+	// Expand "~/foo" patterns to the resolved home dir so user-authored
+	// rules match the absolute descriptors the agent produces.
+	pattern = filepath.ToSlash(expandHome(pattern))
+	value = filepath.ToSlash(value)
+	pathMatch := func(pat, val string) bool {
+		ok, err := doublestar.PathMatch(pat, val)
+		return err == nil && ok
+	}
+	// Literal spelling first: it is cheap and never loses a match the
+	// pre-canonicalization matcher would have made.
+	if pathMatch(pattern, value) {
+		return true
+	}
+	if !strings.HasPrefix(pattern, "/") {
 		return false
 	}
-	return stringGlobMatch(pattern, value)
+	// Absolute pattern + relative value: descriptors are cwd-relative when
+	// the file is under cwd, but auto-derived rules are cwd-anchored
+	// absolute (`Write(/abs/cwd/**)`).
+	absValue := value
+	if !strings.HasPrefix(value, "/") {
+		absValue = filepath.ToSlash(filepath.Join(cwd, value))
+		if pathMatch(pattern, absValue) {
+			return true
+		}
+	}
+	// Last resort: compare symlink-resolved spellings of both sides so that
+	// /etc/** still matches /etc/hosts where /etc is a link to /private/etc
+	// (macOS). Canonicalizing the value as well keeps deny rules from
+	// failing open when only the pattern was resolved.
+	return pathMatch(filepath.ToSlash(canonicalizePath(pattern)), filepath.ToSlash(canonicalizePath(absValue)))
 }
 
 // globRegexCache memoizes the compiled regex for each glob pattern.

@@ -6075,12 +6075,13 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.approvalScrollOffset = 0
 		// Pre-derive the "always allow" pattern so the modal can show
 		// the user exactly what rule they'd be saving. Suppressed
-		// (approvalAllowAlwaysOK = false) for compound shell commands
-		// and other shapes where derivation would be a footgun — see
-		// permissions.DeriveAllowRule.
-		if rule, ok := permissions.DeriveAllowRule(e.ToolName, e.ArgsJSON, m.cwd, worktree.NormalizeForRule); ok && m.perms != nil {
+		// (approvalAllowAlwaysOK = false) for dangerous shell verbs and
+		// other shapes where derivation would be a footgun — see
+		// permissions.DeriveAllowRules. A chained command shows one rule
+		// per segment, comma-separated.
+		if rules, ok := permissions.DeriveAllowRules(e.ToolName, e.ArgsJSON, m.cwd, worktree.NormalizeForRule); ok && m.perms != nil {
 			m.approvalAllowAlwaysOK = true
-			m.approvalDerivedRule = rule
+			m.approvalDerivedRule = strings.Join(rules, ", ")
 		} else {
 			m.approvalAllowAlwaysOK = false
 			m.approvalDerivedRule = ""

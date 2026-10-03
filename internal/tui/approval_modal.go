@@ -30,7 +30,13 @@ import (
 // prompt itself — after the user picks `[A]` we emit a toast
 // (`✓ Added Bash(go *) to permissions.local.json`) into scrollback.
 // Keeps the prompt focused on the immediate decision.
-const approvalModalMinInnerWidth = 64
+const (
+	approvalModalMinInnerWidth = 64
+	// Keep approval decisions compact on wide terminals. The preview can scroll
+	// vertically, so a wider card only wastes horizontal space and makes the
+	// hotkeys harder to scan.
+	approvalModalMaxInnerWidth = 96
+)
 
 func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	var h *pickerHits
@@ -267,13 +273,22 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 	// permissions.local.json — the middle ground between "once" and
 	// "forever".
 	if allowAlways {
+		sessionDesc := "session — allow " + derivedRule + " for this session"
+		alwaysDesc := "always — adds " + derivedRule
+		if rules := strings.Split(derivedRule, ", "); len(rules) > 1 {
+			// A chained command derives several rules. One per line keeps each
+			// rule whole instead of being wrapped mid-token.
+			list := "\n" + strings.Join(rules, "\n")
+			sessionDesc = "session — allow for this session:" + list
+			alwaysDesc = "always — adds:" + list
+		}
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[S]"),
-			desc:   styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session"),
+			desc:   styleApprovalChoiceDim.Render(sessionDesc),
 		})
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[A]"),
-			desc:   styleApprovalChoiceDim.Render("always — adds " + derivedRule),
+			desc:   styleApprovalChoiceDim.Render(alwaysDesc),
 		})
 	}
 	if denyAlways {
@@ -297,7 +312,11 @@ func approvalHotkeyColumnWidths(rows []approvalHotkeyRow, capW int) (keyW, descW
 }
 
 func capApprovalBoxWidth(termWidth int) int {
-	return capLabeledBoxWidth(termWidth)
+	capW := capLabeledBoxWidth(termWidth)
+	if capW <= 0 {
+		return capW
+	}
+	return min(capW, approvalModalMaxInnerWidth)
 }
 
 func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {

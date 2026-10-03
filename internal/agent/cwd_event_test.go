@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -71,7 +74,73 @@ func TestLoop_EmitsCwdChangedAfterEnterWorktree(t *testing.T) {
 	}
 }
 
-// A tool that does NOT swap cwd must not produce a CwdChanged event.
+func TestLoop_RecoversDeletedCwdOnceAndRunsReadOnlyTool(t *testing.T) {
+	root := mkRepoForAgent(t)
+	dead := filepath.Join(root, "deleted")
+	if err := os.Mkdir(dead, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := NewCwdRef(root)
+	cwd.Set(dead)
+	if err := os.Remove(dead); err != nil {
+		t.Fatal(err)
+	}
+	mustChdir(t, root)
+
+	reg := NewRegistry()
+	reg.Register(&ListDirTool{Cwd: cwd})
+	events := make(chan Event, 16)
+	cfg := LoopConfig{Registry: reg, Cwd: cwd}
+	out, _, _, _, err := executeToolCallImpl(context.Background(), cfg, adapter.ToolCall{ID: "read-1", Name: "list_dir", ArgsJSON: `{}`}, events, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if out == "" || cwd.Get() != root {
+		t.Fatalf("recovery did not run read-only tool: cwd=%q out=%q", cwd.Get(), out)
+	}
+	var recovered, results int
+	for len(events) > 0 {
+		switch ev := <-events; ev.(type) {
+		case CwdChanged:
+			recovered++
+		case ToolResult:
+			results++
+		}
+	}
+	if recovered != 1 || results != 1 {
+		t.Fatalf("events: recovered=%d results=%d", recovered, results)
+	}
+}
+
+func TestLoop_RefusesMutatingToolAfterCwdRecovery(t *testing.T) {
+	root := mkRepoForAgent(t)
+	dead := filepath.Join(root, "deleted")
+	if err := os.Mkdir(dead, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := NewCwdRef(root)
+	cwd.Set(dead)
+	if err := os.Remove(dead); err != nil {
+		t.Fatal(err)
+	}
+	mustChdir(t, root)
+
+	reg := NewRegistry()
+	reg.Register(&WriteFileTool{Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}})
+	events := make(chan Event, 16)
+	cfg := LoopConfig{Registry: reg, Cwd: cwd, BypassPermissions: true}
+	out, _, _, _, err := executeToolCallImpl(context.Background(), cfg, adapter.ToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"should-not-exist","content":"nope"}`}, events, nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "was not executed") {
+		t.Fatalf("mutation was not refused: %q", out)
+	}
+	if _, err := os.Stat(filepath.Join(root, "should-not-exist")); !os.IsNotExist(err) {
+		t.Fatalf("mutating tool wrote after recovery: %v", err)
+	}
+}
+
 // Guards against a regression where the loop fires the event for
 // every tool call regardless of the pre/post cwd comparison.
 func TestLoop_DoesNotEmitCwdChangedForNonSwappingTool(t *testing.T) {
