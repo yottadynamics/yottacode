@@ -9,6 +9,11 @@ if [ "$#" -ne 3 ]; then
 fi
 
 version=${1#v}
+# Validate a stable release version before using it in URLs and Ruby source.
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  printf 'invalid release version %q\n' "$version" >&2
+  exit 1
+fi
 sums=$2
 output=$3
 repo="yottadynamics/yottacode"
@@ -16,7 +21,16 @@ base="https://github.com/${repo}/releases/download/v${version}"
 
 sha_for() {
   local archive=$1
-  awk -v want="$archive" '$2 == want { print $1; found = 1 } END { if (!found) exit 1 }' "$sums"
+  local sha
+  sha=$(awk -v want="$archive" '$2 == want { if (found++) exit 2; print $1 }' "$sums") || {
+    printf 'missing or duplicate checksum for %s\n' "$archive" >&2
+    return 1
+  }
+  if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+    printf 'invalid checksum for %s\n' "$archive" >&2
+    return 1
+  fi
+  printf '%s\n' "$sha"
 }
 
 arm_archive="yottacode_${version}_darwin_arm64.tar.gz"
@@ -31,40 +45,4 @@ intel_sha=$(sha_for "$intel_archive") || {
 }
 
 mkdir -p "$(dirname "$output")"
-cat >"$output" <<'FORMULA'
-class Yottacode < Formula
-  desc "Sovereign AI coding agent for your terminal"
-  homepage "https://yottacode.ai"
-  version "__VERSION__"
 
-  on_macos do
-    on_arm do
-      url "__BASE__/__ARM_ARCHIVE__"
-      sha256 "__ARM_SHA__"
-    end
-    on_intel do
-      url "__BASE__/__INTEL_ARCHIVE__"
-      sha256 "__INTEL_SHA__"
-    end
-  end
-
-  def install
-    bin.install "yottacode"
-  end
-
-  def caveats
-    <<~EOS
-      Run `yottacode setup` once to choose a model provider.
-    EOS
-  end
-end
-FORMULA
-
-sed -i \
-  -e "s|__VERSION__|$version|g" \
-  -e "s|__BASE__|$base|g" \
-  -e "s|__ARM_ARCHIVE__|$arm_archive|g" \
-  -e "s|__INTEL_ARCHIVE__|$intel_archive|g" \
-  -e "s|__ARM_SHA__|$arm_sha|g" \
-  -e "s|__INTEL_SHA__|$intel_sha|g" \
-  "$output"

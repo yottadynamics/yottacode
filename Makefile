@@ -24,4 +24,10 @@ homebrew-formula-test:
 	bash .github/scripts/generate-homebrew-formula.sh 1.2.3 "$$tmp/SHA256SUMS" "$$tmp/Formula/yottacode.rb"; \
 	grep -q 'class Yottacode < Formula' "$$tmp/Formula/yottacode.rb"; \
 	grep -q 'yottacode_1.2.3_darwin_arm64.tar.gz' "$$tmp/Formula/yottacode.rb"; \
-	grep -q 'yottacode_1.2.3_darwin_amd64.tar.gz' "$$tmp/Formula/yottacode.rb"
+	grep -q 'version "1.2.3"' "$$tmp/Formula/yottacode.rb"; \
+	grep -q 'sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$$tmp/Formula/yottacode.rb"; \
+	grep -q 'sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' "$$tmp/Formula/yottacode.rb"; \
+	grep -q 'https://github.com/yottadynamics/yottacode/releases/download/v1.2.3' "$$tmp/Formula/yottacode.rb"; \
+	! grep -q '__[A-Z_]*__' "$$tmp/Formula/yottacode.rb"; \
+	! printf '%s\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  yottacode_1.2.3_darwin_arm64.tar.gz' > "$$tmp/missing"; \
+	bash .github/scripts/generate-homebrew-formula.sh 1.2.3 "$$tmp/missing" "$$tmp/missing.rb" 2>/dev/null && exit 1 || true

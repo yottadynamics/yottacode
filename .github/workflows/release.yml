@@ -56,7 +56,7 @@ jobs:
         run: |
           set -eu
           tap_dir="$RUNNER_TEMP/homebrew-yottacode"
-          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/yottadynamics/homebrew-yottacode.git" "$tap_dir"
+          git clone --branch main "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/yottadynamics/homebrew-yottacode.git" "$tap_dir"
           bash .github/scripts/generate-homebrew-formula.sh "${GITHUB_REF_NAME#v}" dist/SHA256SUMS "$tap_dir/Formula/yottacode.rb"
           git -C "$tap_dir" config user.name YottaDynamics
           git -C "$tap_dir" config user.email hello@yottadynamics.com
@@ -65,5 +65,16 @@ jobs:
             echo "Homebrew formula is already current"
           else
             git -C "$tap_dir" commit -m "yottacode ${GITHUB_REF_NAME}"
-            git -C "$tap_dir" push origin main
+            for attempt in 1 2 3; do
+              if git -C "$tap_dir" push origin HEAD:main; then
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::failed to publish Homebrew formula after three attempts"
+                exit 1
+              fi
+              git -C "$tap_dir" fetch origin main
+              git -C "$tap_dir" rebase origin/main
+            done
           fi
+          git -C "$tap_dir" show HEAD:Formula/yottacode.rb | grep -F "version \"${GITHUB_REF_NAME#v}\""
