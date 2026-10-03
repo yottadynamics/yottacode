@@ -62,7 +62,7 @@ class Yottacode < Formula
 
   def caveats
     <<~EOS
-      Run `yottacode setup` once to choose a model provider.
+      Run yottacode setup once to choose a model provider.
     EOS
   end
 end
