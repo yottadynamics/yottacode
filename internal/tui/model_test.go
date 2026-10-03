@@ -1485,6 +1485,68 @@ func TestModel_ApprovalKeyPressAlwaysSuppressedForCompoundBash(t *testing.T) {
 	}
 }
 
+func TestModel_ApprovalChainedBashOffersAlwaysWithEverySegmentRule(t *testing.T) {
+	m := newTestModel(t)
+	m.decisions = make(chan agent.Decision, 1)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalNeeded{
+		ToolName: "run_bash",
+		Preview:  "run_bash: gofmt -w a.go && go test ./...",
+		ArgsJSON: `{"command":"gofmt -w a.go && go test ./..."}`,
+	}})
+	if !m.approvalAllowAlwaysOK {
+		t.Fatal("chained safe bash should offer [A]/[S]")
+	}
+	if want := "Bash(gofmt *), Bash(go *)"; m.approvalDerivedRule != want {
+		t.Errorf("derived rule = %q, want %q", m.approvalDerivedRule, want)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "a"})
+	select {
+	case d := <-m.decisions:
+		if d != agent.AllowAlways {
+			t.Errorf("a should send AllowAlways; got %v", d)
+		}
+	default:
+		t.Error("expected a Decision on the channel")
+	}
+}
+
+func TestModel_ApprovalWorktreeOffersAlwaysButNotRemove(t *testing.T) {
+	m := newTestModel(t)
+	m.decisions = make(chan agent.Decision, 1)
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalNeeded{
+		ToolName: "enter_worktree", Preview: "enter_worktree", ArgsJSON: `{"name":"feat-a"}`,
+	}})
+	if !m.approvalAllowAlwaysOK || m.approvalDerivedRule != "Worktree(enter *)" {
+		t.Errorf("enter_worktree: ok=%v rule=%q, want Worktree(enter *)", m.approvalAllowAlwaysOK, m.approvalDerivedRule)
+	}
+	m, _ = applyMsg(m, agentEventMsg{ev: agent.ApprovalNeeded{
+		ToolName: "exit_worktree", Preview: "exit_worktree", ArgsJSON: `{"name":"feat-a","cleanup":"remove"}`,
+	}})
+	if m.approvalAllowAlwaysOK {
+		t.Errorf("exit_worktree cleanup=remove must not offer [A]; rule=%q", m.approvalDerivedRule)
+	}
+}
+
+func TestModel_ApprovalCommitOffersAlwaysOnlyInsideWorktree(t *testing.T) {
+	repo := t.TempDir()
+	wt := filepath.Join(repo, ".yottacode", "worktrees", "feat-a")
+	call := agent.ApprovalNeeded{ToolName: "git_commit", Preview: "git_commit", ArgsJSON: `{"message":"x"}`}
+
+	m := newTestModel(t)
+	m.cwd = repo
+	m, _ = applyMsg(m, agentEventMsg{ev: call})
+	if m.approvalAllowAlwaysOK {
+		t.Errorf("commit in the main checkout must not offer [S]/[A]; rule=%q", m.approvalDerivedRule)
+	}
+
+	m = newTestModel(t)
+	m.cwd = wt
+	m, _ = applyMsg(m, agentEventMsg{ev: call})
+	if !m.approvalAllowAlwaysOK || m.approvalDerivedRule != "Git(commit * @worktree)" {
+		t.Errorf("commit in a worktree: ok=%v rule=%q, want Git(commit * @worktree)", m.approvalAllowAlwaysOK, m.approvalDerivedRule)
+	}
+}
+
 func TestModel_ApprovalKeyPressNoEmitsDeny(t *testing.T) {
 	m := newTestModel(t)
 	m.decisions = make(chan agent.Decision, 1)

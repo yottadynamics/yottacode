@@ -8,6 +8,31 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Approval prompts can save a rule for more tools and for chained
+  commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
+  now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb
+  (all-or-nothing: one dangerous segment and none are offered).
+  `enter_worktree` / `exit_worktree` get a `Worktree(...)` rule family
+  (`cleanup=remove` is never offered), and `git_commit_apply`, `git_push`,
+  `git_worktree_*`, `media_compose` and `memory_curate_apply` now have
+  permission targets so rules and `[D]` blocks can match them. `git_push`
+  never derives an allow rule. Commit-family tools record whether the session
+  is inside a yottacode worktree, so `[A]` from a worktree saves
+  `Git(commit * @worktree)`, which does not unlock commits in the main
+  checkout. The scope is set by the harness, outside the call's arguments,
+  so a commit message can't forge it. From the main checkout (and for the
+  unified `git` tool's `commit`, or a `git` call that leads with an option
+  such as `-C`) no `[A]`/`[S]` is offered for commits at all, since the only
+  derivable rule would also unlock every worktree; hand-written unscoped
+  rules keep working. `lsp_apply_workspace_edit`
+  now has an `Edit(...)` target, with one rule per touched path. A multi-rule
+  row in the approval modal lists each rule on its own line instead of
+  wrapping mid-token. Fixed: `apply_diff` derived a cwd-wide rule even when
+  the diff touched files elsewhere. Fixed: the `Git(checkpoint *)` rule derived
+  for `git_checkpoint` never matched. A new registry sweep test fails if a
+  tool that prompts has neither a permission target nor an explicit
+  reason it can't have one.
+
 - **`apply_hashline` gains line-addressed hunks.** A hunk can now be
   addressed by `anchor` — the exact `line#hash` token `read_file`/
   `read_many_files` print with `anchors=true`, or that `edit_anchored`

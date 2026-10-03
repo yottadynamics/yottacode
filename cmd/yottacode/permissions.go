@@ -52,6 +52,10 @@ calls on every real tool call.
 read_file, fetch_url, ...; see docs/tools.md). [args-json] is that
 tool's JSON argument object, e.g. '{"command":"git push origin main"}'.
 
+The verdict reflects the directory you run this from: commit-family tools
+(git_commit, ...) are scoped to yottacode worktrees, so run it from inside
+<repo>/.yottacode/worktrees/<name>/ to test a Git(commit * @worktree) rule.
+
 As a shortcut, "bash" is accepted as an alias for run_bash, and its
 argument may be a bare command string instead of JSON:
 
