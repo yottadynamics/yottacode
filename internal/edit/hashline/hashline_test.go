@@ -35,19 +35,10 @@ func TestApplyExactReplacement(t *testing.T) {
 	}
 }
 
-func TestApplyInsertionDeletionAndReplacement(t *testing.T) {
-	t.Run("insertion", func(t *testing.T) {
-		src := []byte("one\ntwo\n")
-		anchor := mustHashSpan(t, src, 4, 0)
-		out, err := Apply(src, []Hunk{{Anchor: anchor, Old: nil, New: []byte("inserted\n")}})
-		if err != nil {
-			t.Fatalf("Apply: %v", err)
-		}
-		if got, want := string(out), "one\ninserted\ntwo\n"; got != want {
-			t.Fatalf("out = %q, want %q", got, want)
-		}
-	})
-
+// Insertion is deliberately not a separate operation: a zero-length span cannot
+// be anchored to file content (see TestApplyRejectsEmptyOld). Inserting is a
+// replacement of adjacent text (see TestApplyInsertViaAdjacentReplace).
+func TestApplyDeletionAndReplacement(t *testing.T) {
 	t.Run("deletion", func(t *testing.T) {
 		src := []byte("one\ntwo\n")
 		anchor := mustHashSpan(t, src, 4, 4)

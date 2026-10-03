@@ -1,98 +1,76 @@
 package browser
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/accessibility"
 )
 
-// maxAXNodes and maxAXChars bound browser_inspect's output — the whole
-// point of the accessibility-tree snapshot is being the token-cheap way to
-// "read" a page, so an unbounded tree on a complex page would defeat that.
-// Vars (not consts) so tests can shrink them to exercise truncation
-// without building a 500-node fixture.
 var (
 	maxAXNodes = 500
 	maxAXChars = 20000
 )
 
-// axValueString renders an AXValue's underlying JSON value (string, number,
-// or bool) as plain text, regardless of type. Returns "" for a nil value or
-// a JSON null.
-func axValueString(v *proto.AccessibilityAXValue) string {
-	if v == nil {
+func axValueString(v *accessibility.Value) string {
+	if v == nil || len(v.Value) == 0 {
 		return ""
 	}
-	raw := v.Value.Val()
-	if raw == nil {
-		return ""
+	var out any
+	if json.Unmarshal(v.Value, &out) == nil {
+		return fmt.Sprint(out)
 	}
-	return fmt.Sprint(raw)
+	return string(v.Value)
 }
-
-// renderAXTree flattens a CDP accessibility-tree node list (as returned by
-// Accessibility.getFullAXTree/getPartialAXTree) into an indented role/name/
-// value outline — a compact substitute for a screenshot when the model
-// only needs to know what's on the page, not what it looks like.
-func renderAXTree(nodes []*proto.AccessibilityAXNode) string {
+func renderAXTree(nodes []*accessibility.Node) string {
 	if len(nodes) == 0 {
 		return "(empty accessibility tree)"
 	}
-	byID := make(map[proto.AccessibilityAXNodeID]*proto.AccessibilityAXNode, len(nodes))
+	by := map[accessibility.NodeID]*accessibility.Node{}
 	for _, n := range nodes {
-		byID[n.NodeID] = n
+		by[n.NodeID] = n
 	}
-	var root *proto.AccessibilityAXNode
+	root := nodes[0]
 	for _, n := range nodes {
 		if n.ParentID == "" {
 			root = n
 			break
 		}
 	}
-	if root == nil {
-		root = nodes[0]
-	}
-
-	var sb strings.Builder
-	count := 0
-	truncated := false
-	var walk func(n *proto.AccessibilityAXNode, depth int)
-	walk = func(n *proto.AccessibilityAXNode, depth int) {
-		if n == nil || truncated {
+	var b strings.Builder
+	n := 0
+	tr := false
+	var walk func(*accessibility.Node, int)
+	walk = func(x *accessibility.Node, d int) {
+		if x == nil || tr {
 			return
 		}
-		if count >= maxAXNodes || sb.Len() >= maxAXChars {
-			truncated = true
+		if n >= maxAXNodes || b.Len() >= maxAXChars {
+			tr = true
 			return
 		}
-		if !n.Ignored {
-			role := axValueString(n.Role)
-			name := axValueString(n.Name)
-			val := axValueString(n.Value)
-			line := strings.Repeat("  ", depth) + role
-			if name != "" {
-				line += fmt.Sprintf(" %q", name)
+		if !x.Ignored {
+			line := strings.Repeat("  ", d) + axValueString(x.Role)
+			if s := axValueString(x.Name); s != "" {
+				line += fmt.Sprintf(" %q", s)
 			}
-			if val != "" {
-				line += fmt.Sprintf(" =%q", val)
+			if s := axValueString(x.Value); s != "" {
+				line += fmt.Sprintf(" =%q", s)
 			}
-			sb.WriteString(line)
-			sb.WriteByte('\n')
-			count++
+			b.WriteString(line + "\n")
+			n++
 		}
-		for _, cid := range n.ChildIDs {
-			walk(byID[cid], depth+1)
+		for _, id := range x.ChildIDs {
+			walk(by[id], d+1)
 		}
 	}
 	walk(root, 0)
-
-	out := sb.String()
-	if out == "" {
+	if b.Len() == 0 {
 		return "(empty accessibility tree)"
 	}
-	if truncated {
-		out += "…[truncated]"
+	if tr {
+		b.WriteString("…[truncated]")
 	}
-	return out
+	return b.String()
 }

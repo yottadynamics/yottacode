@@ -20,6 +20,7 @@ import (
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/config"
+	"github.com/yottadynamics/yottacode/internal/doctor"
 	"github.com/yottadynamics/yottacode/internal/dotenv"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/permissions"
@@ -120,7 +121,7 @@ func init() {
 		{Name: "experimental", Help: "list experimental features and which are enabled this session", Run: cmdExperimental, PreservesTurn: true},
 		{Name: "usage", Help: "show per-session token usage, today's rollup, and estimated cost", Run: cmdUsage, PreservesTurn: true},
 		{Name: "inspect", Help: "pick a session for read-only turn-by-turn replay; export sessions from /sessions", Run: cmdInspect, PreservesTurn: true},
-		{Name: "doctor", Help: "probe provider auth and model access (CLI doctor also checks GitHub/LSP/media/sandbox)", Run: cmdDoctor, PreservesTurn: true},
+		{Name: "doctor", Help: "probe provider, GitHub, LSP, and media readiness (sandbox checks are skipped)", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
 		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
@@ -1256,9 +1257,71 @@ func inSlice(ss []string, s string) bool {
 }
 
 func cmdDoctor(m Model, _ []string) (Model, tea.Cmd) {
-	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider")))
+	m.appendLine(styleAuto.Render(SysMsg(SysProgress, "doctor", "probing provider, GitHub, LSP, and media (sandbox skipped)")))
 	m.appendLine(formatPermissionsDoctor(permissions.Validate(m.cwd)))
-	return m, runProviderProbe(m.parentCtx, m.adapterConfig(m.modelName, m.baseURL), true)
+	return m, runDoctor(m.parentCtx, m.cwd, m.adapterConfig(m.modelName, m.baseURL), m.fileCfg)
+}
+
+func runDoctor(ctx context.Context, cwd string, provider adapter.Config, cfg config.Config) tea.Cmd {
+	return func() tea.Msg {
+		return doctorMsg{result: doctor.Probe(ctx, cwd, provider, cfg.LSP, cfg.Sandbox.Backend != "none")}
+	}
+}
+
+func formatDoctor(result doctor.Result) string {
+	var b strings.Builder
+	providerStatus := "ok"
+	if len(result.Provider.Issues) > 0 {
+		providerStatus = "issue"
+	} else if len(result.Provider.Warnings) > 0 {
+		providerStatus = "warning"
+	}
+	fmt.Fprintf(&b, "provider: %s (status=%s)\n%s", result.Provider.Profile.Provider, providerStatus, formatProbeResult(result.Provider))
+	fmt.Fprintf(&b, "\nGitHub: %s", result.GitHub.Status)
+	if result.GitHub.TokenSource != "" {
+		fmt.Fprintf(&b, " token=%s", result.GitHub.TokenSource)
+	}
+	if result.GitHub.Login != "" {
+		fmt.Fprintf(&b, " login=%s", result.GitHub.Login)
+	}
+	for _, issue := range result.GitHub.Issues {
+		fmt.Fprintf(&b, "\n  issue: %s", issue)
+	}
+	for _, warning := range result.GitHub.Warnings {
+		fmt.Fprintf(&b, "\n  warning: %s", warning)
+	}
+	fmt.Fprintf(&b, "\nLSP: %s", result.LSP.Status)
+	if result.LSP.Note != "" {
+		fmt.Fprintf(&b, " (%s)", result.LSP.Note)
+	}
+	if result.LSP.Error != "" {
+		fmt.Fprintf(&b, "\n  issue: %s", result.LSP.Error)
+	}
+	for _, lang := range result.LSP.Languages {
+		fmt.Fprintf(&b, "\n  %s: %s", lang.Name, lang.Probe)
+		if lang.InstallHint != "" && !lang.ServerAvailable {
+			fmt.Fprintf(&b, " (hint: %s)", lang.InstallHint)
+		}
+		if lang.Capabilities != "" {
+			fmt.Fprintf(&b, " capabilities=%s", lang.Capabilities)
+		}
+	}
+	fmt.Fprintf(&b, "\nmedia: %s\n  ffmpeg: %s\n  ffprobe: %s", result.Media.Status, binaryDoctorStatus(result.Media.FFmpeg), binaryDoctorStatus(result.Media.FFprobe))
+	for _, issue := range result.Media.Issues {
+		fmt.Fprintf(&b, "\n  issue: %s", issue)
+	}
+	for _, warning := range result.Media.Warnings {
+		fmt.Fprintf(&b, "\n  warning: %s", warning)
+	}
+	fmt.Fprintf(&b, "\nsandbox: skipped (%s)", result.Sandbox.Note)
+	return b.String()
+}
+
+func binaryDoctorStatus(b doctor.Binary) string {
+	if b.Installed {
+		return "installed"
+	}
+	return "missing"
 }
 
 func renderProviderCommandValue(provider adapter.Provider) string {

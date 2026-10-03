@@ -1,5 +1,5 @@
 // Package browser drives a real Chromium/Chrome instance over the Chrome
-// DevTools Protocol via go-rod/rod, giving the agent's browser_* tools a
+// DevTools Protocol via chromedp/cdproto, giving the agent's browser_* tools a
 // pure-Go backend with no Node.js or Playwright dependency. See
 // docs/tools.md and docs/security-and-allow-lists.md for the tool
 // contract and safety model.
@@ -29,7 +29,12 @@ var (
 	// element before its deadline.
 	ErrSelectorNotFound = errors.New("selector not found")
 
-	// ErrActionDenied means the manager's session was already torn down
+	// ErrCanceled means the caller canceled a browser action before it completed.
+	ErrCanceled = errors.New("browser action canceled")
+
+	// ErrBrowserCrashed means the browser process or its CDP connection died.
+	ErrBrowserCrashed = errors.New("browser process exited unexpectedly")
+
 	// by an explicit browser_close. Once closed, a Manager never
 	// relaunches — close only ever reduces capability, per the safety
 	// model documented in docs/security-and-allow-lists.md.
@@ -56,4 +61,7 @@ var (
 	// before the action deadline — the click/navigate that should have
 	// started it didn't, or the browser never reported completion.
 	ErrDownloadFailed = errors.New("download did not complete before deadline")
+
+	// ErrDownloadTooLarge means a browser download exceeded the hard safety limit.
+	ErrDownloadTooLarge = errors.New("browser download exceeds maximum size")
 )

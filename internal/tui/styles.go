@@ -169,6 +169,7 @@ var (
 	styleInputPrompt      lipgloss.Style
 	styleInputPlaceholder lipgloss.Style
 	styleInputHint        lipgloss.Style
+	styleBusyCursor       lipgloss.Style
 	styleOverlayRule      lipgloss.Style
 	styleWatermark        lipgloss.Style
 	styleWatermarkAlert   lipgloss.Style
@@ -368,6 +369,9 @@ func buildStyles(p themes.Palette) {
 	styleInputPrompt = lipgloss.NewStyle().Foreground(colorBrand).Bold(true)
 	styleInputPlaceholder = lipgloss.NewStyle().Foreground(colorContent).Italic(true)
 	styleInputHint = lipgloss.NewStyle().Foreground(colorContent)
+	// The busy cursor keeps input visibly editable without competing with
+	// the agent's live work. It is steady and dim until the session is idle.
+	styleBusyCursor = lipgloss.NewStyle().Foreground(colorDim).Reverse(true)
 	styleOverlayRule = lipgloss.NewStyle().Foreground(colorRule).Faint(true)
 
 	styleWatermark = lipgloss.NewStyle().Foreground(colorWarn).Italic(true).PaddingLeft(2)

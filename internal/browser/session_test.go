@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/target"
 )
 
 // newSessionWithIDs builds a session with bare trackedPage entries (no
@@ -20,7 +20,7 @@ func newSessionWithIDs(active int, ids ...string) *session {
 	return &session{pages: pages, active: active}
 }
 
-func idOf(s string) proto.TargetTargetID { return proto.TargetTargetID(s) }
+func idOf(s string) target.ID { return target.ID(s) }
 
 func activeIDOf(s *session) string {
 	if s.active < 0 || s.active >= len(s.pages) {

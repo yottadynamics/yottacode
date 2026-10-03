@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -107,7 +106,7 @@ func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("edit_anchored: %w", err)
 	}
-	contents, err := os.ReadFile(p)
+	contents, err := hashline.ReadFileForEdit(p)
 	if err != nil {
 		return "", fmt.Errorf("edit_anchored: %w", err)
 	}

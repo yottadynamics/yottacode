@@ -167,14 +167,17 @@ top of the normal approval model:
   agent can't and shouldn't: it always prompts, fails cleanly when there's
   no display, and reopens the page in a *fresh* isolated profile rather
   than carrying cookies across. The agent is told not to attempt the
-  challenge itself — the human does it. The tools add no stealth or
-  evasion of their own (no hiding of automation flags, no fingerprint
-  patching), and this doesn't change that. One thing to know: the
-  headless session inherits go-rod's default device emulation — a fixed
-  1280×800 viewport and a Mac Chrome user-agent string — which is a
-  library default, not an evasion measure, and it does not match the real
-  browser. The visible handoff window turns that emulation off and reports
-  Chrome's real viewport and user agent.
+  challenge itself — the human does it. Every session (headless and the
+  visible handoff window alike) does suppress the automation signals a
+  stock headless Chrome volunteers for free: `navigator.webdriver` (via
+  CDP's own `Emulation.setAutomationOverride`, belt-and-suspenders with
+  `--disable-blink-features=AutomationControlled`), a plain 1280×800
+  desktop window size instead of headless Chrome's small default, and a
+  user agent/client hints that no longer announce `HeadlessChrome`. This
+  is cosmetic self-consistency (`internal/browser/stealth.go`), not
+  evasion — no JavaScript is injected, nothing else the browser reports is
+  falsified, and it does not change whether a real challenge fires or how
+  it gets resolved; `browser_handoff` remains the only way past one.
 - **Approval on every action that reads or changes page state** —
   `browser_navigate`, `browser_screenshot`, `browser_inspect`,
   `browser_click`, `browser_type`, `browser_hotkey`,
@@ -260,10 +263,10 @@ top of the normal approval model:
   length, with the true length shown, and with control characters
   escaped so an argument can't reflow the prompt to look like something
   else.
-- **The browser keeps Chrome's process isolation.** rod's launch
+- **The browser keeps Chrome's process isolation.** chromedp's launch
   defaults turn site isolation off and run the network service inside the
   browser process; both are turned back on. Chrome's own sandbox is never
-  disabled (nothing passes `--no-sandbox`). rod's "leakless" guard is a
+  disabled (nothing passes `--no-sandbox`). The leakless guard is a
   helper binary it extracts to a predictable `/tmp` path and runs without
   checking who owns it — on a shared machine another user could plant a
   program there. The helper is only used if it and its directory belong
@@ -285,7 +288,7 @@ top of the normal approval model:
   workers multiply this surface in a way the single-session design
   hasn't been proven against yet.
 - **Not routed through the command sandbox.** `run_bash`'s Podman
-  sandbox doesn't apply here — rod launches the Chromium process
+  sandbox doesn't apply here — chromedp launches the Chromium process
   directly, not via a shell command. Containerizing the browser itself
   is a possible future addition, not a v1 guarantee.
 
@@ -335,8 +338,10 @@ way:
   shows no live browser holds it (a directory it can't prove is dead is
   never touched; at most 20 are removed per launch). Until then it sits
   in your temp dir.
-- **Downloads have a time limit, not a size limit.** A download is
-  bounded by the 60-second action timeout only.
+- **Downloads have both time and size limits.** A download is bounded by the
+  60-second action timeout and a 100 MiB maximum. Partial files in the private
+  scratch directory are removed when the operation fails or times out; the
+  validated destination is not published until completion.
 
 ## Write-path validation
 

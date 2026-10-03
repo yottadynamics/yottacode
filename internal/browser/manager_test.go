@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/browser"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -60,7 +60,7 @@ type fakeSession struct {
 	// filepath.Join(dir, info.GUID) — Manager.Download stats and moves
 	// that file for real, so this needs to exist on disk to test the
 	// real move/cleanup logic, not just the call plumbing.
-	downloadResult  *proto.PageDownloadWillBegin
+	downloadResult  *browser.EventDownloadWillBegin
 	downloadContent []byte
 }
 
@@ -166,13 +166,13 @@ func (f *fakeSession) setFiles(_ context.Context, selector string, paths []strin
 // info.GUID), the same place a real Chrome download would land, so
 // Manager.Download's own stat+move logic runs for real against a test
 // fake rather than being skipped.
-func (f *fakeSession) fakeDownload(dir string) (*proto.PageDownloadWillBegin, error) {
+func (f *fakeSession) fakeDownload(dir string) (*browser.EventDownloadWillBegin, error) {
 	if f.downloadErr != nil {
 		return nil, f.downloadErr
 	}
 	info := f.downloadResult
 	if info == nil {
-		info = &proto.PageDownloadWillBegin{GUID: "fake-guid", SuggestedFilename: "downloaded.txt"}
+		info = &browser.EventDownloadWillBegin{GUID: "fake-guid", SuggestedFilename: "downloaded.txt"}
 	}
 	content := f.downloadContent
 	if content == nil {
@@ -184,12 +184,12 @@ func (f *fakeSession) fakeDownload(dir string) (*proto.PageDownloadWillBegin, er
 	return info, nil
 }
 
-func (f *fakeSession) downloadViaClick(_ context.Context, selector, dir string) (*proto.PageDownloadWillBegin, error) {
+func (f *fakeSession) downloadViaClick(_ context.Context, selector, dir string) (*browser.EventDownloadWillBegin, error) {
 	f.record("downloadViaClick:" + selector)
 	return f.fakeDownload(dir)
 }
 
-func (f *fakeSession) downloadViaURL(_ context.Context, url, dir string) (*proto.PageDownloadWillBegin, error) {
+func (f *fakeSession) downloadViaURL(_ context.Context, url, dir string) (*browser.EventDownloadWillBegin, error) {
 	f.record("downloadViaURL:" + url)
 	return f.fakeDownload(dir)
 }
@@ -688,7 +688,7 @@ func TestManager_UploadPropagatesError(t *testing.T) {
 // call plumbing.
 func TestManager_DownloadClickMovesFileToDestPath(t *testing.T) {
 	fake := &fakeSession{
-		downloadResult:  &proto.PageDownloadWillBegin{GUID: "guid-1", SuggestedFilename: "report.pdf"},
+		downloadResult:  &browser.EventDownloadWillBegin{GUID: "guid-1", SuggestedFilename: "report.pdf"},
 		downloadContent: []byte("pdf bytes here"),
 	}
 	m := newTestManager(fake, t.TempDir())
@@ -714,7 +714,7 @@ func TestManager_DownloadClickMovesFileToDestPath(t *testing.T) {
 }
 
 func TestManager_DownloadViaURLUsesNavigatePath(t *testing.T) {
-	fake := &fakeSession{downloadResult: &proto.PageDownloadWillBegin{GUID: "guid-2", SuggestedFilename: "x.bin"}}
+	fake := &fakeSession{downloadResult: &browser.EventDownloadWillBegin{GUID: "guid-2", SuggestedFilename: "x.bin"}}
 	m := newTestManager(fake, t.TempDir())
 	dest := filepath.Join(t.TempDir(), "x.bin")
 
