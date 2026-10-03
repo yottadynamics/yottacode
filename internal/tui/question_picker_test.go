@@ -336,3 +336,59 @@ func TestQuestionNeeded_OwnsAllKeysWhileOpen(t *testing.T) {
 		t.Errorf("an unbound key must not close the question modal")
 	}
 }
+
+func TestQuestionNeeded_EnterSelectsAndAdvancesSingleChoice(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyUp}) // cursor on "OAuth"
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.questionPicker.activeTab != 1 {
+		t.Fatalf("Enter on a single-choice question should move to the next question; activeTab=%d", m.questionPicker.activeTab)
+	}
+	if !m.questionPicker.answers[0].selected[0] || m.questionPicker.answers[0].selected[1] {
+		t.Errorf("Enter should have selected OAuth and replaced the recommended default; got %+v", m.questionPicker.answers[0].selected)
+	}
+}
+
+func TestQuestionNeeded_EnterOnMultiSelectMovesOnWithoutToggling(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeySpace}) // select "Slack"
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !m.questionPicker.onSubmitTab() {
+		t.Fatalf("Enter on the last multi-select question should move to Review")
+	}
+	if got := m.questionPicker.answers[1].selected; len(got) != 1 || !got[0] {
+		t.Errorf("Enter must not toggle options; got %+v", got)
+	}
+}
+
+func TestQuestionNeeded_KeyHintsMatchBehavior(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	if got := strings.Join(m.contextualKeyHints(), " "); !strings.Contains(got, "Enter: select") {
+		t.Errorf("single-choice hints should mention Enter: select; got %q", got)
+	}
+	m.questionPicker.activeTab = 1
+	if got := strings.Join(m.contextualKeyHints(), " "); !strings.Contains(got, "Space: toggle") || !strings.Contains(got, "Enter: next") {
+		t.Errorf("multi-select hints should mention Space: toggle and Enter: next; got %q", got)
+	}
+	m.questionPicker.activeTab = 0
+	m.questionPicker.answers[0].editingOther = true
+	if got := strings.Join(m.contextualKeyHints(), " "); !strings.Contains(got, "Esc: cancel edit") {
+		t.Errorf("Other-editing hints should say Esc cancels the edit; got %q", got)
+	}
+}
+
+func TestQuestionPickerState_SummaryLineTruncatesLongFreeText(t *testing.T) {
+	p := newQuestionPickerState(twoQuestions())
+	p.answers[0].usingFreeText = true
+	p.answers[0].freeText = strings.Repeat("x", 300)
+	line := p.summaryLine()
+	if strings.Contains(line, strings.Repeat("x", 100)) {
+		t.Errorf("summary should truncate long answers; got %d chars", len(line))
+	}
+	if !strings.Contains(line, "…") {
+		t.Errorf("expected an ellipsis on the truncated answer; got %q", line)
+	}
+}

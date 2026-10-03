@@ -2163,40 +2163,59 @@ for the full plan-mode flow.
 
 ## ask_user_question
 
-Ask the user 1-4 structured multiple-choice questions and get back a
-machine-checkable answer, instead of ending the turn with a prose question the
-model can't branch on. Mirrors Claude Code's `AskUserQuestion` schema: each
-question has a short `header` (<=12 chars, shown as a tab when a call carries
-more than one question), the full `question` text, 2-4 `options` (each with a
-`label` and an optional `description`), and an optional `multi_select` flag. At
-most one option per question should set `recommended:true` — the safe default
-	a non-interactive session auto-picks, and the option the interactive picker
-	pre-selects. An automatic free-text "Other" choice is always available in
-	addition to the listed options; for `multi_select:true`, it can be combined
-	with listed choices and the result contains both `options` and `other`. Headers
-	must be unique, and text length limits are rejected rather than truncated.
+Ask the user 1-4 multiple-choice questions and get a structured answer back,
+instead of ending the turn with a prose question the model can't branch on.
+Mirrors Claude Code's `AskUserQuestion`.
 
-| Param | Type | Default | Notes |
-|---|---|---|---|
-| `questions` | array (1-4) | required | Each: `header`, `question`, `options` (2-4), optional `multi_select` |
-| `questions[].options[].recommended` | bool | `false` | At most one per question; ambiguous (0 or 2+) is treated as "no default" |
+Each question has:
 
-Render as a stable questionnaire card: the popup reserves the maximum question-text height across all tabs, so switching questions does not resize or reposition the window. Tabs act as progress/navigation indicators (`1 Auth`, `2 Notify`, `Review`) rather than settings-style buttons, while the question text remains the primary focus.
+- `header` — short label (max 12 chars), unique within the call; shown as a tab.
+- `question` — the full question text (max 200 chars).
+- `options` — 2-4 choices, each with a `label` (max 60) and an optional
+  one-line `description` (max 160).
+- `multi_select` — optional; lets the user pick more than one option.
 
+Mark at most one option per question `recommended:true`. The interactive picker
+pre-selects it and non-interactive runs auto-pick it. Zero or several
+recommended options count as "no default". Text over the length limits is
+rejected, not truncated.
 
-`RequiresApproval` is always `false` — this tool never mutates anything, so
-`--yolo`/auto mode never block the interactive exchange (there's no approval
-step to skip). In `/plan` mode it's unavailable until the plan file has real
-content (investigate and draft first, ask what's still genuinely ambiguous
-last); the final plan additionally can't carry a non-empty "Open questions"
-heading — `exit_plan_mode` refuses while one is present.
+A free-text **Other** choice is always added after your options. With
+`multi_select`, Other can be combined with listed options.
 
-Not available to subagents or dispatch workers (no human to answer). In
-non-interactive `yottacode run`, it auto-answers from each question's
-`recommended:true` default when every question has exactly one; otherwise it
-fails the call closed with an actionable stderr message. Over ACP it always
-fails closed today — `session/request_permission` has no way to express
-multi-select or free text.
+The result is JSON: `{"answers": {"<header>": <answer>}, "order": [...]}`.
+An answer is a label, a list of labels, free text, or
+`{"options": [...], "other": "..."}` for multi-select plus Other. If the user
+cancels, the result is `{"cancelled":true}`.
+
+| Param | Type | Notes |
+|---|---|---|
+| `questions` | array (1-4) | required |
+| `questions[].options[].recommended` | bool | at most one per question |
+
+### In the TUI
+
+The picker is a tab strip (`1 Auth`, `2 Notify`, `Review`) over a fixed-size
+frame, so switching tabs never moves the window. The final **Review** tab
+submits once every question is answered.
+
+| Key | Action |
+|---|---|
+| ↑/↓ | Move between options |
+| Enter | Select the option and move to the next question (single-choice); move on (multi-select); submit on Review |
+| Space | Select or toggle the highlighted option |
+| ←/→ | Switch question |
+| Esc | Cancel all questions (while typing in Other: cancel the edit only) |
+
+### Where it works
+
+| Context | Behavior |
+|---|---|
+| Interactive TUI | Shows the picker. Never needs approval, so `--yolo`/auto mode can't skip it. |
+| `/plan` mode | Blocked until the plan file has content: investigate and draft first, then ask what is still ambiguous. |
+| `yottacode run` | Auto-answers from `recommended:true` when every question has exactly one; otherwise fails with an actionable stderr message. |
+| ACP | Always fails closed: `session/request_permission` can't express multi-select or free text. |
+| Subagents, dispatch workers | Not available (no human to answer). |
 
 ## Agent
 

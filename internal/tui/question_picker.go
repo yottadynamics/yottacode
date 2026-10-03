@@ -12,6 +12,9 @@ import (
 
 const questionFreeTextMaxLen = 500
 
+// questionSummaryValueMax bounds one answer in the post-submit transcript line.
+const questionSummaryValueMax = 60
+
 type questionAnswerState struct {
 	selected      map[int]bool
 	cursor        int
@@ -304,7 +307,8 @@ func (p *questionPickerState) summaryLine() string {
 			}
 			vals += sel.FreeText
 		}
-		parts = append(parts, sel.Header+": "+vals)
+		// Scrollback summary only; the model receives the full answer.
+		parts = append(parts, sel.Header+": "+truncateDisplay(vals, questionSummaryValueMax))
 	}
 	return "✓ " + strings.Join(parts, " · ")
 }
@@ -332,7 +336,7 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if !m.sendDecision(agent.Deny) {
 			return m, nil
 		}
-		m.appendLine(styleError.Render("✗ question cancelled"))
+		m.appendLine(styleMeta.Render("question cancelled"))
 		return m, m.finishDecisionUI()
 	case tea.KeyLeft:
 		p.prevTab()
@@ -371,8 +375,12 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			return m, m.finishDecisionUI()
 		case p.onOtherRow():
 			p.startEditingOther()
+		case p.questions[p.activeTab].MultiSelect:
+			// Space toggles; Enter just moves on once the user is done.
+			p.nextTab()
 		default:
 			p.selectCurrent()
+			p.nextTab()
 		}
 	}
 	return m, nil
@@ -395,9 +403,9 @@ func (p *questionPickerState) footerHint() string {
 	if p.isEditingOther() {
 		return "  type your answer · enter confirm · esc cancel edit"
 	}
-	action := "enter select"
+	action := "enter select & next"
 	if p.questions[p.activeTab].MultiSelect {
-		action = "space toggle · enter confirm"
+		action = "space toggle · enter next"
 	}
 	nav := ""
 	if len(p.questions) > 1 {

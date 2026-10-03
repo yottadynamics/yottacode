@@ -12,14 +12,12 @@ import (
 // clarification tool.
 const AskUserQuestionToolName = "ask_user_question"
 
-// Length caps for model-supplied text. The schema advertises these via
-// maxLength, but a schema is advice the adapter may not enforce — the
-// TUI's tab strip and option rows have a real, finite render width, so
-// parseAskUserQuestionArgs truncates defensively on the way in rather
-// than trusting the model to have honored the hint. headerMaxLen
-// matches the "<=12 chars" contract the tab strip is built around;
-// the others are generous enough for real answers while still bounding
-// a single row/line in the popup.
+// Length caps for model-supplied text. The schema advertises them via
+// maxLength, but a schema is advice the adapter may not enforce, and the
+// TUI has a finite render width — so parseAskUserQuestionArgs rejects
+// over-long text (never truncates it: that would silently change the
+// model's question and could make two headers collide). headerMaxLen
+// matches the "<=12 chars" contract the tab strip is built around.
 const (
 	headerMaxLen       = 12
 	questionTextMaxLen = 200
@@ -322,16 +320,16 @@ func formatQuestionAnswer(reply *QuestionAnswer) string {
 	order := make([]string, 0, len(reply.Selections))
 	for _, sel := range reply.Selections {
 		order = append(order, sel.Header)
-			switch {
-			case sel.FreeText != "" && len(sel.Labels) > 0:
-				answers[sel.Header] = map[string]any{"options": sel.Labels, "other": sel.FreeText}
-			case sel.FreeText != "":
-				answers[sel.Header] = sel.FreeText
-			case len(sel.Labels) == 1:
-				answers[sel.Header] = sel.Labels[0]
-			default:
-				answers[sel.Header] = sel.Labels
-			}
+		switch {
+		case sel.FreeText != "" && len(sel.Labels) > 0:
+			answers[sel.Header] = map[string]any{"options": sel.Labels, "other": sel.FreeText}
+		case sel.FreeText != "":
+			answers[sel.Header] = sel.FreeText
+		case len(sel.Labels) == 1:
+			answers[sel.Header] = sel.Labels[0]
+		default:
+			answers[sel.Header] = sel.Labels
+		}
 	}
 	out, err := json.Marshal(map[string]any{"answers": answers, "order": order})
 	if err != nil {

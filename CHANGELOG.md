@@ -8,21 +8,15 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
-worktree-inherited-dancing-boole
-- **`ask_user_question` tool.** Ask 1-4 structured multiple-choice
-  questions and get back a machine-checkable answer instead of ending the
-  turn with a prose question. Mirrors Claude Code's `AskUserQuestion`
-  schema (header/question/options with an optional `recommended` default
-  and `multi_select`), renders as a tab-strip picker matching `/model`'s
-  chrome with a trailing `Submit` tab that only activates once every
-  question is answered, and never needs approval (yolo/auto-mode can't
-  skip it — it's not a mutation). Unavailable in `/plan` mode until the
-  plan file has real content, and `exit_plan_mode` now refuses a plan
-  with a non-empty "Open questions" section. Not available to subagents
-  or dispatch workers; `yottacode run` auto-answers from each question's
-  `recommended` default when every question has exactly one, otherwise
-  fails closed; ACP fails closed for now (no protocol primitive for
-  multi-select/free-text). See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
+- **`ask_user_question` tool.** The agent can now ask you 1-4 multiple-choice
+  questions in a picker instead of ending its turn with a prose question.
+  Each question offers 2-4 options (one can be pre-selected as the
+  recommended default) plus a free-text "Other"; multi-select questions are
+  supported. It never needs approval, so yolo/auto mode can't skip it. In
+  `/plan` mode it unlocks once the plan file has content. Subagents and
+  dispatch workers can't use it; `yottacode run` auto-answers from the
+  recommended defaults (or fails with a clear message if there are none);
+  ACP fails closed. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
 - **`apply_hashline` gains line-addressed hunks.** A hunk can now be
   addressed by `anchor` — the exact `line#hash` token `read_file`/
   `read_many_files` print with `anchors=true`, or that `edit_anchored`

@@ -3491,6 +3491,12 @@ func (m Model) contextualKeyHints() []string {
 		if m.questionPicker.onSubmitTab() {
 			return []string{"←/→: review", "Enter: submit", "Esc: cancel"}
 		}
+		if m.questionPicker.isEditingOther() {
+			return []string{"Enter: confirm", "Esc: cancel edit"}
+		}
+		if m.questionPicker.questions[m.questionPicker.activeTab].MultiSelect {
+			return []string{"←/→: question", "↑/↓: move", "Space: toggle", "Enter: next", "Esc: cancel"}
+		}
 		return []string{"←/→: question", "↑/↓: move", "Enter: select", "Esc: cancel"}
 	case m.awaitingApproval && m.approvalTool == "exit_plan_mode":
 		return []string{"A: auto", "M: manual", "L: later", "K: keep planning"}

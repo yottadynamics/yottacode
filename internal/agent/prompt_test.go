@@ -194,10 +194,8 @@ func TestPlanModeAddendum_KeepsCoreDirectives(t *testing.T) {
 		// plan file has a draft; ending the turn in prose is reserved
 		// for the pre-draft case.
 		"Resolve material ambiguity BEFORE calling exit_plan_mode",
-		"ask_user_question stays blocked until there's a draft to react to",
-		"Never call exit_plan_mode in the same turn as a still-open material question",
-		"recommended:true option",
-		"non-empty \"Open questions\" heading",
+		"the tool is blocked until the plan file has content",
+		"mark your recommended answer recommended:true",
 		"approval modal accepts hotkeys only",
 		// Foreground-subagent nudge: plan-mode research benefits from
 		// same-turn findings, so the addendum steers the parent toward
