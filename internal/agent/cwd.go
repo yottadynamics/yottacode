@@ -66,6 +66,9 @@ func (r *CwdRef) Recover() (CwdRecovery, error) {
 	if info, err := os.Stat(r.projectRoot); err != nil || !info.IsDir() {
 		return CwdRecovery{}, fmt.Errorf("working directory %q no longer exists and stable project root %q is unavailable", current, r.projectRoot)
 	}
+	// Recovery only updates the session-local cwd ref. Commands already use
+	// explicit cmd.Dir values; changing process cwd here would race other
+	// sessions and legacy worktree operations.
 	r.store(r.projectRoot)
 	return CwdRecovery{Requested: current, Actual: r.projectRoot, Recovered: true}, nil
 }
@@ -96,9 +99,8 @@ func (r *CwdRef) Set(v string) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if info, err := os.Stat(v); (err != nil || !info.IsDir()) && !pathWithin(v, r.projectRoot) {
-		r.projectRoot = ""
-	}
+	// A failed or temporary target must not erase the startup fallback. The
+	// fallback is replaced only by construction of a new CwdRef/session.
 	r.store(v)
 }
 
