@@ -243,13 +243,10 @@ func TestMemoryRecallValidation(t *testing.T) {
 	} {
 		cmd := newCLI()
 		cmd.SilenceUsage = true
-		var output strings.Builder
-		cmd.SetOut(&output)
-		cmd.SetErr(&output)
 		cmd.SetArgs(args)
-		cmd.SetOut(&output)
-		cmd.SetErr(&output)
-		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("expected validation error for %v", args)
+		}
 	}
 }
 

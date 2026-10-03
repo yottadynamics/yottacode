@@ -378,6 +378,36 @@ func TestEvaluate_AbsolutePathRule(t *testing.T) {
 	}
 }
 
+// Regression: rules and targets spelled through a symlink (macOS /etc ->
+// /private/etc, /var -> /private/var) must match in both directions, or deny
+// rules fail open.
+func TestEvaluate_AbsolutePathRuleThroughSymlink(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	link := filepath.Join(root, "link")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, tc := range []struct{ name, ruleDir, targetDir string }{
+		{"rule via link, target real", link, real},
+		{"rule real, target via link", real, link},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
+				nil, nil, []string{"Edit(" + tc.ruleDir + "/**)"})
+			p, _ := LoadWithSystemPath(cwd, "")
+			args := `{"path":"` + filepath.Join(tc.targetDir, "secret.txt") + `"}`
+			if got := p.Evaluate("edit_file", args); got != Deny {
+				t.Errorf("deny rule should match across symlink spellings; got %v", got)
+			}
+		})
+	}
+}
+
 func TestEvaluate_GithubRuleMatchesByVerb(t *testing.T) {
 	cwd := t.TempDir()
 	seed(t, filepath.Join(cwd, ".yottacode", "permissions.json"),
@@ -595,6 +625,9 @@ func TestLoadWithSystemPath_WorktreeUsesRepositoryStorage(t *testing.T) {
 	if want := canonicalizePath(filepath.Join(repo, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
 		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
 	}
+	if want := canonicalizePath(filepath.Join(worktreeDir, ".yottacode", "permissions.json")); p.SharedPath() != want {
+		t.Fatalf("SharedPath = %q, want %q (committed policy stays per-worktree)", p.SharedPath(), want)
+	}
 	if err := p.AddAllow("Bash(go test *)"); err != nil {
 		t.Fatalf("AddAllow: %v", err)
 	}
@@ -603,6 +636,55 @@ func TestLoadWithSystemPath_WorktreeUsesRepositoryStorage(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(worktreeDir, ".yottacode", "permissions.local.json")); !os.IsNotExist(err) {
 		t.Fatalf("worktree permission file exists, stat err = %v", err)
+	}
+}
+
+func TestLoadWithSystemPath_NonGitDirUsesCwdStorage(t *testing.T) {
+	cwd := t.TempDir()
+	p, err := LoadWithSystemPath(cwd, "")
+	if err != nil {
+		t.Fatalf("LoadWithSystemPath: %v", err)
+	}
+	if want := canonicalizePath(filepath.Join(cwd, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
+		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
+	}
+}
+
+// A submodule's git-common-dir lives under <super>/.git/modules/<name>; its
+// parent is not a repo root and must not receive .yottacode/.
+func TestLoadWithSystemPath_SubmoduleUsesOwnStorage(t *testing.T) {
+	root := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_ALLOW_PROTOCOL=file", "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	sub := filepath.Join(root, "sub")
+	super := filepath.Join(root, "super")
+	for _, d := range []string{sub, super} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		run(d, "init", "-q", "-b", "main")
+	}
+	if err := os.WriteFile(filepath.Join(sub, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(sub, "add", "f")
+	run(sub, "commit", "-q", "-m", "init")
+	run(super, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "mod")
+
+	modDir := filepath.Join(super, "mod")
+	p, err := LoadWithSystemPath(modDir, "")
+	if err != nil {
+		t.Fatalf("LoadWithSystemPath: %v", err)
+	}
+	if want := canonicalizePath(filepath.Join(modDir, ".yottacode", "permissions.local.json")); p.LocalPath() != want {
+		t.Fatalf("LocalPath = %q, want %q", p.LocalPath(), want)
 	}
 }
 
