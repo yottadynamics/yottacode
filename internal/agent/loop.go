@@ -1305,6 +1305,22 @@ approved:
 	if err := send(ctx, events, ToolStart{ToolCallID: callID, ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, "", err
 	}
+	var cwdRecovery CwdRecovery
+	if cfg.Cwd != nil {
+		var recoverErr error
+		cwdRecovery, recoverErr = cfg.Cwd.Recover()
+		if recoverErr != nil {
+			msg := "error: cwd unavailable: " + recoverErr.Error()
+			_ = send(ctx, events, ToolResult{ToolCallID: callID, ToolName: tool.Name(), Output: msg, Errored: true})
+			return msg, nil, false, "cwd-recovery", nil
+		}
+		if cwdRecovery.Recovered && !IsReadOnlyTool(tc.Name) {
+			msg := fmt.Sprintf("error: session cwd %q no longer exists; recovered to %q, but %s was not executed. Reconfirm the intended working directory before retrying", cwdRecovery.Requested, cwdRecovery.Actual, tc.Name)
+			_ = send(ctx, events, ToolResult{ToolCallID: callID, ToolName: tool.Name(), Output: msg, Errored: true})
+			_ = send(ctx, events, CwdChanged{NewCwd: cwdRecovery.Actual, Previous: cwdRecovery.Requested, Recovered: true, Reason: "directory_deleted"})
+			return msg, nil, false, "cwd-recovery", nil
+		}
+	}
 	// Attach the parent's events + decisions channels so tools that
 	// need to participate in the parent's approval flow (today:
 	// AgentTool, which forwards a foreground subagent's child
@@ -1445,6 +1461,9 @@ approved:
 		if after := cfg.Cwd.Get(); after != cwdBefore {
 			_ = send(ctx, events, CwdChanged{NewCwd: after})
 		}
+	}
+	if cwdRecovery.Recovered {
+		_ = send(ctx, events, CwdChanged{NewCwd: cwdRecovery.Actual, Previous: cwdRecovery.Requested, Recovered: true, Reason: "directory_deleted"})
 	}
 	if pa, ok := tool.(planAware); ok {
 		if store := pa.PlanStore(); store != nil {

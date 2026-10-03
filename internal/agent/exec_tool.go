@@ -94,6 +94,12 @@ func (t *RunBashTool) Execute(ctx context.Context, argsJSON string) (string, err
 	if blocked, reason := IsPrivilegeEscalationCommand(a.Command); blocked {
 		return fmt.Sprintf("BLOCKED (privilege escalation): %s. Commands that can prompt for an OS password are refused before execution so the terminal cannot hang on an agent-initiated sudo prompt. Run the command yourself in a terminal outside the agent, then ask yottacode to continue.", reason), nil
 	}
+	if recovery, err := t.Cwd.Recover(); err != nil {
+		return "", fmt.Errorf("run_bash: cwd unavailable: %w", err)
+	} else if recovery.Recovered {
+		// The loop emits the user-facing CwdChanged event; direct tool users
+		// still need the command to run from the repaired directory.
+	}
 	preparedCommand, err := prepareRunBashCommand(a.Command, t.sandbox(), t.Cwd.Get())
 	if err != nil {
 		return "", fmt.Errorf("run_bash: %w", err)

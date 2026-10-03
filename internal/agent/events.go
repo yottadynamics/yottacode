@@ -169,7 +169,10 @@ type ToolResult struct {
 // tool's ToolResult when LoopConfig.Cwd.Get() differs from the
 // pre-call value.
 type CwdChanged struct {
-	NewCwd string
+	NewCwd    string
+	Previous  string
+	Recovered bool
+	Reason    string
 }
 
 // TodoUpdate fires after a tool implementing the planAware interface
