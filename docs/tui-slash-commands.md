@@ -43,7 +43,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/experimental` | — | List active experimental features and graduated compatibility flags. Graduated entries such as `background_subagents` and `lsp_code_intelligence` show as GA/no-op; active experiments such as `dispatch` show ON/off. Read-only; enabling active experiments happens via `--experimental <name>`, `YOTTACODE_EXPERIMENTAL`, or the `[experimental]` config block — see [experimental.md](experimental.md). |
 | `/mcp` | `[logs <name>]` | List configured MCP servers (status + tool count), or dump a server's recent stderr with `logs <name>`. See [mcp.md](mcp.md). |
 | `/theme` | `[set <name> \| <name>]` | Change the theme — opens the picker with arrow-key live preview across every registered palette (`terminal`, `catppuccin`, `dimmed`, `gruvbox`, `high-contrast`, `low-contrast`, `no-color`, `nord`, `one-dark`, `solarized-dark`, `studio-dark`, `tokyo-night`). Enter applies and persists to `~/.yottacode/config.toml`; Esc reverts. Scriptable shortcuts: `/theme set <name>` and `/theme <name>` bypass the picker. See [themes.md](themes.md). |
-| `/loop` | `<interval> [Nx] <prompt>` | Repeat a prompt or slash command on an explicit interval. `/loop 5m <prompt>` fires every 5 minutes; `/loop 30s /context` runs a slash command every 30 seconds; `/loop 3x <prompt>` is rejected because the interval is required; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
+| `/loop` | `<interval> [Nx] [--budget <tokens>] [--verify] <prompt>` | Repeat a prompt or slash command on an explicit interval. `/loop 5m <prompt>` fires every 5 minutes; `/loop 30s /context` runs a slash command every 30 seconds; `/loop 3x <prompt>` is rejected because the interval is required; `/loop pause` / `/loop resume` hold and restart it; `--budget` caps its token spend; `--verify` makes the agent's stop wait for a passing verification; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
 
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
@@ -521,9 +521,44 @@ Forms:
 | `/loop 2m check current PR CI and stop when all checks are green` | Run a prose agent turn on an interval. Useful for polling CI or external state and stopping once the condition is met. |
 | `/loop 30s /context` | Run a slash command on the interval instead of a prose prompt. |
 | `/loop 30s 3x <prompt>` | Bounded: run three iterations, then disarm. |
+| `/loop 2m --budget 200k <prompt>` | (Prose loops.) Stop the loop once its own iterations have spent 200k tokens (`k`/`m` suffixes and decimals work: `1.5m`, `50000`). See Token budget below. |
+| `/loop 2m --verify <prompt>` | The agent can only stop the loop after the `verification` agent returns `VERDICT: PASS` this iteration. See Verify gate below. |
+| `/loop 2m 3x --budget 50k --verify <prompt>` | Options combine; the count and flags may appear in any order before the prompt. |
+| `/loop pause [<id>\|all]` / `/loop resume [<id>\|all]` | Hold or restart a loop. See Pause and resume below. |
 | `/loop stop <id>` | Disarm one loop by ID, e.g. `/loop stop loop-a1b2c3`. |
 | `/loop stop all` | Disarm every active loop. |
 | `/loop` | Open a dismissable panel below the cmdline listing active loops (IDs, intervals, remaining count, expiry, payloads). Any key closes it; the loops keep running. |
+
+### Pause and resume
+
+`/loop pause` keeps a loop armed but stops it firing: it keeps its ID, iteration count, budget meter and expiry clock, and its heartbeat keeps running so the cadence resumes cleanly. `/loop resume` clears the pause and, when yottacode is idle, fires the next iteration right away rather than waiting out a long interval; mid-turn it waits for the next tick. Targeting matches `/loop stop`: an ID, `all`, or no argument when exactly one loop is armed. Pausing never cancels an iteration that is already running, it only prevents the next one. Paused loops show `paused` in the banner and status panel. Like every loop, pause state is in-memory and does not survive a restart.
+
+### Token budget (`--budget`)
+
+`--budget <tokens>` bounds what a loop may spend. After each prose iteration the loop is charged the session tokens spent during that iteration's own turn (main thread plus any subagents it ran, the same basis as `/usage`'s "session total"). When the running total reaches the budget the loop disarms and prints `[loop] <id> stopped — token budget reached (210K of 200K used)`. Things to know:
+
+- **Only the loop's own turns count.** Your own turns and other loops don't drain it.
+- **It is checked between iterations.** A turn already running is not cut short, so a single iteration can overshoot. A background subagent that finishes after the turn ends is not attributed.
+- **The agent is told.** The per-iteration context states how much of the budget is used so it can prioritise.
+- **Prose loops only.** `--budget` on a slash-command loop is rejected: a slash command's turns aren't owned or metered by the loop, so the flag could never trigger.
+
+### Verify gate (`--verify`)
+
+By default the model alone decides a loop is done (`loop_control stop`). With `--verify`, `loop_control stop` is refused until the `verification` agent has run during the same iteration and its last line is exactly `VERDICT: PASS`:
+
+- A run that started before this iteration began never counts, so an old PASS can't approve new changes. If several runs exist, the latest wins.
+- `FAIL`, `PARTIAL`, a missing verdict line, a still-running, errored or canceled run all keep the loop going. The refusal includes the tail of the report and tells the agent to fix, then verify again and pass the previous findings back so the re-check confirms each fix (see the `verification` agent's re-check rules).
+- Why it was refused (`stop refused: verification FAIL`) shows in the status panel and is passed to the next iteration.
+- **Escape hatch:** if something outside the agent's control blocks the work (missing credential, denied permission), it can call `loop_control` with `blocked: true`. The loop stops, and the notice is labelled `UNVERIFIED — blocked` with the reason, so a stop without verification is never silent.
+- Only prose loops can be verify-gated (`--verify` on a slash loop is rejected), and it needs subagents available in the session.
+- **Bounded loops can't end silently unverified.** With `3x --verify`, if the last iteration finishes without a verified stop, scrollback says `[loop] <id> ended after its final iteration without a verified stop — treat the work as unverified` (with the last refusal reason when there was one).
+- **No budget, no count.** Arming `--verify` with neither prints a note, because a verifier that keeps failing keeps the loop spending until it is stopped or expires.
+- **It needs the stock `verification` agent.** The gate looks for runs of the agent named `verification`. If a project overrides or removes it, the gate can only be left through `blocked: true`, the budget, `/loop stop`, or expiry; yottacode can't check this when you arm the loop.
+- It adds the verification agent's token cost to every attempt, and the budget and the 5-day expiry still apply as backstops. It is only as reliable as the verifier model: a wrong PASS ends the loop early, a wrong FAIL keeps it spending until the budget.
+
+### Task loops
+
+When a loop's prompt asks the agent to get something done (fix, implement, migrate) rather than only watch for a condition, the per-iteration context adds four rules: tool call first and narration second (no "I ran…" without the matching call), don't ask permission to continue work already in flight, track steps with `todo_write`, and don't end an iteration with easy unblocked work left, stating the exact blocker instead when one is real. Polling loops are unaffected.
 
 Behavior notes:
 
@@ -540,7 +575,7 @@ Behavior notes:
   │ personal taxes
   ╰ /loop stop loop-y7j152
   ```
-- **Status panel.** Bare `/loop` (no args) opens a dismissable **menu below the cmdline** — one compact row per loop (`<id>   every 1m · unbounded · expires in 4d · <payload…>`), in the same picker style as `/model`, with a `2 active loops` header and the stop/dismiss hint. It does **not** write to the session/transcript, so checking your loops never clutters scrollback. Any key dismisses it (the loops keep running). With nothing armed, `/loop` just prints a one-line hint.
+- **Status panel.** Bare `/loop` (no args) opens a dismissable **menu below the cmdline** — one compact row per loop (`<id>   every 1m · unbounded · paused · iter 3 · 45K/200K tokens · verify · expires in 4d · <payload…>`; the optional facts appear when they apply), in the same picker style as `/model`, with a `2 active loops` header and the stop/dismiss hint. It does **not** write to the session/transcript, so checking your loops never clutters scrollback. Any key dismisses it (the loops keep running). With nothing armed, `/loop` just prints a one-line hint.
 - **Stopping.** Use `/loop stop <id>` to stop one loop, `/loop stop all` to stop every loop, or `/loop stop` when exactly one loop is active. If the stopped loop is the one whose iteration is running, its turn is cancelled too; stopping a *different* loop leaves the running turn alone. `Esc` or a first `Ctrl+C` stops **all** active loops (and cancels a mid-flight turn). Graceful `/quit` or `Ctrl+D` warns before stopping active loops.
 - **The loop assesses itself and can stop.** During a **prose** iteration the agent is offered a `loop_control` tool **and** a system addendum that tells it to evaluate, every iteration, whether the loop should keep running. It stops when the loop's stated stop-condition is met (e.g. `/loop 2m check CI and stop when green` and CI is now green) **or** when the request is effectively a one-off it has already answered and repeating would only reproduce the same result — it calls `loop_control` with `action: "stop"` and a one-line reason, the loop disarms after that turn, and prints `[loop] <id> stopped by the agent: <reason>`. It deliberately keeps running when you're *polling* for a change that hasn't happened yet (CI still red, deploy still running), so a monitor doesn't quit just because nothing changed this tick. The tool + addendum are present **only** during a prose loop iteration — hidden from ordinary turns and from slash-command loops, so the model can't stop a loop that isn't running. (Note: an open-ended payload with no goal, like `check for accountants in Apex`, is treated as a one-off — it answers once and stops rather than re-answering forever.)
 - **Permissions are not bypassed.** An iteration that hits an un-allowlisted git command (or any gated tool) pauses on the normal approval prompt and waits — nothing runs unattended that wouldn't prompt interactively. To make a loop hands-off, pick "always allow" once, add an `.yottacode/permissions.json` allow rule, or run under `--yolo`.
@@ -558,6 +593,23 @@ Examples:
 | Poll status without starting an agent turn | `/loop 30s /context` | Interval slash commands can be informational/status checks and are allowed to repeat. |
 | Run a bounded check | `/loop 30s 3x /git-review-pr` | Runs at most three iterations, then disarms automatically. |
 | Periodically ask for a lightweight repo health check | `/loop 10m check git status, summarize risky changes, and do not edit files` | Use prose when you want an agent turn. Permission prompts still gate tools; add allow rules only for commands you intentionally want hands-off. |
+| Cap what an unattended loop can spend | `/loop 5m --budget 300k keep fixing the failing integration tests` | Each iteration is charged the tokens its own turn used (main thread plus subagents). When 300k is reached the loop disarms with `token budget reached (312K of 300K used)`. Checked between iterations, so one iteration can overshoot. |
+| Don't let the agent declare victory unchecked | `/loop 2m --verify --budget 300k fix the flaky test in internal/store and stop when it is reliable` | The agent can only stop after the `verification` agent returns `VERDICT: PASS` in the same iteration. A FAIL keeps the loop going with the report. Worked example below. |
+| Bounded, verified attempt | `/loop 3m 4x --verify implement the TODOs in docs/plan.md` | At most four iterations. If the last one ends without a verified stop, scrollback says so instead of ending quietly. |
+| Step away without losing the loop | `/loop pause` … `/loop resume` | Holds the only armed loop (use an ID or `all` with several). Keeps its count, meter and expiry; resume fires the next iteration right away when idle. |
+
+### Worked example: a verify-gated loop
+
+```
+/loop 2m --verify --budget 300k fix the flaky test in internal/store and stop when it is reliable
+```
+
+1. **Iteration 1.** The agent finds a race, edits the code, and calls `loop_control stop` with "fixed". The call is refused: `stop refused: no verification has run this iteration`. Once the turn ends, the status panel row (bare `/loop`) carries the reason: `iter 1 · … · verify · stop refused: …`.
+2. **Same turn.** The agent runs the `verification` agent with the task, the files it changed and its approach. The verifier runs the test 20 times, sees one failure, and ends with `VERDICT: FAIL`. The next stop attempt is refused with the report's tail and a reminder to pass the findings back on the re-check.
+3. **Iteration 2.** The per-iteration context says `Last stop attempt: stop refused: verification FAIL`. The agent fixes the remaining race and runs verification again, passing the previous findings so the re-check confirms each one is fixed.
+4. **Verified stop.** The verifier returns `VERDICT: PASS`. The agent calls `loop_control stop` and scrollback shows `[loop] loop-ab12cd stopped by the agent: fixed and verified`.
+
+If a credential had been revoked at step 3, the agent could instead call `loop_control` with `blocked: true`, and the loop would stop with `[loop] loop-ab12cd stopped by the agent (UNVERIFIED — blocked): deploy key revoked`.
 
 ## Palette behavior
 

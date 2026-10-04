@@ -160,12 +160,15 @@ func (t Task) Duration() time.Duration {
 
 // UsageTokens returns the exact provider-reported total this subagent
 // consumed (input + output + cache read + cache write), matching the
-// "total tokens" basis /usage uses so every surface tells the same story.
-// Returns 0 when the provider never reported usage (Usage.IsZero) — callers
-// fall back to the ~4-char/token estimate then.
+// "total tokens" basis /usage uses. When a provider does not report usage,
+// fall back to the estimated TokensUsed value recorded at completion.
 func (t Task) UsageTokens() int {
 	u := t.Usage
-	return int(u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens)
+	n := int(u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheCreationTokens)
+	if n > 0 {
+		return n
+	}
+	return t.TokensUsed
 }
 
 // Registry tracks active and historical subagent tasks for the current

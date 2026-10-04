@@ -91,7 +91,7 @@ func init() {
 		{Name: "init", Help: promptmacros.MustGet("init").Description, Run: cmdInit},
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
-		{Name: "loop", Args: "<dur> [Nx] <prompt>", Help: "repeat on interval; stop <id> or stop all", Run: cmdLoop, PreservesTurn: true},
+		{Name: "loop", Args: "<dur> [Nx] [flags] <prompt>", Help: "repeat on interval (--budget, --verify); pause|resume|stop", Run: cmdLoop, PreservesTurn: true},
 
 		// Git workflow.
 		// Palette order mirrors the daily flow: commit → push →

@@ -748,6 +748,21 @@ type Model struct {
 	// starts the turn and read at turnEndedMsg so a loop_control{stop} from the
 	// agent disarms the right loop. See consumeLoopControl.
 	currentLoopTurnID string
+	// loopTurnTokens is the session token total when the loop-owned turn
+	// started; at turn end the difference is added to that loop's spent count
+	// (the --budget meter). Meaningful only while currentLoopTurnID is set.
+	loopTurnTokens int64
+	// loopTurnSubagentTokens snapshots live subagent usage at loop-turn start.
+	// Only tasks first seen after that boundary are charged to this loop; unrelated
+	// background tasks that happen to finish during the turn cannot drain it.
+	loopTurnSubagentTokens map[string]int64
+	// loopTurnBudget keeps the final bounded iteration's budget available after
+	// fireLoopIteration removes its inactive loop record.
+	loopTurnBudget int64
+	// loopTurnFinalVerify marks the active loop turn as the last iteration of a
+	// bounded --verify loop (already removed from m.loops), so turn end can say
+	// when it finished without a verified stop.
+	loopTurnFinalVerify bool
 
 	// loopExitConfirmOpen shows a graceful-exit warning when local loops would
 	// stop on quit. The cursor picks Exit anyway vs Stay.
@@ -1145,6 +1160,13 @@ type loopState struct {
 	total     int           // original bounded count (0 for unbounded); drives K/N progress
 	armedAt   time.Time     // when this loop was created
 	expiresAt time.Time     // default five-day expiry for local loops
+
+	paused     bool   // armed but not firing: ticks re-arm without starting an iteration
+	budget     int64  // token budget across the loop's own iterations (0 = none)
+	spent      int64  // tokens spent by this loop's iterations so far (main thread + subagents)
+	verify     bool   // --verify: the agent may only stop after a passing verification
+	iterations int    // iterations fired so far
+	lastNote   string // why the last stop attempt was refused (verify gate), shown in the status row
 }
 
 // loopTickMsg is the /loop heartbeat for one interval loop. A pending tick is
@@ -2757,6 +2779,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ls.expiresAt.IsZero() && time.Now().After(ls.expiresAt) {
 			m.disarmLoop(msg.id, "[loop] "+msg.id+" expired after 5d")
 			return m, nil
+		}
+		// A paused loop stays armed (and keeps counting toward expiry) but fires
+		// nothing: re-arm the heartbeat so /loop resume picks the cadence back up.
+		if ls.paused {
+			return m, loopTickCmd(ls.interval, msg.id)
 		}
 		// A turn (or summarize) is still running — skip this cycle and re-arm
 		// only this loop's next interval so cadence holds without stacking turns.

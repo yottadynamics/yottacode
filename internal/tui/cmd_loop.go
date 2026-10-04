@@ -36,6 +36,12 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 	if strings.EqualFold(args[0], "stop") || strings.EqualFold(args[0], "off") {
 		return cmdLoopStop(m, args[1:])
 	}
+	if strings.EqualFold(args[0], "pause") {
+		return cmdLoopPause(m, args[1:], true)
+	}
+	if strings.EqualFold(args[0], "resume") {
+		return cmdLoopPause(m, args[1:], false)
+	}
 
 	rest := args
 	interval, ok := parseLoopInterval(rest[0])
@@ -51,16 +57,67 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 	}
 	rest = rest[1:]
 
+	// Between the interval and the payload: an optional iteration count (3x) and
+	// the --budget / --verify flags, in any order.
 	remaining := -1
-	if len(rest) > 0 {
-		if n, ok := parseLoopCount(rest[0]); ok {
-			remaining, rest = n, rest[1:]
+	var budget int64
+	verify, haveCount := false, false
+parseOpts:
+	for len(rest) > 0 {
+		tok := rest[0]
+		if n, isCount := parseLoopCount(tok); isCount && !haveCount {
+			remaining, haveCount = n, true
+			rest = rest[1:]
+			continue
+		}
+		switch {
+		case tok == "--verify":
+			verify = true
+			rest = rest[1:]
+		case tok == "--budget" || strings.HasPrefix(tok, "--budget="):
+			val := strings.TrimPrefix(tok, "--budget=")
+			consumed := 1
+			if tok == "--budget" {
+				if len(rest) < 2 {
+					m.appendLine(styleError.Render("[loop] --budget needs a token count — e.g. --budget 200k"))
+					return m, nil
+				}
+				val, consumed = rest[1], 2
+			}
+			n, ok := parseLoopTokens(val)
+			if !ok {
+				m.appendLine(styleError.Render(fmt.Sprintf("[loop] invalid --budget %q — use a positive token count like 200k, 1.5m or 50000", val)))
+				return m, nil
+			}
+			budget = n
+			rest = rest[consumed:]
+		case strings.HasPrefix(tok, "--"):
+			m.appendLine(styleError.Render(fmt.Sprintf("[loop] unknown option %s — supported: --budget <tokens>, --verify", tok)))
+			return m, nil
+		default:
+			break parseOpts
 		}
 	}
 	payload := strings.TrimSpace(strings.Join(rest, " "))
 	if payload == "" {
 		m.appendLine(styleError.Render(
-			"usage: /loop <interval> [Nx] <prompt|/command> — e.g. /loop 5m /git-review-pr"))
+			"usage: /loop <interval> [Nx] [--budget <tokens>] [--verify] <prompt|/command> — e.g. /loop 5m /git-review-pr"))
+		return m, nil
+	}
+	if strings.HasPrefix(payload, "/") {
+		// A slash loop's turn is not owned by the loop (no loop_control, no
+		// metering), so these options could only ever be silent no-ops.
+		switch {
+		case verify:
+			m.appendLine(styleError.Render("[loop] --verify applies to prose loops (the agent's stop is what gets verified), not slash commands"))
+			return m, nil
+		case budget > 0:
+			m.appendLine(styleError.Render("[loop] --budget applies to prose loops — a slash command's turns aren't metered, so it would never trigger"))
+			return m, nil
+		}
+	}
+	if verify && m.subagentTasks == nil {
+		m.appendLine(styleError.Render("[loop] --verify needs subagents (the verification agent) — not available in this session"))
 		return m, nil
 	}
 	// Refuse payloads that don't make sense to repeat: another /loop (would
@@ -96,6 +153,8 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 		remaining: remaining,
 		armedAt:   now,
 		expiresAt: now.Add(loopDefaultTTL),
+		budget:    budget,
+		verify:    verify,
 	}
 	if remaining > 0 {
 		ls.total = remaining
@@ -103,6 +162,11 @@ func cmdLoop(m Model, args []string) (Model, tea.Cmd) {
 	m.loops[id] = ls
 	m.loopOrder = append(m.loopOrder, id)
 	m.appendLine(renderLoopCard(ls, m.width))
+	if verify && budget == 0 && remaining < 0 {
+		// Nothing but the agent, you, or the 5-day expiry ends this loop, and a
+		// verifier that keeps failing keeps it spending.
+		m.appendLine(styleAuto.Render("[loop] note: --verify with no --budget or count runs until verified, stopped, or expiry — consider --budget"))
+	}
 
 	cmds := []tea.Cmd{loopTickCmd(interval, id)}
 	// Kick off iteration 1 immediately when idle. When a turn is active, the
@@ -156,6 +220,147 @@ func cmdLoopStop(m Model, args []string) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// cmdLoopPause pauses or resumes armed loops. A paused loop stays armed — it
+// keeps its ID, count, budget meter and expiry clock — but fires nothing until
+// resumed. Pausing never cancels an iteration already running (it just prevents
+// the next one); resuming fires the next iteration right away when idle instead
+// of waiting out a long interval. Same targeting rules as /loop stop: an ID,
+// `all`, or no argument when exactly one loop is armed.
+func cmdLoopPause(m Model, args []string, pause bool) (Model, tea.Cmd) {
+	verb, past := "resume", "resumed"
+	if pause {
+		verb, past = "pause", "paused"
+	}
+	ids := m.activeLoopIDs()
+	if len(ids) == 0 {
+		m.appendLine(styleAuto.Render("[loop] nothing to " + verb))
+		return m, nil
+	}
+	var targets []string
+	switch {
+	case len(args) == 0 && len(ids) == 1:
+		targets = ids
+	case len(args) == 0:
+		m.appendLine(styleError.Render("[loop] multiple loops active — pass an ID or `all`"))
+		return m, nil
+	case strings.EqualFold(args[0], "all"):
+		targets = ids
+	default:
+		if ls, ok := m.loops[args[0]]; !ok || !ls.active {
+			m.appendLine(styleError.Render(fmt.Sprintf("[loop] no active loop %q", args[0])))
+			return m, nil
+		}
+		targets = []string{args[0]}
+	}
+
+	var cmds []tea.Cmd
+	for _, id := range targets {
+		ls := m.loops[id]
+		if ls.paused == pause {
+			m.appendLine(styleAuto.Render("[loop] " + id + " is already " + past))
+			continue
+		}
+		ls.paused = pause
+		m.loops[id] = ls
+		m.appendLine(styleAuto.Render("[loop] " + id + " " + past))
+		if pause || m.turnActive || m.summarizing {
+			continue
+		}
+		next, cmd := m.fireLoopIteration(id)
+		m = next
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		// Same guard as arming: a prose iteration that starts no turn (no
+		// provider) would just repeat the error every interval.
+		if cur, ok := m.loops[id]; ok && cur.active && !cur.isSlash && !m.turnActive && !m.summarizing {
+			m.disarmLoop(id, "[loop] "+id+" stopped — payload started no turn")
+		}
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// parseLoopTokens accepts a positive token count: plain digits, or a k/m suffix
+// with an optional fraction (200k, 1.5m, 50000). Returns (0,false) otherwise.
+func parseLoopTokens(tok string) (int64, bool) {
+	tok = strings.ToLower(strings.TrimSpace(tok))
+	mult := float64(1)
+	switch {
+	case strings.HasSuffix(tok, "k"):
+		mult, tok = 1e3, strings.TrimSuffix(tok, "k")
+	case strings.HasSuffix(tok, "m"):
+		mult, tok = 1e6, strings.TrimSuffix(tok, "m")
+	}
+	f, err := strconv.ParseFloat(tok, 64)
+	if err != nil || f <= 0 || f*mult > 1e12 {
+		return 0, false
+	}
+	n := int64(f*mult + 0.5)
+	return n, n > 0
+}
+
+// loopSubagentTokens snapshots non-historical subagent spend by task ID. The
+// loop budget uses this keyed snapshot so unrelated tasks cannot be charged.
+func (m Model) loopSubagentTokens() map[string]int64 {
+	out := map[string]int64{}
+	if m.subagentTasks == nil {
+		return out
+	}
+	for _, t := range m.subagentTasks.List() {
+		if t.Historical {
+			continue
+		}
+		out[t.ID] = int64(t.UsageTokens())
+	}
+	return out
+}
+
+// loopTurnSubagentSpend returns usage added to tasks observed during this turn.
+func (m Model) loopTurnSubagentSpend(before map[string]int64) int64 {
+	var spent int64
+	for id, now := range m.loopSubagentTokens() {
+		if prev, ok := before[id]; ok && now > prev {
+			spent += now - prev
+		} else if !ok {
+			spent += now
+		}
+	}
+	return spent
+}
+
+// loopTurnSpend combines main-thread usage with only the subagent usage that
+// belongs to this turn's task set.
+func (m Model) loopTurnSpend(mainBefore int64, subagentBefore map[string]int64) int64 {
+	spent := totalTokensFor(m.sess.TotalUsage) - mainBefore
+	if spent < 0 {
+		spent = 0
+	}
+	return spent + m.loopTurnSubagentSpend(subagentBefore)
+}
+
+// sessionTokens is the session's running token total for diagnostics/tests.
+func (m Model) sessionTokens() int64 {
+	if m.sess == nil {
+		return 0
+	}
+	n := totalTokensFor(m.sess.TotalUsage)
+	if m.subagentTasks == nil {
+		return n + totalTokensFor(m.sess.SubagentUsage().Total)
+	}
+	for _, t := range m.subagentTasks.List() {
+		if t.Historical {
+			continue
+		}
+		n += int64(t.UsageTokens())
+	}
+	return n
+}
+
+// loopTokens formats a token count compactly for loop status lines.
+func loopTokens(n int64) string {
+	return formatTokens(int(n))
+}
+
 // cancelTurnIfLoopOwned cancels the in-flight turn only when that turn is the
 // given loop's own iteration. Stopping one loop must not kill a different
 // loop's — or a user-initiated — turn: with multiple loops active, only one
@@ -175,6 +380,7 @@ func (m Model) fireLoopIteration(id string) (Model, tea.Cmd) {
 	if !ok || !ls.active {
 		return m, nil
 	}
+	ls.iterations++
 	if ls.remaining > 0 {
 		ls.remaining--
 		if ls.remaining == 0 {
@@ -201,14 +407,27 @@ func (m Model) fireLoopIteration(id string) (Model, tea.Cmd) {
 	// here is visible to the agent goroutine). If the turn never starts (no
 	// provider), undo it — turnEndedMsg won't fire to clear it, and the loop is
 	// about to be disarmed anyway.
+	mainTokensBefore := int64(0)
+	if m.sess != nil {
+		mainTokensBefore = totalTokensFor(m.sess.TotalUsage)
+	}
+	turnSubagentTokens := m.loopSubagentTokens()
 	if m.cfg.LoopControl != nil {
 		m.cfg.LoopControl.SetContext(loopTurnContext(ls))
+		m.cfg.LoopControl.SetVerify(ls.verify, time.Now())
 		m.cfg.LoopControl.SetTurnActive(true)
 	}
 	next, cmd := m.startTurnWithDisplay(payload, "")
 	nm := next.(Model)
 	if nm.turnActive {
 		nm.currentLoopTurnID = id
+		nm.loopTurnTokens = mainTokensBefore
+		nm.loopTurnSubagentTokens = turnSubagentTokens
+		nm.loopTurnBudget = ls.budget
+		// The loop is already removed from the store for a bounded loop's last
+		// iteration, so remember it was a verify-gated final one to report at turn
+		// end if it never reached a verified stop.
+		nm.loopTurnFinalVerify = !ls.active && ls.verify
 	} else if nm.cfg.LoopControl != nil {
 		nm.cfg.LoopControl.SetTurnActive(false)
 	}
@@ -221,19 +440,68 @@ func (m Model) fireLoopIteration(id string) (Model, tea.Cmd) {
 // the tool is hidden again on the next (non-loop) turn.
 func (m *Model) consumeLoopControl() {
 	id := m.currentLoopTurnID
-	m.currentLoopTurnID = ""
-	stop, reason := m.cfg.LoopControl.ConsumeStop()
+	turnTokens := m.loopTurnTokens
+	subagentTokens := m.loopTurnSubagentTokens
+	turnBudget := m.loopTurnBudget
+	finalVerify := m.loopTurnFinalVerify
+	m.currentLoopTurnID, m.loopTurnTokens, m.loopTurnSubagentTokens, m.loopTurnBudget, m.loopTurnFinalVerify = "", 0, nil, 0, false
+	stop, reason, blocked := m.cfg.LoopControl.ConsumeStopDetail()
+	gateNote := m.cfg.LoopControl.ConsumeGateNote()
 	m.cfg.LoopControl.SetTurnActive(false)
-	if !stop || id == "" {
+	if id == "" {
 		return
 	}
-	// The loop may already be gone (user Esc, expiry, bounded final iteration);
-	// disarmLoop is a no-op then.
+	ls, ok := m.loops[id]
+	// Meter the iteration that just ended against the loop's own budget. Only
+	// tokens spent during this loop-owned turn count. A final bounded iteration
+	// has already been removed from m.loops, so retain its accounting separately
+	// and still emit the normal budget notice when it crosses the limit.
+	spent := m.loopTurnSpend(turnTokens, subagentTokens)
+	if !ok || !ls.active {
+		if finalVerify {
+			if turnBudget > 0 && spent >= turnBudget {
+				m.appendLine(styleAuto.Render(fmt.Sprintf("[loop] %s stopped — token budget reached (%s of %s used)", id, loopTokens(spent), loopTokens(turnBudget))))
+				return
+			}
+			if stop {
+				m.appendLine(styleAuto.Render(loopStopNotice(id, reason, blocked)))
+				return
+			}
+			notice := "[loop] " + id + " ended after its final iteration without a verified stop — treat the work as unverified"
+			if gateNote != "" {
+				notice += " (" + gateNote + ")"
+			}
+			m.appendLine(styleAuto.Render(notice))
+		}
+		return
+	}
+	if spent > 0 {
+		ls.spent += spent
+	}
+	ls.lastNote = gateNote
+	m.loops[id] = ls
+
+	if stop {
+		m.disarmLoop(id, loopStopNotice(id, reason, blocked))
+		return
+	}
+	if ls.budget > 0 && ls.spent >= ls.budget {
+		m.disarmLoop(id, fmt.Sprintf("[loop] %s stopped — token budget reached (%s of %s used)",
+			id, loopTokens(ls.spent), loopTokens(ls.budget)))
+	}
+}
+
+// loopStopNotice is the scrollback line for a loop the agent ended itself.
+// blocked marks a --verify loop it stopped without a passing verification.
+func loopStopNotice(id, reason string, blocked bool) string {
 	notice := "[loop] " + id + " stopped by the agent"
+	if blocked {
+		notice = "[loop] " + id + " stopped by the agent (UNVERIFIED — blocked)"
+	}
 	if reason = strings.TrimSpace(reason); reason != "" {
 		notice += ": " + reason
 	}
-	m.disarmLoop(id, notice)
+	return notice
 }
 
 // loopTurnContext is the one-line loop descriptor fed into the loop-assessment
@@ -242,10 +510,22 @@ func (m *Model) consumeLoopControl() {
 // ls after fireLoopIteration has decremented a bounded loop's remaining count.
 func loopTurnContext(ls loopState) string {
 	cadence := "every " + compactDuration(ls.interval)
+	var s string
 	if ls.total > 0 {
-		return fmt.Sprintf("It runs %s, iteration %d of %d.", cadence, ls.total-ls.remaining, ls.total)
+		s = fmt.Sprintf("It runs %s, iteration %d of %d.", cadence, ls.total-ls.remaining, ls.total)
+	} else {
+		s = fmt.Sprintf("It runs %s and is unbounded (no fixed number of iterations) — it repeats until stopped.", cadence)
 	}
-	return fmt.Sprintf("It runs %s and is unbounded (no fixed number of iterations) — it repeats until stopped.", cadence)
+	if ls.budget > 0 {
+		s += fmt.Sprintf(" It has a token budget: %s of %s used so far; it stops when the budget is reached, so prioritise the remaining work.", loopTokens(ls.spent), loopTokens(ls.budget))
+	}
+	if ls.verify {
+		s += " Stopping is verify-gated: loop_control stop is refused until the `verification` agent has run this iteration and returned VERDICT: PASS. When you believe the goal is met, run it (foreground) with the original task, the files you changed, your approach, and any previous FAIL findings; fix what it reports and re-verify. Use loop_control with blocked: true only for a real external blocker."
+		if ls.lastNote != "" {
+			s += " Last stop attempt: " + ls.lastNote + "."
+		}
+	}
+	return s
 }
 
 func (m *Model) ensureLoopStore() {
@@ -365,6 +645,9 @@ func renderLoopCard(ls loopState, width int) string {
 	meta := styleAutoBannerActivity.Render("every "+compactDuration(ls.interval)) +
 		dot + styleAutoBannerActivity.Render(count) +
 		dot + styleAutoBannerActivity.Render("expires "+formatLoopRemaining(time.Now(), ls.expiresAt))
+	for _, bit := range loopStatusBits(ls) {
+		meta += dot + styleAutoBannerActivity.Render(bit)
+	}
 
 	lines := []string{
 		renderCardHeader("Loop("+ls.id+")", g, 0, width),
@@ -413,8 +696,10 @@ func (m Model) renderLoopListPanel() string {
 		if ls.remaining > 0 {
 			count = fmt.Sprintf("%d left", ls.remaining)
 		}
-		desc := fmt.Sprintf("every %s · %s · expires %s  ·  %s",
-			compactDuration(ls.interval), count, formatLoopRemaining(time.Now(), ls.expiresAt), ls.payload)
+		facts := []string{"every " + compactDuration(ls.interval), count}
+		facts = append(facts, loopStatusBits(ls)...)
+		facts = append(facts, "expires "+formatLoopRemaining(time.Now(), ls.expiresAt))
+		desc := strings.Join(facts, " · ") + "  ·  " + ls.payload
 		if descBudget > 8 {
 			desc = ansi.Truncate(desc, descBudget, "…")
 		}
@@ -423,8 +708,35 @@ func (m Model) renderLoopListPanel() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styleAutoBannerHint.Render("/loop stop <id> to stop one · /loop stop all · any key to dismiss"))
+	b.WriteString(styleAutoBannerHint.Render("/loop stop|pause|resume <id> (or all) · any key to dismiss"))
 	return b.String()
+}
+
+// loopStatusBits lists a loop's optional status facts in display order, shared
+// by the arm card and the status panel: paused state, iterations fired, tokens
+// spent (against the budget when one is set), the verify gate, and why the last
+// stop attempt was refused.
+func loopStatusBits(ls loopState) []string {
+	var bits []string
+	if ls.paused {
+		bits = append(bits, "paused")
+	}
+	if ls.iterations > 0 {
+		bits = append(bits, fmt.Sprintf("iter %d", ls.iterations))
+	}
+	switch {
+	case ls.budget > 0:
+		bits = append(bits, fmt.Sprintf("%s/%s tokens", loopTokens(ls.spent), loopTokens(ls.budget)))
+	case ls.spent > 0:
+		bits = append(bits, loopTokens(ls.spent)+" tokens")
+	}
+	if ls.verify {
+		bits = append(bits, "verify")
+	}
+	if ls.lastNote != "" {
+		bits = append(bits, ls.lastNote)
+	}
+	return bits
 }
 
 const loopListScrollReserve = 1
@@ -578,7 +890,11 @@ func renderLoopBanner(loops []loopState, width int) string {
 	var detail string
 	if len(loops) == 1 {
 		ls := loops[0]
-		detail = styleAutoBannerActivity.Render(ls.id) + dot + styleAutoBannerActivity.Render("every "+compactDuration(ls.interval))
+		cadence := "every " + compactDuration(ls.interval)
+		if ls.paused {
+			cadence = "paused"
+		}
+		detail = styleAutoBannerActivity.Render(ls.id) + dot + styleAutoBannerActivity.Render(cadence)
 		hint := dot + styleAutoBannerHint.Render("/loop stop "+ls.id)
 		core := label + dot + detail
 		if ansi.StringWidth(core+hint) <= width {

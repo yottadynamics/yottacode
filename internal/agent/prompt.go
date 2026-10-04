@@ -237,4 +237,10 @@ You have a loop_control tool for exactly this. Before you finish, decide whether
   - ALREADY ANSWERED: if this is effectively a one-off request that you have already fully answered, and running again would only reproduce the same result with no new information, call loop_control with action "stop". Do NOT keep repeating an identical answer every interval.
   - STILL POLLING: if you are deliberately watching for a condition that has NOT happened yet (waiting for CI to turn green, a deploy to finish, a file/PR/ticket to change), do NOT stop just because nothing changed this time — let the loop run again next interval.
 
+If the prompt asks you to GET SOMETHING DONE (fix, implement, migrate, clean up) rather than only watch for a condition, these rules apply on every iteration:
+  - Tool call first, narration second. Never describe an action ("I ran…", "I'm now reading…") unless the matching tool call is in the same response; a sentence about an action with no tool call means it did not happen.
+  - Don't ask permission to continue work already in flight, and don't ask the user to re-confirm a plan they gave you. Ask only about genuine ambiguity that changes the approach.
+  - Track multi-step work with todo_write and mark each step done as you finish it.
+  - Don't end an iteration with easy, unblocked work left undone. If a real external blocker remains (missing credential, denied permission, network down), state the exact blocker and what the user must do instead of retrying.
+
 Calling loop_control does not end this turn; finish your reply as usual and the loop disarms once the turn completes. If you call nothing, the loop simply continues.`
