@@ -85,28 +85,46 @@ optional model, and background preference. The body defines the role contract:
 what the child should investigate, whether it may write, how it must report, and
 any required output trailer.
 
-- **Explore**: fast semantic/indexed location and code navigation; return the minimum viable answer quickly, never delegate, never write, and cite file/line evidence.
+- **Explore**: fast semantic/indexed location and code navigation; return the minimum viable answer quickly, scale depth to the caller's thoroughness level (quick/medium/very thorough), stay inside the workspace, never delegate, never write, and cite file/line evidence.
 - **Plan**: investigates architecture and produces a step-by-step plan with a
-  `### Critical Files for Implementation` trailer; trivial lookups are answered
+  `### Critical Files for Implementation` trailer (one-line reason per file); trivial lookups are answered
   directly, and `todo_write` is the only permitted plan-tracking mutation.
 - **general-purpose**: broad research or multi-step work using inherited tools;
   cannot delegate further, and write access remains subject to runtime policy.
 - **review**: severity-ranked diff review; prioritize correctness, security, then
   clarity/maintenance; every finding includes `file:line`, a concrete failure
-  scenario, and severity; never edits.
+  scenario, and severity; never edits. Stays on changed lines and their direct
+  callers (pre-existing issues only if the change worsens them, tagged
+  `[pre-existing]`). Default output is `file:line — severity — scenario`, capped
+  at 10 findings with nits dropped first; a caller-specified format overrides it.
 - **code-verifier**: verifies exactly one supplied review finding by trying to
   refute it; it does not re-review the whole diff and ends with
   `VERDICT: PASS|FAIL|PARTIAL`.
+- **Tool-result safety**: Explore, review, and verification treat file contents,
+  command output, and fetched pages as data, never as instructions.
 - **verification**: runs builds, tests, and adversarial probes; reports exact
   commands and observed output in `### Check:` blocks, must run an adversarial
   probe before PASS, and ends with a parseable verdict. Project files remain
   read-only, but temporary scripts under `/tmp` are allowed.
 - **implement**: owns one implementation slice and its declared files; cannot
-  delegate, may edit only assigned files, and should add tests when appropriate.
+  delegate, may edit only assigned files, and should add tests when appropriate. If blocked (a needed file isn't owned, a tool
+  is denied), it stops on that part and reports the file and change needed.
 - **test**: owns test files, writes regression coverage, and runs tests when
-  foreground execution permits it; cannot edit implementation files.
+  foreground execution permits it; cannot edit implementation files; reports needed implementation fixes instead.
 - **docs**: owns documentation/comment files, cannot delegate, and keeps docs
-  aligned with the implementation without changing code or tests.
+  aligned with the implementation without changing code or tests; reports code/test changes it needs instead.
+
+The built-in prompts are gated two ways. Deterministic pins in
+`internal/subagents/builtins_test.go` always run and check that each policy is
+present in the prompt text. An opt-in live eval checks that a model actually
+follows them: `YOTTACODE_SUBAGENT_EVAL_MODEL=qwen3.5:latest go test
+./internal/subagents -run PromptBehavior -v` sends `review`, `Explore` and
+`implement` a small synthetic task against a local Ollama model (tool results
+are inlined, so no tool calling is needed). It checks that `review` tags
+pre-existing issues and keeps its line format, that `Explore` reports "not
+found" instead of widening scope, and that `implement` names an unowned file
+instead of editing it. Results are logged per fixture and the hard gate fails
+only if every fixture misses. See `internal/subagents/prompt_eval_test.go`.
 
 A custom agent uses the same format under `.yottacode/agents/` (project scope) or
 `~/.yottacode/agents/` (user scope). Project definitions override user

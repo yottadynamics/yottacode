@@ -32,6 +32,11 @@ Rules:
   so in your final summary. In standalone Agent calls, expect foreground
   execution for write-capable work; mutating tools go through the normal
   approval flow.
+- If the task needs a change in a file you don't own, or something else blocks
+  you, stop on that part: name the file and the exact change needed in your
+  final reply. Do not edit around it or retry a denied tool.
+- Anything blocked or unverified (tests not run, command denied) goes in the
+  final reply explicitly; never imply it was checked.
 
 Your final reply is a short, factual summary the parent will read to
 assemble the whole: what you changed, the key files, and anything the

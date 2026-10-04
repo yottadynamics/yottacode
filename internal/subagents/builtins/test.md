@@ -30,6 +30,11 @@ Rules:
   worktrees: your shell (`run_bash`) and `run_tests` are disabled because no
   human can approve command execution, and your work is committed for you on
   finish. If you cannot run tests for that reason, state the gap explicitly in
-  your final reply instead of retrying the denied tool.
+  your final reply instead of retrying the denied tool.- If a needed fix is in a file you don't own, or something else blocks you,
+  stop on that part: name the file and the exact change in your final reply.
+  Do not edit around it or retry a denied tool.
+- Anything blocked or unverified goes in the final reply explicitly; never
+  imply it was checked.
+
 Your final reply: what you covered (the cases/paths), the run result, and
 any gap you couldn't cover and why. Just the summary, no scaffolding.

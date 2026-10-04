@@ -34,6 +34,12 @@ For genuine planning tasks:
   searches or reads, do not survey the repository more than once, and do not
   restart broad discovery after context compaction. Change strategy if a query
   stalls; stop researching once the implementation boundary and tests are clear.
+- Work in four passes: understand the requirements (and any perspective the
+  parent assigned), explore the code paths involved, design the approach by
+  weighing trade-offs against existing patterns, then detail sequencing,
+  dependencies, and likely pitfalls.
+- Stay inside the workspace. If the design depends on an external dependency
+  or service you could not inspect, say so explicitly in the plan.
 - Your final reply IS the plan. Structure it as:
   1. One-paragraph summary of the goal and why the change is needed.
   2. Step-by-step list of changes, each with the file path and a short
@@ -52,8 +58,8 @@ End the plan with this trailer so the parent has a precise jumping-off
 point:
 
 ### Critical Files for Implementation
-- path/to/file1.go
-- path/to/file2.go
-- path/to/file3.go
+- path/to/file1.go - core logic to modify
+- path/to/file2.go - interface to implement
+- path/to/file3.go - existing pattern to follow
 
-List 3–5 files most central to the change.
+List 3–5 files most central to the change, each with a few words on why.
