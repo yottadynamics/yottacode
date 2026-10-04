@@ -71,10 +71,11 @@ func (p *memoryPickerState) rowCount() int {
 	return n
 }
 
+const memoryPopupBorderCols = 4
+
 func (m *Model) recomputeMemoryBrowseWindow() {
 	m.clampMemoryBrowseCursor()
 }
-
 func (m *Model) clampMemoryBrowseCursor() {
 	p := m.memoryPicker
 	if p == nil {
@@ -505,7 +506,7 @@ func memoryBrowseChromeLines(p *memoryPickerState, width int) int {
 }
 
 func memoryBrowseHead(p *memoryPickerState, width int) string {
-	contentW := max(width-popupBorderCols, 1)
+	contentW := max(width-memoryPopupBorderCols, 1)
 	var b strings.Builder
 	header := "Browse " + p.browseScope + "-scope memories"
 	b.WriteString(renderMenuHeader(header,
@@ -561,7 +562,7 @@ func renderMemoryBrowse(p *memoryPickerState, width int, h *pickerHits) string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render(truncateDisplay(memoryBrowseFooter, max(width-popupBorderCols, 1))))
+	b.WriteString(styleFooter.Render(truncateDisplay(memoryBrowseFooter, max(width-memoryPopupBorderCols, 1))))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -726,7 +727,7 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Enable Semantic Search",
-		"Pick an embedding model to pull via Ollama.", width-popupBorderCols))
+		"Pick an embedding model to pull via Ollama.", width-memoryPopupBorderCols))
 	b.WriteString("\n")
 
 	if m.embedSetupPulling {
@@ -743,7 +744,7 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 			LabelWidth: 22,
 			Desc:       em.Desc + " · " + em.Size,
 			Cursor:     i == m.embedSetupCursor,
-			MaxWidth:   width - popupBorderCols,
+			MaxWidth:   width - memoryPopupBorderCols,
 		}))
 		b.WriteString("\n")
 	}
