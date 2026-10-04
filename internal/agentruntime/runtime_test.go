@@ -59,6 +59,25 @@ func mustBuild(t *testing.T, spec SessionSpec) *Runtime {
 
 // TestBuild_CoreToolsRegistered locks in that Build wires the shared core
 // toolset regardless of caller shape — the whole point of the extraction.
+// TestBuild_LoopControlGateReadsSessionSubagents pins the wiring a --verify loop
+// depends on: the registered loop_control tool must hold the same subagent
+// registry the Agent tool records verification runs in, or its gate could never
+// see a PASS.
+func TestBuild_LoopControlGateReadsSessionSubagents(t *testing.T) {
+	rt := mustBuild(t, newTestSpec(t))
+	tool, ok := rt.Registry.Get("loop_control")
+	if !ok {
+		t.Fatal("loop_control not registered")
+	}
+	lc, ok := tool.(*agent.LoopControlTool)
+	if !ok {
+		t.Fatalf("loop_control is %T, want *agent.LoopControlTool", tool)
+	}
+	if lc.Tasks == nil || lc.Tasks != rt.SubagentTasks {
+		t.Fatal("loop_control must share the session's subagent registry (rt.SubagentTasks)")
+	}
+}
+
 func TestBuild_CoreToolsRegistered(t *testing.T) {
 	spec := newTestSpec(t)
 	rt := mustBuild(t, spec)

@@ -8,6 +8,26 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`/loop` gains pause/resume, a token budget, a verify gate and status
+  detail.** `/loop pause` and `/loop resume` (`<id>`, `all`, or bare with one
+  loop) hold a loop without losing its count, meter or expiry; resume fires
+  immediately when idle. `--budget <tokens>` (`200k`, `1.5m`, `50000`) stops a
+  loop once its own iterations have spent that many session tokens, main thread
+  plus subagents, checked between iterations. `--verify` makes
+  `loop_control stop` wait for a `VERDICT: PASS` from the `verification` agent
+  run during the same iteration; a FAIL keeps the loop going and tells the next
+  iteration why, and `loop_control` with `blocked: true` stops with an
+  `UNVERIFIED` label when something external blocks the work. The status panel,
+  arm card and banner show paused state, iteration count, tokens against the
+  budget, the verify gate and the last refusal. Prose loops that ask for work to
+  be done also get task-discipline rules in the per-iteration context (tool call
+  first, don't ask permission to continue, track steps, don't stop with easy
+  work left). New `subagents.ParseVerdict` reads the strict `VERDICT:` line.
+  `--budget` and `--verify` apply to prose loops only (a slash loop's turns
+  aren't metered, so they are rejected there); a bounded `Nx --verify` loop
+  that finishes without a verified stop says so, and `--verify` with no budget
+  or count prints a runaway-cost note.
+
 - **Approval prompts can save a rule for more tools and for chained
   commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
   now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb
