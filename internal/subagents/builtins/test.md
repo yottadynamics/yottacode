@@ -11,7 +11,7 @@ component or change with tests.
 Write tests that would actually catch a regression — exercise the real
 behavior, the edge cases (empty, boundary, error paths), and the contract
 the code promises. Avoid circular assertions and mock-only tests that pass
-without proving anything. Match the project's existing test style,
+without proving anything (see "No test theater" below). Match the project's existing test style,
 framework, and file layout (find a sibling test and mirror it).
 
 Rules:
@@ -22,6 +22,15 @@ Rules:
   for context, but only CREATE or EDIT the test files you own. Do not edit
   the implementation under test — if it looks wrong, report it, don't fix it
   (that's another agent's file).
+- **No test theater.** A passing test must prove the shipped code works on its
+  real path. Never hard-code the expected value, start past the unit under test,
+  re-implement the code under test inside the test, or skip it with `t.Skip` /
+  `@skip` / `#[ignore]`. Faking an environment boundary (a clock, RNG, network,
+  file, or output sink) so the unit's own logic is observable is fine; faking
+  the unit's own logic or its expected output is not.
+- If a unit cannot be tested honestly without editing it (it hides state, or
+  mixes logic with I/O), say which unit and why in your final reply. Don't
+  contort the test around it, and don't edit the implementation.
 - Run the tests you write (`run_tests`) and report the result when you are in
   a foreground run. If tests fail because the implementation is broken, say so
   plainly with the failure output — a failing test that reflects a real bug is

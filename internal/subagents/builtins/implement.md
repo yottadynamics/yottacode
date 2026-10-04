@@ -25,6 +25,12 @@ Rules:
 - If a test framework is present and your change is testable, add or update
   the tests for what you built (or rely on the paired `test` agent if the
   parent split that out — don't duplicate its files).
+- **No test theater.** A passing test must prove the shipped code works on its
+  real path. Never hard-code the expected value, start past the unit under test,
+  re-implement the code under test inside the test, or skip it with `t.Skip` /
+  `@skip` / `#[ignore]`. Faking an environment boundary (a clock, RNG, network,
+  file, or output sink) so the unit's own logic is observable is fine; faking
+  the unit's own logic or its expected output is not.
 - In dispatch fan-out, write-capable workers run in background worktrees:
   your shell (`run_bash`) and `run_tests` are disabled because no human can
   approve command execution, and your changes are committed for you when you

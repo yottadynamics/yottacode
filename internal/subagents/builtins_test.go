@@ -147,3 +147,34 @@ func TestLoadBuiltins_BlockerAndScopePolicies(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBuiltins_VerificationRigorPolicies pins the re-check (anti-ratchet) and
+// diff-honesty rules on the verifiers and the no-test-theater rule on the agents
+// that write tests.
+func TestLoadBuiltins_VerificationRigorPolicies(t *testing.T) {
+	byName := map[string]AgentConfig{}
+	for _, cfg := range LoadBuiltins() {
+		byName[cfg.Name] = cfg
+	}
+	cases := map[string][]string{
+		"verification":  {"previous verification", "does not rise between rounds", "has no diff", "undeclared change", "untracked"},
+		"code-verifier": {"earlier verdict on the same claim"},
+		"implement":     {"no test theater", "hard-code the expected value", "environment boundary"},
+		"test":          {"no test theater", "re-implement the code under test", "environment boundary", "cannot be tested honestly"},
+	}
+	for role, wants := range cases {
+		cfg, ok := byName[role]
+		if !ok {
+			t.Fatalf("builtin %q not loaded", role)
+		}
+		low := strings.ToLower(cfg.Prompt)
+		for _, want := range wants {
+			if !strings.Contains(low, strings.ToLower(want)) {
+				t.Errorf("%s prompt missing %q", role, want)
+			}
+		}
+	}
+	if v := byName["verification"]; !strings.Contains(v.Description, "previous FAIL findings") {
+		t.Errorf("verification description should tell the parent to pass previous FAIL findings: %q", v.Description)
+	}
+}
