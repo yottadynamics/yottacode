@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -370,6 +371,41 @@ func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 			if n := strings.Count(plain, rule); n != 2 {
 				t.Errorf("width %d: rule %q appears whole %d times, want 2 (one per [S]/[A] row)", width, rule, n)
 			}
+		}
+	}
+}
+
+func TestApprovalBodyShortensHome(t *testing.T) {
+	m := newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	m.approvalTool = "git"
+	m.approvalPreview = "$ git -C " + home + "/src/x status --short"
+	got := stripANSI(approvalBodyFor(m))
+	if strings.Contains(got, home) || !strings.Contains(got, "-C ~/src/x") {
+		t.Fatalf("home not shortened: %q", got)
+	}
+}
+
+func TestTildeifyHomeInTextBoundaries(t *testing.T) {
+	_ = newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	cases := map[string]string{
+		"cd " + home + "/x && ls":    "cd ~/x && ls",
+		"cd '" + home + "'":          "cd '~'",
+		"ls " + home:                 "ls ~",
+		"ls /mnt" + home + "/x":      "ls /mnt" + home + "/x",
+		"ls " + home + "-old/x":      "ls " + home + "-old/x",
+		"a " + home + "/x b " + home: "a ~/x b ~",
+	}
+	for in, want := range cases {
+		if got := tildeifyHomeInText(in); got != want {
+			t.Errorf("tildeifyHomeInText(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -2798,6 +2798,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnEndedMsg:
 		m.turnActive = false
+		// An interrupted turn never delivers the ToolResult that normally
+		// clears the pending tool, which would leave the footer's "tools X"
+		// segment and the terminal-tab working icon stuck on.
+		m.pendingToolName = ""
+		m.pendingToolPreview = ""
+		m.pendingToolArgs = ""
+		m.pendingToolStart = time.Time{}
 		// If this turn was a /loop prose iteration and the agent called
 		// loop_control{stop}, disarm that loop now that the turn is over. Also
 		// clears the per-turn loop-control flag so the tool is hidden again.
@@ -3324,7 +3331,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.loopExitConfirmOpen:
-		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
+		return popupBox(renderLoopExitConfirm(m)), true
 	case m.worktreeExitConfirmOpen:
 		return renderWorktreeExitConfirm(m), true
 	case m.cheatsheetOpen:

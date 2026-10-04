@@ -1,10 +1,7 @@
 package tui
 
 import (
-	"strings"
-
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 )
 
 // popupMaxWidth caps a centered popup's content width well short of the
@@ -29,17 +26,9 @@ func (m Model) popupWidth() int {
 	return w
 }
 
-// popupBox renders the standard dismissable popup chrome. Use
-// keyboardOnlyPopupBox for modal confirmations whose visible affordances are
-// keyboard hints; those surfaces intentionally avoid a mouse-only close glyph.
+// popupBox renders the standard popup chrome. Popups are keyboard-driven, so
+// the border carries no close affordance.
 func popupBox(body string, width ...int) string {
-	box := renderPopupBox(body, width...)
-	return addPopupCloseGlyph(box)
-}
-
-// keyboardOnlyPopupBox wraps a popup body without adding the shared close glyph.
-// It keeps keyboard-only confirmation dialogs from looking mouse-clickable.
-func keyboardOnlyPopupBox(body string, width ...int) string {
 	return renderPopupBox(body, width...)
 }
 
@@ -52,38 +41,6 @@ func renderPopupBox(body string, width ...int) string {
 		style = style.Width(width[0])
 	}
 	return style.Render(body)
-}
-
-// addPopupCloseGlyph paints a small close affordance into the popup border. The
-// mouse handler treats the same top-right cells as an Esc click, so users who
-// discover mouse scrolling/clicking also get an obvious way to dismiss panels.
-func addPopupCloseGlyph(box string) string {
-	lines := strings.Split(box, "\n")
-	if len(lines) == 0 {
-		return box
-	}
-	width := lipgloss.Width(lines[0])
-	if width < 6 {
-		return box
-	}
-	plainTop := ansi.Strip(lines[0])
-	if runeLen(plainTop) != width {
-		return box
-	}
-	left, right := "╭", "╮"
-	switch {
-	case strings.HasPrefix(plainTop, "╭") && strings.HasSuffix(plainTop, "╮"):
-		// Keep the shared rounded-popup chrome for picker/menu surfaces.
-	case strings.HasPrefix(plainTop, "┌") && strings.HasSuffix(plainTop, "┐"):
-		left, right = "┌", "┐"
-	default:
-		return box
-	}
-	// Rebuild the top border instead of splicing into ANSI-styled bytes. The
-	// remaining border/body lines keep their original lipgloss styling.
-	closeGlyph := lipgloss.NewStyle().Foreground(colorMuted).Bold(true).Render("×")
-	lines[0] = left + strings.Repeat("─", width-4) + " " + closeGlyph + right
-	return strings.Join(lines, "\n")
 }
 
 // popupOrigin returns the screen (x,y) composePopup places box at — the

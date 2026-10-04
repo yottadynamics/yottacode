@@ -170,10 +170,10 @@ func approvalBodyFor(m Model) string {
 		}
 	case "run_bash":
 		if rendered, _, ok := renderRunBashApproval(m.approvalArgs, m.cwd); ok {
-			return styleApprovalCommand.Render("$ ") + rendered
+			return styleApprovalCommand.Render("$ ") + tildeifyHomeInText(rendered)
 		}
 	}
-	return styleApprovalCommand.Render(m.approvalPreview)
+	return styleApprovalCommand.Render(tildeifyHomeInText(m.approvalPreview))
 }
 
 // renderPRApprovalPreview builds a compact, readable approval body for PR
