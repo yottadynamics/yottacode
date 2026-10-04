@@ -72,14 +72,6 @@ func (p *memoryPickerState) rowCount() int {
 }
 
 func (m *Model) recomputeMemoryBrowseWindow() {
-	if m.memoryPicker == nil {
-		return
-	}
-	visible := m.height - 10
-	if visible < 1 {
-		visible = 1
-	}
-	m.memoryPicker.browseVisible = visible
 	m.clampMemoryBrowseCursor()
 }
 
@@ -98,9 +90,10 @@ func (m *Model) clampMemoryBrowseCursor() {
 	if p.entryCursor >= len(p.entries) {
 		p.entryCursor = len(p.entries) - 1
 	}
-	if p.browseVisible < 1 {
-		p.browseVisible = 1
-	}
+	// Recomputed on every clamp so a changed header (status message after a
+	// delete) or terminal resize can never leave a stale window height.
+	// Reserve the real chrome plus the two-line "showing a–b of n" hint.
+	p.browseVisible = max(1, m.height-memoryBrowseChromeLines(p, m.popupWidth())-2)
 	if p.entryCursor < p.browseOffset {
 		p.browseOffset = p.entryCursor
 	}
@@ -453,13 +446,13 @@ func openInFileManager(path string) {
 	go func() { _ = cmd.Wait() }()
 }
 
-func renderMemoryPicker(p *memoryPickerState, _ int, hits ...*pickerHits) string {
+func renderMemoryPicker(p *memoryPickerState, width int, hits ...*pickerHits) string {
 	var h *pickerHits
 	if len(hits) > 0 {
 		h = hits[0]
 	}
 	if p.mode == memoryBrowseMode {
-		return renderMemoryBrowse(p, h)
+		return renderMemoryBrowse(p, width, h)
 	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Memory",
@@ -501,19 +494,36 @@ func renderMemoryPicker(p *memoryPickerState, _ int, hits ...*pickerHits) string
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
+const memoryBrowseFooter = "↵ open · d delete · f open folder · esc back · ↑↓ navigate"
+
+// memoryBrowseChromeLines counts every non-item line of the browse popup:
+// rounded border (2), the head block, the blank line and footer. Measured from
+// the real head renderer so it cannot drift from what is drawn.
+func memoryBrowseChromeLines(p *memoryPickerState, width int) int {
+	head := memoryBrowseHead(p, width)
+	return 2 + strings.Count(head, "\n") + 2
+}
+
+func memoryBrowseHead(p *memoryPickerState, width int) string {
+	contentW := max(width-popupBorderCols, 1)
 	var b strings.Builder
 	header := "Browse " + p.browseScope + "-scope memories"
 	b.WriteString(renderMenuHeader(header,
-		"Pick a memory to open, delete, or open the folder in your file manager."))
+		"Pick a memory to open, delete, or open the folder in your file manager.", contentW))
 	b.WriteString("\n")
 	if p.browseDir != "" {
-		fmt.Fprintf(&b, "  %s\n\n", styleAuto.Render(abbrevHome(p.browseDir)))
+		fmt.Fprintf(&b, "  %s\n\n", styleAuto.Render(truncateDisplayMiddle(abbrevHome(p.browseDir), max(contentW-2, 1))))
 	}
 	if p.browseMessage != "" {
-		b.WriteString(styleAuto.Render("  · " + p.browseMessage))
+		b.WriteString(styleAuto.Render(truncateDisplay("  · "+p.browseMessage, contentW)))
 		b.WriteString("\n\n")
 	}
+	return b.String()
+}
+
+func renderMemoryBrowse(p *memoryPickerState, width int, h *pickerHits) string {
+	var b strings.Builder
+	b.WriteString(memoryBrowseHead(p, width))
 	if len(p.entries) == 0 {
 		b.WriteString(styleEmpty.Render("  (no memories)"))
 	} else {
@@ -544,13 +554,14 @@ func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
 				Label:      label,
 				LabelWidth: 32,
 				Desc:       desc,
+				MaxWidth:   max(width-4, 1), // one rendered row per entry keeps hit rows aligned
 				Cursor:     i == p.entryCursor,
 			}))
 			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("↵ open · d delete · f open folder · esc back · ↑↓ navigate"))
+	b.WriteString(styleFooter.Render(truncateDisplay(memoryBrowseFooter, max(width-popupBorderCols, 1))))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -712,9 +723,10 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 	if len(hits) > 0 {
 		h = hits[0]
 	}
+	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Enable Semantic Search",
-		"Pick an embedding model to pull via Ollama."))
+		"Pick an embedding model to pull via Ollama.", width-popupBorderCols))
 	b.WriteString("\n")
 
 	if m.embedSetupPulling {
@@ -731,6 +743,7 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 			LabelWidth: 22,
 			Desc:       em.Desc + " · " + em.Size,
 			Cursor:     i == m.embedSetupCursor,
+			MaxWidth:   width - popupBorderCols,
 		}))
 		b.WriteString("\n")
 	}

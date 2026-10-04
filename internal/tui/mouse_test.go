@@ -92,8 +92,9 @@ func TestMouseWheel_ScrollsTranscriptWhilePopupOpen(t *testing.T) {
 
 func TestMouseWheel_ScrollsMemoryBrowseWindow(t *testing.T) {
 	m := newMemoryTestModel(t)
-	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: make([]memory.MemoryEntry, 12), browseVisible: 3}
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: make([]memory.MemoryEntry, 12)}
 	m.memoryPickerOpen = true
+	setBrowseVisible(&m, 3)
 	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if m.memoryPicker.entryCursor != 3 || m.memoryPicker.browseOffset != 1 {
 		t.Fatalf("wheel-down cursor/window = %d/%d, want 3/1", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
