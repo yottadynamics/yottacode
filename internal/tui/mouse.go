@@ -48,20 +48,6 @@ func (m Model) dismissStaticPopup() Model {
 	return m
 }
 
-// popupCloseHit reports whether a screen coordinate landed on the popup's
-// top-right close affordance. It intentionally accepts the glyph cell and its
-// one-cell breathing room so the target is usable with terminal mouse reporting.
-func popupCloseHit(box string, originX, originY, screenX, screenY int) bool {
-	if screenY != originY {
-		return false
-	}
-	bw := lipgloss.Width(box)
-	if bw < 6 {
-		return false
-	}
-	return screenX >= originX+bw-3 && screenX <= originX+bw-2
-}
-
 // handleScrollableStaticPopupClick routes mouse clicks inside scrollable static
 // panels. The popup stays open; clicks on the hint row act like its ↑/↓ labels.
 func (m Model) handleScrollableStaticPopupClick(box string, msg tea.MouseClickMsg) (Model, bool) {
@@ -127,17 +113,6 @@ func (m Model) scrollPopupLines(delta int) Model {
 		m.contextReportScrollOffset = min(max(m.contextReportScrollOffset+delta, 0), m.contextReportMaxScrollOffset())
 	}
 	return m
-}
-
-// handlePopupCloseClick centralizes the shared × affordance. It mirrors each
-// surface's Esc behavior instead of inventing a second close path.
-func (m Model) handlePopupCloseClick(box string, msg tea.MouseClickMsg) (Model, tea.Cmd, bool) {
-	ox, oy := m.popupOrigin(box)
-	if !popupCloseHit(box, ox, oy, msg.X, msg.Y) {
-		return m, nil, false
-	}
-	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	return out.(Model), cmd, true
 }
 
 // before its first body row/column. Both popupBox (rounded, Padding(0,1))

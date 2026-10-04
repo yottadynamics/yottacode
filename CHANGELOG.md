@@ -187,7 +187,6 @@ the project uses semantic versioning once it's past `1.0.0`.
   now edges to just the one file it actually calls. See
   [`code-map.md`](docs/code-map.md).
 
-worktree-permissions-fine-grained-review
 - **Session-scoped permission grants.** The approval modal gains an `[S]`
   hotkey alongside `[Y]`/`[A]`/`[N]`/`[D]`: it derives the same pattern
   `[A]` would, but keeps the resulting allow rule in memory only, for the
@@ -317,6 +316,13 @@ worktree-permissions-fine-grained-review
 
 ### Changed
 
+- **Approval prompts show `~` instead of the home directory** in the
+  command being approved (e.g. `git -C ~/go/src/...`).
+
+- **Popup windows no longer draw the leftover `×` in the top-right border.**
+  It was a click-to-close target from the removed mouse support; popups
+  close with Esc.
+
 - **`create_document` and `read_document` graduated to GA for every format,
   including docx/pdf generation and PDF extraction.** Both tools are now
   fully default-on — no experimental flag needed. `document_generation`/
@@ -330,7 +336,10 @@ worktree-permissions-fine-grained-review
 
 ### Fixed
 
-worktree-sharded-honking-nebula
+- **Interrupting a turn with Ctrl+C no longer leaves the terminal-tab
+  "working" icon and the footer's `tools <name>` segment stuck on.** The
+  pending tool state is now cleared when the turn ends.
+
 - **`browser_click`/`browser_type`'s new-tab follow could corrupt session
   state under real concurrency.** A freshly opened tab was published to the
   session (visible to `followNewPage`'s polling loop) before its one-time
