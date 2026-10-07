@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-func TestAll_ReturnsAllNineMacros(t *testing.T) {
+func TestAll_ReturnsAllTenMacros(t *testing.T) {
 	want := []string{
 		"git-commit", "git-push", "git-create-pr", "git-update-pr",
 		"git-create-issue", "git-review-pr", "code-review",
-		"git-implement-issue", "init",
+		"deep-research", "git-implement-issue", "init",
 	}
 	all := All()
 	if len(all) != len(want) {
@@ -198,6 +198,78 @@ func TestBuild_CodeReview_UnknownEffortErrors(t *testing.T) {
 		t.Fatal("code-review Build with an unrecognized effort must return the parse notice as an error")
 	} else if !strings.Contains(err.Error(), "unknown effort bogus") {
 		t.Fatalf("code-review Build error = %v, want unknown-effort notice", err)
+	}
+}
+
+func TestBuild_DeepResearch(t *testing.T) {
+	m := MustGet("deep-research")
+	if _, err := m.Build("", nil); err == nil {
+		t.Error("no question must be a usage error")
+	}
+	if _, err := m.Build("", []string{"  "}); err == nil {
+		t.Error("blank question must be a usage error")
+	}
+	got, err := m.Build("", []string{"bootc", "and", `"quoted"`, "patching"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The query rides as a JSON string so quotes/newlines cannot break out
+	// of the directive.
+	if !strings.Contains(got, `"bootc and \"quoted\" patching"`) {
+		t.Errorf("query not JSON-encoded in directive:\n%s", got)
+	}
+	if !strings.Contains(got, "deep_research") {
+		t.Errorf("directive must name the deep_research tool:\n%s", got)
+	}
+}
+
+func TestParseDeepResearchArgs(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		wantBreadth int
+		wantQuery   string
+		wantErr     bool
+	}{
+		{"plain", []string{"how", "does", "x", "work"}, 0, "how does x work", false},
+		{"flag form", []string{"--breadth", "2", "compare", "a", "b"}, 2, "compare a b", false},
+		{"equals form", []string{"--breadth=6", "q"}, 6, "q", false},
+		{"flag only mid-question is text", []string{"what", "is", "--breadth", "3"}, 0, "what is --breadth 3", false},
+		{"missing value", []string{"--breadth"}, 0, "", true},
+		{"empty equals", []string{"--breadth=", "q"}, 0, "", true},
+		{"too small", []string{"--breadth", "1", "q"}, 0, "", true},
+		{"too large", []string{"--breadth", "7", "q"}, 0, "", true},
+		{"not a number", []string{"--breadth", "many", "q"}, 0, "", true},
+		{"no question after flag", []string{"--breadth", "3"}, 0, "", true},
+		{"no args", nil, 0, "", true},
+	}
+	for _, c := range cases {
+		breadth, query, err := ParseDeepResearchArgs(c.args)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+			continue
+		}
+		if err == nil && (breadth != c.wantBreadth || query != c.wantQuery) {
+			t.Errorf("%s: got (%d, %q), want (%d, %q)", c.name, breadth, query, c.wantBreadth, c.wantQuery)
+		}
+	}
+}
+
+func TestBuild_DeepResearch_PassesBreadthToDirective(t *testing.T) {
+	m := MustGet("deep-research")
+	got, err := m.Build("", []string{"--breadth", "3", "compare", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "breadth set to 3") || !strings.Contains(got, `"compare x"`) {
+		t.Errorf("directive should carry breadth and the query:\n%s", got)
+	}
+	got, _ = m.Build("", []string{"compare", "x"})
+	if strings.Contains(got, "breadth") {
+		t.Errorf("no flag → no breadth in the directive (the tool default applies):\n%s", got)
+	}
+	if _, err := m.Build("", []string{"--breadth", "9", "q"}); err == nil {
+		t.Error("out-of-range breadth must be a usage error, not a clamp")
 	}
 }
 

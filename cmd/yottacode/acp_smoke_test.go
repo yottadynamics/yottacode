@@ -113,8 +113,8 @@ func TestACPSmoke(t *testing.T) {
 
 	// --- available_commands_update, pushed as a session/update right after session/new ---
 	commandNames := commandNamesFromUpdates(client.updatesSince(0))
-	if len(commandNames) != 9 {
-		t.Errorf("available_commands_update carried %d commands, want 9: %v", len(commandNames), commandNames)
+	if len(commandNames) != 10 {
+		t.Errorf("available_commands_update carried %d commands, want 10: %v", len(commandNames), commandNames)
 	}
 
 	// --- session/set_config_option: effort -> high ---

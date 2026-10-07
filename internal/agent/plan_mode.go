@@ -325,6 +325,12 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 			}
 		}
 		return planModeBlockMessage(name, planFile), true
+	case DeepResearchToolName:
+		// Needs no approval (the report write is its own, prompt-free
+		// contract) but it writes a file into the workspace, so the
+		// RequiresApproval-based read-only classification below would
+		// wrongly let it through.
+		return planModeBlockMessage(name, planFile), true
 	default:
 		if !tool.RequiresApproval(argsJSON) {
 			return "", false
