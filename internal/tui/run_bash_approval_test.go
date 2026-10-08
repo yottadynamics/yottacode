@@ -208,6 +208,45 @@ func TestRenderRunBashApproval_FlagsGitHookWrite(t *testing.T) {
 	}
 }
 
+func TestRenderRunBashApproval_GroupsSensitiveReads(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"find ~ -maxdepth 4 -print %p 2>/dev/null | sort | head -300"}`, "/home/me/project")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !strings.Contains(body, "reads ~/.yottacode/.env, ~/.yottacode/auth") {
+		t.Fatalf("sensitive reads should be grouped, got: %q", body)
+	}
+	if strings.Count(body, "reads ") != 1 {
+		t.Fatalf("expected one grouped reads warning, got: %q", body)
+	}
+}
+
+func TestWrapApprovalWarningPreservesAllPaths(t *testing.T) {
+	got := wrapApprovalWarning("reads ~/.yottacode/.env, ~/.yottacode/auth, ~/.ssh, ~/.gnupg, ~/.aws, ~/.config/gcloud", 32)
+	for _, want := range []string{"~/.yottacode/.env,", "~/.yottacode/auth,", "~/.ssh,", "~/.gnupg,", "~/.aws,", "~/.config/gcloud"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("wrapped warning lost %q: %q", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("warning line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
+func TestGroupedSensitiveWarningsKeepsHookWarningSeparate(t *testing.T) {
+	got := groupedSensitiveWarnings([]string{"reads ~/.ssh", "reads ~/.aws", "touches .git/hooks — runs on future git operations"})
+	if len(got) != 2 {
+		t.Fatalf("warning groups = %d, want 2: %v", len(got), got)
+	}
+	if got[0] != "reads ~/.ssh, ~/.aws" {
+		t.Fatalf("grouped reads = %q", got[0])
+	}
+	if !strings.HasPrefix(got[1], "touches .git/hooks") {
+		t.Fatalf("hook warning should remain separate: %q", got[1])
+	}
+}
 func TestRenderRunBashApproval_NoWarningOnBenign(t *testing.T) {
 	body, _, ok := renderRunBashApproval(`{"command":"ls -la"}`, "/home/me/proj")
 	if !ok {

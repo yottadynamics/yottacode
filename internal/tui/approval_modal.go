@@ -269,27 +269,26 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("no — reject this call")},
 	}
 	// [S] shares allowAlways's gate: it needs the same derivable pattern
-	// as [A], just kept in memory instead of written to
-	// permissions.local.json — the middle ground between "once" and
-	// "forever".
+	// as [A], just kept in memory instead of written to permissions.local.json.
 	if allowAlways {
-		sessionDesc := "session — allow " + derivedRule + " for this session"
-		alwaysDesc := "always — adds " + derivedRule
-		if rules := strings.Split(derivedRule, ", "); len(rules) > 1 {
-			// A chained command derives several rules. One per line keeps each
-			// rule whole instead of being wrapped mid-token.
-			list := "\n" + strings.Join(rules, "\n")
-			sessionDesc = "session — allow for this session:" + list
-			alwaysDesc = "always — adds:" + list
+		rules := strings.Split(derivedRule, ", ")
+		if len(rules) > 1 {
+			// Show each chained rule once; repeating the list under both
+			// actions makes one approval look like several bash approvals.
+			rows = append(rows, approvalHotkeyRow{hotkey: "", desc: styleApprovalChoiceDim.Render("rules:")})
+			for _, rule := range rules {
+				rows = append(rows, approvalHotkeyRow{hotkey: "", desc: styleApprovalChoiceDim.Render("  " + rule)})
+			}
+			rows = append(rows,
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoiceDim.Render("session — allow the rules above for this session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoiceDim.Render("always — save the rules above")},
+			)
+		} else {
+			rows = append(rows,
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoiceDim.Render("always — adds " + derivedRule)},
+			)
 		}
-		rows = append(rows, approvalHotkeyRow{
-			hotkey: styleApprovalHotkey.Render("[S]"),
-			desc:   styleApprovalChoiceDim.Render(sessionDesc),
-		})
-		rows = append(rows, approvalHotkeyRow{
-			hotkey: styleApprovalHotkey.Render("[A]"),
-			desc:   styleApprovalChoiceDim.Render(alwaysDesc),
-		})
 	}
 	if denyAlways {
 		rows = append(rows, approvalHotkeyRow{
