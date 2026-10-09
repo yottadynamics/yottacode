@@ -243,6 +243,17 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 		}
 	}
 	s.historyMu.Unlock()
+	// Refresh memory at the boundary so edits made by tools or another
+	// process are visible to the next prompt. A failed refresh must not
+	// discard the last known-good memory.
+	if mem, loadErr := memory.Load(s.rt.Session.Cwd); loadErr != nil {
+		if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("memory refresh: %w", loadErr)}); err != nil {
+			return coderacp.PromptResponse{}, err
+		}
+	} else {
+		s.rt.Mem = mem
+	}
+
 	// Retrieval is best-effort and must not delay ACP prompt startup for the
 	// provider's full request deadline (a cold embedding service can be slow).
 	// The TUI uses the same semantic path, but its turn UI remains responsive;
@@ -304,13 +315,23 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			case decisions <- d:
 			default: // turn already ended; drop rather than block
 			}
-		case agent.PathTrustElevationNeeded:
-			d := requestPathElevation(turnCtx, conn, s.id, e)
-			select {
-			case decisions <- d:
-			default:
+		case agent.ErrorEvent:
+			if note := correctWindow(s.rt, nil, adapter.IsContextOverflow(e.Err)); note != "" && updateErr == nil {
+				_ = emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))})
+			}
+			if updateErr == nil {
+				if err := emitUpdate(ctx, conn, s.id, tracker, e); err != nil {
+					updateErr = err
+				}
 			}
 		default:
+			if msg, ok := ev.(agent.AssistantMessage); ok {
+				if note := correctWindow(s.rt, msg.Message.Usage, false); note != "" && updateErr == nil {
+					if err := emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+						updateErr = err
+					}
+				}
+			}
 			if updateErr == nil {
 				if err := emitUpdate(ctx, conn, s.id, tracker, ev); err != nil {
 					// A broken transport must stop the provider promptly, but we
@@ -358,6 +379,13 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 	if persistErr != nil {
 		if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("session persistence: %w", persistErr)}); err != nil {
 			return coderacp.PromptResponse{}, err
+		}
+	}
+	if turnErr != nil && adapter.IsContextOverflow(turnErr) {
+		if note := correctWindow(s.rt, nil, true); note != "" {
+			if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+				return coderacp.PromptResponse{}, err
+			}
 		}
 	}
 	if updateErr != nil {

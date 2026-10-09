@@ -152,6 +152,13 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 		s.mu.Unlock()
 		return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send available commands: " + err.Error()})
 	}
+	if s.conn != nil {
+		for _, warning := range rt.Warnings {
+			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText("[warning] "+truncateOneLine(warning, 240)+"\n")); err != nil {
+				return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send warning: " + err.Error()})
+			}
+		}
+	}
 	return coderacp.NewSessionResponse{
 		SessionId:     coderacp.SessionId(rt.Session.ID),
 		Modes:         sessionModeState(rt),

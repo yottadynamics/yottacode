@@ -177,13 +177,23 @@ func emitUpdate(ctx context.Context, conn *coderacp.AgentSideConnection, session
 		}
 		return diag("[provider-tool] %s %s\n", e.ToolName, e.Phase)
 
+	case agent.ContextUsage:
+		return diag("[context] %d/%d tokens\n", e.Tokens, e.Window)
+	case agent.ContextCompacted:
+		if e.Err != nil {
+			return diag("[context] compaction failed%s: %s\n", forcedSuffix(e.Forced), truncateOneLine(e.Err.Error(), 160))
+		}
+		return diag("[context] compacted %d → %d tokens%s\n", e.Before, e.After, forcedSuffix(e.Forced))
+	case agent.AssistantMessage:
+		return nil
+
 	// Diagnostic/internal event kinds beyond the original roadmap
 	// mapping table — no ACP counterpart in v1, dropped silently rather
 	// than spamming agent_message_chunk noise for every token-budget
 	// tick.
-	case agent.IterationStart, agent.IterationContinue, agent.ContextUsage,
-		agent.StreamProgress, agent.ContextCompacted, agent.CwdChanged,
-		agent.CheckpointInfo, agent.UserMessageAppended, agent.AssistantMessage:
+	case agent.IterationStart, agent.IterationContinue,
+		agent.StreamProgress, agent.CwdChanged,
+		agent.CheckpointInfo, agent.UserMessageAppended:
 		return nil
 
 	// TurnDone/TurnInterrupted map to the Prompt response itself (see
@@ -228,4 +238,11 @@ func truncateOneLine(s string, max int) string {
 		return string(clean)
 	}
 	return string(clean[:max]) + "…"
+}
+
+func forcedSuffix(forced bool) string {
+	if forced {
+		return " (forced)"
+	}
+	return ""
 }
