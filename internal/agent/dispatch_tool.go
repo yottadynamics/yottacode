@@ -35,6 +35,14 @@ const maxDispatchReplyChars = 4000
 // request.
 const MaxDispatchTasksPerCall = 8
 
+// maxWorkers resolves the effective per-call subtask cap.
+func (t *DispatchTool) maxWorkers() int {
+	if t.MaxWorkers > 0 && t.MaxWorkers < MaxDispatchTasksPerCall {
+		return t.MaxWorkers
+	}
+	return MaxDispatchTasksPerCall
+}
+
 // dispatchFinalizeTimeout bounds commit/classification and cleanup after child
 // cancellation. These operations ignore the parent cancellation long enough to
 // save recoverable work, but must not keep shutdown alive indefinitely.
@@ -75,6 +83,10 @@ type DispatchTool struct {
 	// Enabled gates the tool behind the `dispatch` experimental feature.
 	// When false, Execute returns a recoverable error string.
 	Enabled bool
+
+	// MaxWorkers lowers the per-call subtask cap ([dispatch] max_workers).
+	// <=0 or above MaxDispatchTasksPerCall uses MaxDispatchTasksPerCall.
+	MaxWorkers int
 
 	// EnableSyntaxRanges lets dispatch workers use the same offline range-selection surface.
 	EnableSyntaxRanges bool
@@ -274,8 +286,8 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		return "error: dispatch needs at least 2 tasks (use the Agent tool for a single subagent)", nil
 	}
 
-	if len(a.Tasks) > MaxDispatchTasksPerCall {
-		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", MaxDispatchTasksPerCall, len(a.Tasks)), nil
+	if limit := t.maxWorkers(); len(a.Tasks) > limit {
+		return fmt.Sprintf("error: dispatch supports at most %d concurrent subtasks (got %d); split into smaller batches", limit, len(a.Tasks)), nil
 	}
 
 	// Session-wide token budget, same backstop the Agent tool applies at spawn
@@ -410,6 +422,13 @@ func (t *DispatchTool) Execute(ctx context.Context, argsJSON string) (string, er
 		if _, err := gitOutput(ctx, repoRoot, "worktree", "add", "-b", branch, wtDir, baseSHA); err != nil {
 			cleanup()
 			return fmt.Sprintf("error: failed to create worktree for task %d (%s): %v", i+1, c.spec.Description, err), nil
+		}
+		// Persist provenance in the repository-local config so crash cleanup can
+		// distinguish dispatch-owned branches from user-created lookalikes.
+		if _, err := gitOutput(ctx, repoRoot, "config", "yottacode.dispatch-worktree."+branch, wtDir); err != nil {
+			_ = worktree.Remove(context.WithoutCancel(ctx), repoRoot, wtDir, true)
+			cleanup()
+			return fmt.Sprintf("error: failed to record dispatch worktree ownership for task %d: %v", i+1, err), nil
 		}
 		created = append(created, wtDir)
 		c.branch = branch

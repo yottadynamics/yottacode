@@ -16,13 +16,15 @@ func isolatedHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv(EnvProvider, "")
 	return dir
 }
 
 func TestResolve_FlagsWinOverEnv(t *testing.T) {
-	isolatedHome(t)
 	t.Setenv(EnvModel, "env-model")
 	t.Setenv(EnvBaseURL, "http://env/v1")
+	t.Setenv(EnvAPIKey, "env-key")
+
 	t.Setenv(EnvAPIKey, "env-key")
 
 	opts := ChatOptions{

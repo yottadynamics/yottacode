@@ -401,6 +401,11 @@ func TestReclaimOrphanDispatchWorktrees_Sweep(t *testing.T) {
 		}
 	}
 	userWorktree := mkWorktree("my-feature")
+	for _, name := range []string{"dispatch-orphan-1", "dispatch-orphan-2", "dispatch-orphan-3"} {
+		if _, err := gitOutput(ctx, repoRoot, "config", "yottacode.dispatch-worktree."+worktree.Branch(name), worktree.Dir(repoRoot, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// No registry involved at all — that is the point of this sweep.
 	if n := ReclaimOrphanDispatchWorktrees(ctx, repoRoot); n != 1 {
