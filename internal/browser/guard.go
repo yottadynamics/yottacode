@@ -138,8 +138,13 @@ func startGuard(ctx context.Context, profile string, policy *netPolicy, onBlock 
 		g.close()
 		return nil, fmt.Errorf("guard auto-attach: %w", err)
 	}
-	// attachedToTarget for existing targets precedes the reply on the wire, so
-	// every one of them is already counted here.
+	// attachedToTarget for existing targets precedes the reply on the wire.
+	// Use a second browser-level command as a protocol barrier; the reply
+	// guarantees the read loop has received the initial attachment events.
+	if _, err := g.call(cctx, "", "Target.getTargets", nil); err != nil {
+		g.close()
+		return nil, fmt.Errorf("guard target barrier: %w", err)
+	}
 	g.attaching.Wait()
 	return g, nil
 }
