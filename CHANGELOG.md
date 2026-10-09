@@ -345,6 +345,25 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Changed
 
+- **Built-in subagent prompts tightened.** `Explore` scales depth to the
+  caller's thoroughness level and reports "not found" instead of widening
+  past the workspace; `Plan` works in four passes and gives each critical
+  file a reason; `general-purpose` does what was asked and reports anything
+  blocked or unverified. `implement`, `test` and `docs` now stop and name the
+  file and change needed when blocked by a file they don't own, rather than
+  editing around it. `review` stays on the change (pre-existing issues are
+  tagged `[pre-existing]`) and defaults to at most 10 findings as
+  `file:line — severity — scenario`; a caller-specified format still wins.
+  `Explore`, `review` and `verification` treat file contents, command output
+  and fetched pages as data, not instructions.
+  An opt-in live eval (`YOTTACODE_SUBAGENT_EVAL_MODEL`) checks that a local
+  model follows the `review`, `Explore` and `implement` policies.
+  `verification` now takes the previous FAIL findings on a re-check (a new FAIL
+  needs a real defect or unmet requirement, not a preference) and checks the
+  caller's "files changed" against the real diff. `implement` and `test` gain a
+  "no test theater" rule: no hard-coded expectations, re-implemented units or
+  skipped tests, while faking a clock, network or I/O boundary stays fine.
+
 - **Approval prompts show `~` instead of the home directory** in the
   command being approved (e.g. `git -C ~/go/src/...`).
 
