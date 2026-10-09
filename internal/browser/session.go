@@ -735,6 +735,13 @@ func classifySelectorErr(err error) error {
 	return err
 }
 
+func isExecutionContextGone(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "cannot find context with specified id") || strings.Contains(message, "execution context was destroyed")
+}
 func classifyDownloadErr(err error) error {
 	if err == nil {
 		return nil
@@ -747,6 +754,7 @@ func classifyDownloadErr(err error) error {
 	}
 	return err
 }
+
 func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, error) {
 	p := s.activePage()
 	c, cancel := actionContext(p.ctx, ctx)
@@ -1059,43 +1067,41 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 	p := s.activePage()
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	c, timeoutCancel := context.WithTimeout(c, d)
-	defer timeoutCancel()
+	c, tc := context.WithTimeout(c, d)
+	defer tc()
 	if idle {
 		if e := s.waitNetworkIdle(c, p, 500*time.Millisecond); e != nil {
 			return classifyErr(e, ErrNavigationTimeout)
 		}
 	}
 	if sel != "" {
-		inner, opts, err := s.query(c, sel)
-		if err != nil {
-			return err
+		inner, opts, e := s.query(c, sel)
+		if e != nil {
+			return e
 		}
-		if e := chromedp.Run(c, chromedp.WaitVisible(inner, opts...)); e != nil {
+		if e = chromedp.Run(c, chromedp.WaitVisible(inner, opts...)); e != nil {
 			return classifySelectorErr(e)
 		}
 	}
 	if text != "" {
-		// With "frame >>> x" the text is looked for inside that frame rather
-		// than in the top document.
 		if frames, _ := splitFrames(sel); len(frames) > 0 {
 			return s.waitFrameText(c, strings.Join(frames, " "+frameSep+" "), text)
 		}
-		// Text can be updated asynchronously by the page after an action.
-		// Watch for it with a MutationObserver running inside the page
-		// (Poll+WithPollingMutation) instead of round-tripping a fresh CDP
-		// Evaluate call every N milliseconds from Go: each round trip pays
-		// full IPC/serialization latency, and a page that's slow to render
-		// (a freshly headed, software-rendered Chrome under Xvfb, say) can
-		// make that latency stretch to hundreds of milliseconds, silently
-		// starving the number of checks a fixed-interval Go-side poll gets
-		// to make before the deadline. The in-page observer fires on the
-		// actual DOM mutation, so detection latency no longer depends on
-		// how slow or fast the CDP round trip happens to be that day.
-		// Bounded by c's own deadline (set to d above), not a separate
-		// timeout — no second timer to race against it.
-		predicate := fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text)
-		if e := chromedp.Run(c, chromedp.Poll(predicate, nil, chromedp.WithPollingMutation())); e != nil {
+		pred := fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text)
+		deadline := time.Now().Add(d)
+		for {
+			e := chromedp.Run(c, chromedp.Poll(pred, nil, chromedp.WithPollingMutation()))
+			if e == nil {
+				break
+			}
+			if isExecutionContextGone(e) && time.Now().Before(deadline) {
+				select {
+				case <-c.Done():
+					return classifySelectorErr(c.Err())
+				case <-time.After(50 * time.Millisecond):
+				}
+				continue
+			}
 			if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, chromedp.ErrPollingTimeout) {
 				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
 			}
@@ -1109,10 +1115,6 @@ func (s *session) tabs(ctx context.Context) []TabInfo {
 	p := append([]*trackedPage(nil), s.pages...)
 	a := s.active
 	s.mu.Unlock()
-
-	// Read tab metadata from the browser-level target registry. Querying each
-	// page target can block forever when Chrome has created a popup target but
-	// has not finished attaching its renderer, which makes browser_tabs hang.
 	lookupCtx, cancel := context.WithTimeout(s.browserCtx, 2*time.Second)
 	defer cancel()
 	infos, _ := target.GetTargets().Do(cdp.WithExecutor(lookupCtx, s.browser))
