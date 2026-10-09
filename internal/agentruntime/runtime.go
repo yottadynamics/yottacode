@@ -601,6 +601,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(agentTool)
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 	rt.AgentTool = agentTool
+	reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})
 
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{

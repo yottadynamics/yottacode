@@ -346,8 +346,8 @@ func TestApprovalDenyToast_ContainsRule(t *testing.T) {
 	}
 }
 
-// A chained command derives several comma-joined rules; the [S]/[A] rows must
-// still fit the terminal at narrow widths instead of widening the box.
+// A chained command derives several comma-joined rules. The rule list is
+// shown once, while [S]/[A] describe the two scopes that can apply it.
 func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 	for _, width := range []int{50, 60, 80, 120} {
 		m := newTestModel(t)
@@ -365,12 +365,14 @@ func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
 			}
 		}
-		// Each rule stays whole on a line of its own (twice: [S] and [A]).
 		plain := ansi.Strip(out)
 		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
-			if n := strings.Count(plain, rule); n != 2 {
-				t.Errorf("width %d: rule %q appears whole %d times, want 2 (one per [S]/[A] row)", width, rule, n)
+			if n := strings.Count(plain, rule); n != 1 {
+				t.Errorf("width %d: rule %q appears whole %d times, want exactly 1 shared rule summary", width, rule, n)
 			}
+		}
+		if !strings.Contains(plain, "session — allow the rules above") || !strings.Contains(plain, "always — save the rules above") {
+			t.Errorf("width %d: scope actions should refer to the shared rule summary: %q", width, plain)
 		}
 	}
 }

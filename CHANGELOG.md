@@ -8,6 +8,7 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-browser-production-hardening
 - **Browser (experimental): pages can no longer reach your machine or
   network through the browser.** Every request a page makes (redirects,
   subresources, `fetch`, iframes, WebSockets) is checked before it leaves
@@ -33,7 +34,35 @@ the project uses semantic versioning once it's past `1.0.0`.
   `yottacode doctor` gains a Browser section (binary, version, root/container
   warnings) when the feature is enabled; launch failures as root now say why.
   See `docs/browser.md`.
-
+- **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
+  (default 4) independent sub-questions, runs read-only web researchers in
+  parallel, has two verifiers independently re-check every claim, then writes a
+  cited markdown report to `deep-research-<slug>.md` in the current directory
+  and shows a short summary. The structure follows the deep-research workflow
+  in Grok's CLI.
+  - The workflow is the deterministic `deep_research` tool, not a prompt:
+    sub-agent JSON (schemas defined once in Go), verdict claim IDs and `[Sn]`
+    citation markers are validated in code, and a failed shard or synthesis
+    degrades the report to "Partial" with coverage notes. The researchers' own
+    stated uncertainties are listed but do not make a run Partial. Control
+    characters in text from sub-agents are stripped before it reaches the report
+    or the terminal.
+  - In the TUI it is one background task (a Workflows card in the dock shows
+    the phase, agents running/done and elapsed time; `/subagents` stops it) and
+    costs no model turn at either end: the TUI starts the run (with a
+    `/checkpoints` entry), prints the summary and records both in history. One
+    run is allowed per session. Plan mode, `yottacode run` and ACP use the
+    model-driven blocking path.
+  - Every result ends with a cost line: agent runs, and tokens split by agent
+    type.
+  - New builtin subagents: `research-planner`, `researcher`,
+    `research-verifier`, `research-synthesizer`. New agent-definition field
+    `max_iterations` lowers an agent's iteration budget (never raises the
+    session cap); the researcher and verifier use 30 and are not retried when
+    they hit it.
+  - `web_search` is classified read-only for subagent posture but, like
+    `fetch_url`, stays off the unattended background allowlist.
+  - See `docs/deep-research.md`.
 - **Approval prompts can save a rule for more tools and for chained
   commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
   now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb

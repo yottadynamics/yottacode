@@ -106,6 +106,18 @@ var registry = []Macro{
 		},
 	},
 	{
+		Name:        "deep-research",
+		Description: "deep research with parallel subagents, validating every claim before writing the report",
+		ArgHint:     "[--breadth 2-6] <question>",
+		Build: func(cwd string, args []string) (string, error) {
+			breadth, query, err := ParseDeepResearchArgs(args)
+			if err != nil {
+				return "", err
+			}
+			return DeepResearchDirective(query, breadth), nil
+		},
+	},
+	{
 		Name:        "git-implement-issue",
 		Description: "implement a GitHub issue end-to-end: fetch → plan → branch → code → tests → commit → push → draft PR",
 		ArgHint:     "<n>",

@@ -88,6 +88,22 @@ func (t *AgentTool) foregroundCap() int {
 // the child's tokens and drops review coverage.
 const childIterationCap = 100
 
+// iterCapMarker is the text a child's result carries when it ran out of
+// iterations before producing a final reply. Callers that retry on a bad
+// reply (deep_research) must not retry on this: the retry would burn a second
+// full budget to fail the same way.
+const iterCapMarker = "subagent hit iteration cap before producing a final reply"
+
+// childIterationBudget is a child's iteration budget: the session cap, or a
+// lower per-agent `max_iterations` from its definition. A definition can only
+// lower the cap — children must stay bounded even when their file asks for more.
+func childIterationBudget(cfg *subagents.AgentConfig) int {
+	if cfg != nil && cfg.MaxIterations > 0 && cfg.MaxIterations < childIterationCap {
+		return cfg.MaxIterations
+	}
+	return childIterationCap
+}
+
 // childActivityTranscriptHeader is the literal header prefixing every
 // subagent transcript file. The visible separator makes it obvious
 // where the prompt ends and the run begins when the user `cat`s the
@@ -611,6 +627,7 @@ var readOnlyChildTools = map[string]bool{
 	"list_git_changed_files":        true,
 	"git_merge_base":                true,
 	"fetch_url":                     true,
+	"web_search":                    true,
 	"todo_write":                    true,
 	"session_recall":                true,
 	"memory_search":                 true,
@@ -855,7 +872,7 @@ func (t *AgentTool) runChild(
 		Permissions:       t.Permissions,
 		BypassPermissions: false, // children never blanket-bypass; background workers gate via BackgroundApprovalPolicy (see below), and the run_bash hardline floor + worktree write-confinement still apply
 		Cwd:               childCwd,
-		MaxIterations:     childIterationCap,
+		MaxIterations:     childIterationBudget(cfg),
 		// Pin the child's iteration budget to childIterationCap. The
 		// child inherits the parent's AutoMode/YoloMode pointers for
 		// approval behavior, but FixedIterationCap stops loop.go from
@@ -1250,7 +1267,7 @@ func (t *AgentTool) runChild(
 		result, errored, status = msg, true, subagents.TaskErrored
 		outcome = "runner_errored: " + turnErr.Error()
 	case hitIterCap:
-		msg := "subagent hit iteration cap before producing a final reply"
+		msg := iterCapMarker
 		if final != "" {
 			msg = final + "\n\n[" + msg + "]"
 		}
@@ -1345,7 +1362,7 @@ func safeUnattendedReadOnlyTool(name string) bool {
 	if !readOnlyChildTools[name] {
 		return false
 	}
-	if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "git_") || name == "list_git_changed_files" || name == "fetch_url" || name == "read_document" || name == "search_document" || name == "pr_readiness_context" {
+	if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "git_") || name == "list_git_changed_files" || name == "fetch_url" || name == "web_search" || name == "read_document" || name == "search_document" || name == "pr_readiness_context" {
 		return false
 	}
 	return name != ConsultAdvisorToolName
@@ -1483,7 +1500,7 @@ func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 }
 
 func isDelegationTool(name string) bool {
-	return name == agentToolName || name == DispatchToolName || name == IntegrateToolName
+	return name == agentToolName || name == DispatchToolName || name == IntegrateToolName || name == DeepResearchToolName
 }
 
 func (t *AgentTool) unknownSubagentError(name string) string {
