@@ -185,6 +185,9 @@ func emitUpdate(ctx context.Context, conn *coderacp.AgentSideConnection, session
 		}
 		return diag("[context] compacted %d → %d tokens%s\n", e.Before, e.After, forcedSuffix(e.Forced))
 	case agent.AssistantMessage:
+		// The event is intentionally not surfaced as a second ACP text chunk;
+		// the stream already delivered the assistant content and the saved
+		// session contains the complete message.
 		return nil
 
 	// Diagnostic/internal event kinds beyond the original roadmap

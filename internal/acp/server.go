@@ -155,6 +155,10 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 	if s.conn != nil {
 		for _, warning := range rt.Warnings {
 			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText("[warning] "+truncateOneLine(warning, 240)+"\n")); err != nil {
+				rt.Close(context.Background())
+				s.mu.Lock()
+				delete(s.sessions, rt.Session.ID)
+				s.mu.Unlock()
 				return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send warning: " + err.Error()})
 			}
 		}

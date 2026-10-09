@@ -317,7 +317,9 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			}
 		case agent.ErrorEvent:
 			if note := correctWindow(s.rt, nil, adapter.IsContextOverflow(e.Err)); note != "" && updateErr == nil {
-				_ = emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))})
+				if err := emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+					updateErr = err
+				}
 			}
 			if updateErr == nil {
 				if err := emitUpdate(ctx, conn, s.id, tracker, e); err != nil {
