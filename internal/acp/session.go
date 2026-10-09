@@ -13,6 +13,9 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
+	"github.com/yottadynamics/yottacode/internal/checkpoint"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"github.com/yottadynamics/yottacode/internal/memory"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -50,9 +53,13 @@ type acpSession struct {
 	mu         syncutil.Mutex
 	cancel     context.CancelFunc
 	turnActive bool
-
+	closed     bool
+	closing    bool
+	historyMu  syncutil.Mutex
+	// lifecycle serializes a prompt with session replacement and teardown.
+	lifecycle syncutil.Mutex
 	// turnWG tracks the in-flight prompt() call, if any — CloseSession
-	// and Shutdown wait on it (bounded by closeSessionDrainTimeout)
+
 	// before exporting/saving so they never read rt.Session.Messages
 	// while the turn goroutine is still mutating it.
 	turnWG sync.WaitGroup
@@ -63,7 +70,7 @@ type acpSession struct {
 // deadline (e.g. cmd/yottacode/acp.go's acpShutdownTimeout, threaded
 // through Shutdown/CloseSession) bounds the wait too, not just the fixed
 // closeSessionDrainTimeout ceiling.
-func (s *acpSession) waitForTurn(ctx context.Context, timeout time.Duration) {
+func (s *acpSession) waitForTurn(ctx context.Context, timeout time.Duration) bool {
 	done := make(chan struct{})
 	go func() {
 		s.turnWG.Wait()
@@ -73,13 +80,25 @@ func (s *acpSession) waitForTurn(ctx context.Context, timeout time.Duration) {
 	defer timer.Stop()
 	select {
 	case <-done:
+		return true
 	case <-timer.C:
+		return false
 	case <-ctx.Done():
+		return false
 	}
 }
 
 func newACPSession(srv *Server, rt *agentruntime.Runtime) *acpSession {
-	return &acpSession{id: rt.Session.ID, srv: srv, rt: rt}
+	// Checkpoint setup is soft, matching the TUI: an unavailable store must
+	// not make an ACP session unusable.
+	if cp, err := checkpoint.New(""); err == nil {
+		rt.Cfg.Checkpoints = cp
+	}
+	sess := &acpSession{srv: srv, rt: rt, id: rt.Session.ID}
+	// Agent.Turn uses this lock for every history mutation, keeping ACP's
+	// per-turn persistence and prompt recomposition from racing the loop.
+	rt.Cfg.HistoryLock = &sess.historyMu
+	return sess
 }
 
 // setCancel installs the current turn's cancel func (or clears it with
@@ -105,10 +124,12 @@ func (s *acpSession) setCancel(cancel context.CancelFunc) context.CancelFunc {
 func (s *acpSession) claimTurn() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.turnActive {
+	if s.turnActive || s.closed || s.closing {
 		return false
 	}
 	s.turnActive = true
+	// Add under the lifecycle lock so close/load cannot race Wait with Add.
+	s.turnWG.Add(1)
 	return true
 }
 
@@ -116,6 +137,7 @@ func (s *acpSession) claimTurn() bool {
 func (s *acpSession) releaseTurn() {
 	s.mu.Lock()
 	s.turnActive = false
+	s.turnWG.Done()
 	s.mu.Unlock()
 }
 
@@ -169,9 +191,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "a turn is already in progress for this session"})
 	}
 	defer s.releaseTurn()
-
-	s.turnWG.Add(1)
-	defer s.turnWG.Done()
+	s.mu.Lock()
+	closing := s.closing || s.closed
+	s.mu.Unlock()
+	if closing {
+		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "session is closing"})
+	}
 
 	text, err := promptText(params.Prompt)
 	if err != nil {
@@ -192,14 +217,61 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 		}
 		text = built
 	}
+
+	// Resolve @file references into the system prompt, never into the
+	// persisted user text. Failures are ordinary diagnostic updates.
+	refs := filerefs.Load(filerefs.Parse(text), s.rt.Session.Cwd)
+	for _, ref := range refs {
+		if ref.Error != "" {
+			if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("file reference %s: %s", ref.Token, ref.Error)}); err != nil {
+				return coderacp.PromptResponse{}, err
+			}
+		}
+	}
+	text = filerefs.Rewrite(text, refs)
+
+	// Capture the pre-turn conversation before appending the user message.
+	var checkpointID string
+	s.historyMu.Lock()
+	if cp, ok := s.rt.Cfg.Checkpoints.(*checkpoint.Store); ok && cp != nil {
+		id, err := cp.Begin(s.rt.Session.ID, text, len(s.rt.Session.Messages), s.rt.Session.Messages)
+		if err == nil {
+			checkpointID = id
+		} else if e := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("checkpoint unavailable: %w", err)}); e != nil {
+			s.historyMu.Unlock()
+			return coderacp.PromptResponse{}, e
+		}
+	}
+	s.historyMu.Unlock()
+	// Refresh memory at the boundary so edits made by tools or another
+	// process are visible to the next prompt. A failed refresh must not
+	// discard the last known-good memory.
+	if mem, loadErr := memory.Load(s.rt.Session.Cwd); loadErr != nil {
+		if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("memory refresh: %w", loadErr)}); err != nil {
+			return coderacp.PromptResponse{}, err
+		}
+	} else {
+		s.rt.Mem = mem
+	}
+
+	// Retrieval is best-effort and must not delay ACP prompt startup for the
+	// provider's full request deadline (a cold embedding service can be slow).
+	// The TUI uses the same semantic path, but its turn UI remains responsive;
+	// bound this headless preparation explicitly.
+	retrievalCtx, retrievalCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	base := memory.SystemPromptForSemantic(retrievalCtx, s.rt.BaseSystemPrompt, s.rt.Mem, text, s.rt.FileCfg.Retrieval, s.rt.EmbedClient)
+	retrievalCancel()
+	base = filerefs.Inject(base, refs)
+	s.historyMu.Lock()
+	if len(s.rt.Session.Messages) > 0 && s.rt.Session.Messages[0].Role == adapter.RoleSystem {
+		s.rt.Session.Messages[0].Content = base
+	}
 	submitted := time.Now()
-	s.rt.Session.Messages = append(s.rt.Session.Messages, adapter.Message{
-		Role:      adapter.RoleUser,
-		Content:   text,
-		Timestamp: &submitted,
-	})
+	s.rt.Session.Messages = append(s.rt.Session.Messages, adapter.Message{Role: adapter.RoleUser, Content: text, Timestamp: &submitted})
+	s.historyMu.Unlock()
 
 	turnCtx, cancel := context.WithCancel(ctx)
+	turnCtx = agent.WithCheckpoint(turnCtx, s.rt.Session.ID, checkpointID)
 	if prev := s.setCancel(cancel); prev != nil {
 		// Shouldn't happen — an ACP client is expected to wait for a
 		// session/prompt response before sending another for the same
@@ -234,6 +306,7 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 
 	tracker := newToolCallTracker()
 	lastMode := currentModeID(s.rt)
+	var updateErr error
 	for ev := range events {
 		switch e := ev.(type) {
 		case agent.ApprovalNeeded:
@@ -242,14 +315,34 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			case decisions <- d:
 			default: // turn already ended; drop rather than block
 			}
-		case agent.PathTrustElevationNeeded:
-			d := requestPathElevation(turnCtx, conn, s.id, e)
-			select {
-			case decisions <- d:
-			default:
+		case agent.ErrorEvent:
+			if note := correctWindow(s.rt, nil, adapter.IsContextOverflow(e.Err)); note != "" && updateErr == nil {
+				if err := emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+					updateErr = err
+				}
+			}
+			if updateErr == nil {
+				if err := emitUpdate(ctx, conn, s.id, tracker, e); err != nil {
+					updateErr = err
+				}
 			}
 		default:
-			_ = emitUpdate(ctx, conn, s.id, tracker, ev)
+			if msg, ok := ev.(agent.AssistantMessage); ok {
+				if note := correctWindow(s.rt, msg.Message.Usage, false); note != "" && updateErr == nil {
+					if err := emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+						updateErr = err
+					}
+				}
+			}
+			if updateErr == nil {
+				if err := emitUpdate(ctx, conn, s.id, tracker, ev); err != nil {
+					// A broken transport must stop the provider promptly, but we
+					// still drain events so the turn goroutine can unwind before
+					// this method returns.
+					updateErr = err
+					s.requestCancel()
+				}
+			}
 			// The model can flip Plan mode itself mid-turn by calling
 			// enter_plan_mode/exit_plan_mode (see
 			// internal/agent/enter_plan_mode_tool.go,
@@ -274,6 +367,38 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 	}
 
 	turnErr := <-errCh
+	// Take an immutable snapshot while holding historyMu, then perform disk and
+	// recall I/O without blocking the agent loop on the history lock.
+	s.historyMu.Lock()
+	s.rt.Session.SubagentTasks = s.rt.SubagentTasks.Export()
+	snapshot := *s.rt.Session
+	snapshot.Messages = append([]adapter.Message(nil), s.rt.Session.Messages...)
+	s.historyMu.Unlock()
+	persistErr := snapshot.Save()
+	if persistErr == nil && s.rt.RecallIndex != nil {
+		persistErr = s.rt.RecallIndex.IndexSession(&snapshot)
+	}
+	if persistErr != nil {
+		if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("session persistence: %w", persistErr)}); err != nil {
+			return coderacp.PromptResponse{}, err
+		}
+	}
+	if turnErr != nil && adapter.IsContextOverflow(turnErr) {
+		if note := correctWindow(s.rt, nil, true); note != "" {
+			if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
+				return coderacp.PromptResponse{}, err
+			}
+		}
+	}
+	// Cancellation is a normal ACP stop reason. Prefer it over a transport
+	// error caused by trying to emit the agent's cancellation event while the
+	// same turn is unwinding.
+	if errors.Is(turnErr, context.Canceled) {
+		return coderacp.PromptResponse{StopReason: coderacp.StopReasonCancelled}, nil
+	}
+	if updateErr != nil {
+		return coderacp.PromptResponse{}, updateErr
+	}
 	switch {
 	case turnErr == nil:
 		return coderacp.PromptResponse{StopReason: coderacp.StopReasonEndTurn}, nil
@@ -325,25 +450,51 @@ func (s *Server) CloseSession(ctx context.Context, params coderacp.CloseSessionR
 	if !ok {
 		return coderacp.CloseSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
 	}
+	sess.mu.Lock()
+	if sess.closed || sess.closing {
+		sess.mu.Unlock()
+		return coderacp.CloseSessionResponse{}, nil
+	}
+	// Mark closing before waiting for lifecycle. A prompt that is queued but
+	// has not claimed lifecycle will reject immediately; an active prompt will
+	// be cancelled once it releases lifecycle.
+	sess.closing = true
+	sess.mu.Unlock()
+	sess.lifecycle.Lock()
+	defer sess.lifecycle.Unlock()
 	sess.requestCancel()
-	sess.waitForTurn(ctx, closeSessionDrainTimeout)
-
-	// Persist the subagent task index alongside the session so its
-	// task-ids resolve on a later session/load.
+	if !sess.waitForTurn(ctx, closeSessionDrainTimeout) {
+		// Never persist mutable history while the turn may still be appending.
+		sess.mu.Lock()
+		sess.closing = false
+		sess.mu.Unlock()
+		return coderacp.CloseSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "timed out draining session turn"})
+	}
+	sess.mu.Lock()
+	sess.closed = true
+	sess.mu.Unlock()
+	sess.historyMu.Lock()
 	sess.rt.Session.SubagentTasks = sess.rt.SubagentTasks.Export()
-	// Only sessions that actually held an exchange get written — an ACP
-	// client that calls session/new and closes it without ever prompting
-	// must not leave a system-prompt-only shell in ~/.yottacode/sessions
-	// (same rationale as internal/tui/run.go's own at-exit save gate).
-	// Save before unregistering so a disk error leaves the live session
-	// reachable for retry or Shutdown rather than dropping in-memory state.
-	if sess.rt.Session.HasExchange() {
-		if err := sess.rt.Session.Save(); err != nil {
-			return coderacp.CloseSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "save session: " + err.Error()})
-		}
+	snapshot := *sess.rt.Session
+	snapshot.Messages = append([]adapter.Message(nil), sess.rt.Session.Messages...)
+	sess.historyMu.Unlock()
+	var saveErr error
+	if snapshot.HasExchange() {
+		saveErr = snapshot.Save()
+	}
+	if saveErr != nil {
+		// Restore the lifecycle claim if persistence failed; callers can retry
+		// closing the still-live session without racing a second teardown.
+		sess.mu.Lock()
+		sess.closed = false
+		sess.closing = false
+		sess.mu.Unlock()
+		return coderacp.CloseSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "save session: " + saveErr.Error()})
 	}
 
-	sess.rt.Close(context.Background())
+	closeCtx, cancel := context.WithTimeout(ctx, closeSessionDrainTimeout)
+	defer cancel()
+	sess.rt.Close(closeCtx)
 
 	s.mu.Lock()
 	delete(s.sessions, id)

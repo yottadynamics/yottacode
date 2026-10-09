@@ -116,7 +116,11 @@ func TestPrompt_ContentStreamsToClientAsAgentMessageChunks(t *testing.T) {
 	var text strings.Builder
 	for _, u := range h.client.Updates() {
 		if u.Update.AgentMessageChunk != nil && u.Update.AgentMessageChunk.Content.Text != nil {
-			text.WriteString(u.Update.AgentMessageChunk.Content.Text.Text)
+			chunk := u.Update.AgentMessageChunk.Content.Text.Text
+			if strings.HasPrefix(chunk, "[context]") || strings.HasPrefix(chunk, "[warning]") {
+				continue
+			}
+			text.WriteString(chunk)
 		}
 	}
 	if got := text.String(); got != "Hello" {
