@@ -248,6 +248,23 @@ func (s *Set) UnknownNames() []string {
 	return out
 }
 
+// Resolve builds the active Set from config.toml's [experimental] table and the
+// names already merged from --experimental and $YOTTACODE_EXPERIMENTAL (see
+// cli.Resolve). Every consumer — the session and `yottacode doctor` — goes
+// through this one function so they cannot disagree about what is enabled.
+func Resolve(cfg map[string]bool, names []string) *Set {
+	s := NewSet()
+	for name, on := range cfg {
+		if on {
+			s.Enable(name)
+		}
+	}
+	for _, name := range names {
+		s.Enable(name)
+	}
+	return s
+}
+
 // Parse merges a comma-separated list of feature names into s.
 // Whitespace around names is trimmed; empty entries are skipped;
 // unknown names go to UnknownNames. Useful for env vars and any

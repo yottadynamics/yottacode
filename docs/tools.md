@@ -133,6 +133,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_download`](#browser_download) | required | Experimental behind `browser`; trigger a download (via click or url) and save it to a local path |
 | [`browser_console_logs`](#browser_console_logs) | required | Experimental behind `browser`; return buffered console.* calls and uncaught exceptions from the active page |
 | [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
+| [`browser_select`](#browser_select) | required | Experimental behind `browser`; choose an option of a `<select>` dropdown by value or label |
+| [`browser_response_body`](#browser_response_body) | required | Experimental behind `browser`; return the body of a network response the page received |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2298,7 +2300,14 @@ screenshot.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `selector` | string | — | CSS selector to scope the snapshot to that element's subtree |
+| `selector` | string | — | Scope the snapshot to that element's subtree (CSS, `ref=eN`, or `iframe >>> css` — see [browser.md](browser.md#selectors)) |
+
+Interactive elements (buttons, links, inputs, dropdowns, tabs, …) are tagged `[ref=eN]`. Pass `ref=eN` as the selector of `browser_click`,
+`browser_type`, `browser_select`, `browser_scroll`, `browser_wait` or `browser_upload` to act on exactly the node the snapshot described, instead
+of guessing a CSS selector. A full-page inspect starts a fresh numbering (older refs stop working); refs also stop working after a navigation.
+
+The text is page content and is returned inside an `untrusted_web_content` envelope, capped at 40,000 characters (see
+[browser.md](browser.md#untrusted-page-content)).
 
 Always prompts for approval — same privacy rationale as
 `browser_screenshot`.
@@ -2355,13 +2364,17 @@ Always prompts for approval.
 
 ## browser_wait
 
-Wait for a CSS selector to become visible, for text to appear anywhere
-on the page, and/or for the network to go idle.
+Wait for an element to become visible, for text to appear anywhere
+on the page, and/or for the network to go idle. "Idle" means the document
+has loaded and no request has been in flight for 500 ms (a request still
+unanswered after 30 s stops counting, and the wait gives up after 10 s on a
+page that never quiets down). When `selector` is an `iframe >>> css` path,
+`text` is looked for inside that iframe instead of the top document.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `selector` | string | — | Wait for this selector to become visible |
-| `text` | string | — | Wait for this text to appear on the page |
+| `text` | string | — | Wait for this text to appear on the page (or in the iframe named by an `iframe >>> css` selector) |
 | `network_idle` | boolean | `false` | Wait for the network to go idle |
 | `timeout_ms` | integer | built-in | Deadline in milliseconds |
 
@@ -2382,12 +2395,13 @@ verification themselves; the tool result tells the agent to say what to
 do, wait for the user's reply, then confirm the real page loaded with
 `browser_inspect`/`browser_screenshot`.
 
-| Param | Type | Default |
-|---|---|---|
-| _(none)_ | | |
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `action` | `"open"` \| `"resume"` | `"open"` | `open` shows the window. After the user says they are done, `resume` confirms the window is still open and reports its page (and tab count) without relaunching, so cookies and the passed verification stay intact. |
 
-Always prompts for approval — it launches a new browser process and
-opens a window on the user's display.
+`open` always prompts for approval — it launches a new browser process and
+opens a window on the user's display. `resume` needs no approval: it only
+reports state the user just finished producing, and errors if no visible window is open.
 
 Behavior worth knowing:
 
@@ -2479,6 +2493,7 @@ launching the browser like every other mutating action.
 | `selector` | string | — (required) |
 | `paths` | array of string | — (required) |
 
+Every path must be a regular file (not a directory) and the total must be under 100 MB.
 Always prompts for approval, and the prompt lists the files being
 uploaded. Every path is resolved and validated the same way `write_file`
 validates its destination (inside the session workspace or an
@@ -2508,7 +2523,9 @@ saved to.
 ## browser_console_logs
 
 Return recently buffered `console.*` calls and uncaught JS exceptions
-from the active page, most recent last. Capture is continuous from the
+from the active page, most recent last, plus two kinds of entry the browser itself adds: `[blocked]` (a request the network policy refused, with the reason —
+see [browser.md](browser.md#network-policy)) and `[dialog]` (an alert/confirm/prompt dialog and how it was answered). Output is returned inside an
+`untrusted_web_content` envelope; each message is capped at 2,000 characters. Capture is continuous from the
 moment a page is tracked — not a one-shot read triggered by this call —
 so it catches messages logged at any point (page load, an async
 callback, a later click), not just ones produced during this call.
@@ -2523,9 +2540,9 @@ rationale as `browser_screenshot`/`browser_inspect`.
 
 ## browser_network_requests
 
-Return recently buffered requests the active page has made — method,
-URL, status, and failures — most recent last. Metadata only: never
-response bodies, and no request blocking/mocking (out of scope for v1).
+Return recently buffered requests the active page has made — `#request-id`, method,
+URL, status, and failures — most recent last. Metadata only; read a
+body with [`browser_response_body`](#browser_response_body). No request mocking (out of scope).
 
 | Param | Type | Default |
 |---|---|---|
@@ -2535,13 +2552,43 @@ Always prompts for approval — request URLs can carry private data (a
 session token in a query param) and reveal what backend APIs a page
 talks to, same rationale as `browser_console_logs`.
 
+## browser_select
+
+Choose an option of a `<select>` dropdown by its `value` or its visible `label`, firing the `input` and `change` events the page's framework listens for.
+A native dropdown's option list is drawn by the browser, not the page, so clicking it does not choose an option; use this instead.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — | Required. The `<select>` element (CSS, `ref=eN`, or `iframe >>> css`) |
+| `value` | string | — | The option's `value` attribute |
+| `label` | string | — | The option's visible text; used when `value` is absent or matches nothing |
+
+One of `value`/`label` is required. An unknown option fails with the list of available options. Always prompts for approval (it changes page state);
+`Browser(select)` rules can be saved from the prompt.
+
+## browser_response_body
+
+Return the body of a network response the active page received — typically a JSON API reply behind the UI. Find it by the `#request-id`
+[`browser_network_requests`](#browser_network_requests) prints, or by a `url_contains` substring (the most recent match wins).
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `request_id` | string | — | From `browser_network_requests` |
+| `url_contains` | string | — | Substring of the request URL |
+| `max_bytes` | integer | `32768` | Cap on returned bytes; maximum `40000` |
+| `offset` | integer | `0` | Byte offset to start from. A larger body is read in pieces: the result says which `offset` to pass next |
+
+Text only: images, audio, video and responses containing NUL bytes are described (type, size) rather than returned — use `browser_download` for those.
+The body is returned inside an `untrusted_web_content` envelope. Only the most recent 200 requests are buffered, and a response Chrome has evicted or that never
+completed cannot be read. Always prompts for approval — bodies can carry private data; `Browser(response_body)` rules can be saved from the prompt.
+
 ---
 
 v1 scope for the whole `browser_*` family: headless by default (a
 visible window only when the user is handed the session via
 [`browser_handoff`](#browser_handoff)), a fresh isolated profile per session (never your real,
 logged-in Chrome — no cookies, history, or saved logins), and no
-`dispatch` worker access. The session tracks every tab it has opened,
+`dispatch` worker or background-subagent access (a foreground subagent shares the parent's browser, with the parent waiting). The session tracks every tab it has opened,
 but only ever acts on one **active** tab at a time — the tools don't
 implement `ParallelSafeTool`, so calls always serialize through the
 same approval queue as everything else regardless of how many tabs are

@@ -223,6 +223,24 @@ func TestStripUnattendedProcessToolsRemovesLSPFromSharedRegistry(t *testing.T) {
 	}
 }
 
+// Unattended children share the parent's one browser and active tab; they must
+// not be able to drive it or close the parent's session.
+func TestStripUnattendedProcessToolsRemovesBrowserTools(t *testing.T) {
+	reg := NewRegistry()
+	for _, n := range []string{"browser_status", "browser_close", "browser_navigate", "browser_select", "read_file"} {
+		reg.Register(namedApprovalTool{name: n})
+	}
+	stripUnattendedProcessTools(reg)
+	for _, n := range []string{"browser_status", "browser_close", "browser_navigate", "browser_select"} {
+		if _, ok := reg.Get(n); ok {
+			t.Errorf("%s must be removed from unattended children", n)
+		}
+	}
+	if _, ok := reg.Get("read_file"); !ok {
+		t.Error("read_file must stay")
+	}
+}
+
 func TestCommitSubject(t *testing.T) {
 	if got := commitSubject("writer", "add the parser"); got != "writer: add the parser" {
 		t.Errorf("got %q", got)

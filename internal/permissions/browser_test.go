@@ -21,6 +21,8 @@ func TestBrowserTarget_MappedVerbs(t *testing.T) {
 		{"browser_download", `{"selector":"#dl","path":"out.bin"}`, "download"},
 		{"browser_console_logs", `{}`, "console_logs"},
 		{"browser_network_requests", `{}`, "network_requests"},
+		{"browser_select", `{"selector":"#size","label":"Medium"}`, "select"},
+		{"browser_response_body", `{"url_contains":"/api/data"}`, "response_body"},
 		{"browser_navigate", `{"url":"https://streeteasy.com/for-rent/long-island-city"}`, "navigate streeteasy.com"},
 	}
 	for _, tc := range cases {

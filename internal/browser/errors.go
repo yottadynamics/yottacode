@@ -62,6 +62,9 @@ var (
 	// started it didn't, or the browser never reported completion.
 	ErrDownloadFailed = errors.New("download did not complete before deadline")
 
+	// ErrUploadTooLarge means a browser_upload payload exceeded the hard safety limit.
+	ErrUploadTooLarge = errors.New("browser upload exceeds maximum size")
+
 	// ErrDownloadTooLarge means a browser download exceeded the hard safety limit.
 	ErrDownloadTooLarge = errors.New("browser download exceeds maximum size")
 )

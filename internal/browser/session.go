@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -32,17 +31,35 @@ type TabInfo struct {
 
 const maxBufferedEntries = 200
 
+// maxEntryChars bounds one buffered console message or request URL, so a page
+// that logs a megabyte per line can't flood the agent's context or our memory.
+const maxEntryChars = 2000
+
+// MaxTabs caps how many tabs a session tracks. A popup bomb past it is closed
+// as soon as Chrome reports it.
+const MaxTabs = 8
+
+func capText(s string) string {
+	r := []rune(s)
+	if len(r) <= maxEntryChars {
+		return s
+	}
+	return string(r[:maxEntryChars]) + "…[truncated]"
+}
+
 type ConsoleEntry struct {
 	Level, Text string
 	At          time.Time
 }
 type NetworkEntry struct {
 	RequestID, Method, URL string
-	Status                 int
-	StatusText, MIMEType   string
-	Failed                 bool
-	ErrorText              string
-	At                     time.Time
+	// Type is the resource type Chrome reports (Document, XHR, WebSocket, …).
+	Type                 string
+	Status               int
+	StatusText, MIMEType string
+	Failed               bool
+	ErrorText            string
+	At                   time.Time
 }
 
 type pageSession interface {
@@ -66,6 +83,8 @@ type pageSession interface {
 	downloadViaURL(context.Context, string, string) (*browser.EventDownloadWillBegin, error)
 	consoleLogs(int) []ConsoleEntry
 	networkRequests(int) []NetworkEntry
+	selectOption(ctx context.Context, selector, value, label string) (string, error)
+	responseBody(ctx context.Context, requestID string, maxBytes, offset int) (ResponseBody, error)
 }
 
 type trackedPage struct {
@@ -77,11 +96,15 @@ type trackedPage struct {
 	mu       syncutil.Mutex
 	console  []ConsoleEntry
 	network  []*NetworkEntry
+	// lastBlock is the most recent policy refusal, so a navigation that fails
+	// with ERR_BLOCKED_BY_CLIENT can say why.
+	lastBlock error
 }
 
 func (p *trackedPage) recordConsole(e ConsoleEntry) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	e.Text = capText(e.Text)
 	p.console = append(p.console, e)
 	if len(p.console) > maxBufferedEntries {
 		p.console = p.console[len(p.console)-maxBufferedEntries:]
@@ -90,7 +113,7 @@ func (p *trackedPage) recordConsole(e ConsoleEntry) {
 func (p *trackedPage) recordRequestStart(id, method, url string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.network = append(p.network, &NetworkEntry{RequestID: id, Method: method, URL: url, At: time.Now()})
+	p.network = append(p.network, &NetworkEntry{RequestID: id, Method: method, URL: capText(url), At: time.Now()})
 	if len(p.network) > maxBufferedEntries {
 		p.network = p.network[len(p.network)-maxBufferedEntries:]
 	}
@@ -98,8 +121,9 @@ func (p *trackedPage) recordRequestStart(id, method, url string) {
 func (p *trackedPage) recordRequestUpdate(id string, fn func(*NetworkEntry)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, e := range p.network {
-		if e.RequestID == id {
+	// The most recent hop: redirects reuse the request id.
+	for i := len(p.network) - 1; i >= 0; i-- {
+		if e := p.network[i]; e.RequestID == id {
 			fn(e)
 			return
 		}
@@ -127,6 +151,22 @@ func (p *trackedPage) networkSnapshot(n int) []NetworkEntry {
 	}
 	return o
 }
+
+// recordBlocked notes a policy refusal in the console buffer (so the agent can
+// see it via browser_console_logs) and remembers it for the failing action.
+func (p *trackedPage) recordBlocked(reqURL string, err error) {
+	p.mu.Lock()
+	p.lastBlock = err
+	p.mu.Unlock()
+	p.recordConsole(ConsoleEntry{Level: "blocked", Text: clip(reqURL) + ": " + err.Error(), At: time.Now()})
+}
+func (p *trackedPage) takeBlock() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e := p.lastBlock
+	p.lastBlock = nil
+	return e
+}
 func (p *trackedPage) setURL(u string) {
 	p.mu.Lock()
 	p.url = u
@@ -151,50 +191,42 @@ type session struct {
 	downloadMu      syncutil.Mutex
 	downloads       map[string]*downloadWaiter
 	pendingDownload *downloadWaiter
+	// policy vets every request any tab makes (see netpolicy.go).
+	policy *netPolicy
+	// guard enforces policy on every target, including out-of-process iframes.
+	guard *guard
+	// tabsInFlight counts popups being set up, so the tab cap holds under a burst.
+	tabsInFlight int
+	// destroyed tracks popup targets that disappeared while setup was still running.
+	destroyed map[target.ID]bool
+	// pendingBlocks holds refusals for pages not tracked yet; trackPage drains them.
+	pendingBlocks map[target.ID][]blockNote
+	// refs maps browser_inspect element refs to DOM nodes (see selector.go).
+	refs *refTable
+}
+
+// maxPendingBlockTargets bounds refusals held for pages not yet tracked.
+const maxPendingBlockTargets = 32
+
+// pendingBlockTTL is how long a refusal waits for its page to be tracked.
+const pendingBlockTTL = 30 * time.Second
+
+type blockNote struct {
+	url string
+	err error
+	at  time.Time
 }
 
 type downloadWaiter struct {
 	begun    chan *browser.EventDownloadWillBegin
 	done     chan struct{}
 	failed   chan error
+	guid     string
+	filePath string
 	maxBytes int64
 }
 
 const newTabDetectWindow = 2 * time.Second
-
-// debugCPUTicks is TEMPORARY diagnostic instrumentation for tracking down
-// https://github.com/yottadynamics/yottacode/pull/360's intermittent
-// TestIntegration_HandoffOpensVisibleIsolatedSession CI failure. It reads
-// utime+stime (in clock ticks) for pid from /proc, to let wait() report how
-// much CPU the browser process actually burned during a timed-out wait —
-// distinguishing "the renderer was starved for CPU" from "something else is
-// blocking". Linux-only; returns ok=false anywhere else (e.g. macOS CI) or
-// on any read error, and callers must treat that as "no data", not a bug.
-// TO BE REMOVED once the root cause is confirmed.
-func debugCPUTicks(pid int) (ticks uint64, ok bool) {
-	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, false
-	}
-	// Fields are space-separated; the process name field (2) can itself
-	// contain spaces and is parenthesized, so split after its closing ')'.
-	i := strings.LastIndexByte(string(b), ')')
-	if i < 0 {
-		return 0, false
-	}
-	fields := strings.Fields(string(b)[i+1:])
-	// utime is field 14 overall, stime is field 15; fields[0] here is field 3.
-	const utimeIdx, stimeIdx = 14 - 3, 15 - 3
-	if len(fields) <= stimeIdx {
-		return 0, false
-	}
-	utime, err1 := strconv.ParseUint(fields[utimeIdx], 10, 64)
-	stime, err2 := strconv.ParseUint(fields[stimeIdx], 10, 64)
-	if err1 != nil || err2 != nil {
-		return 0, false
-	}
-	return utime + stime, true
-}
 
 func launchSession(ctx context.Context, bin, profile string) (pageSession, error) {
 	return launchSessionMode(ctx, bin, profile, true)
@@ -241,7 +273,7 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		if err != nil {
 			browserCancel()
 			cancel()
-			return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
+			return nil, fmt.Errorf("%w: %v%s", ErrLaunchFailed, err, launchHint())
 		}
 	case <-ctx.Done():
 		browserCancel()
@@ -250,23 +282,32 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 	case <-startupTimer.C:
 		browserCancel()
 		cancel()
-		return nil, fmt.Errorf("%w: browser startup timed out", ErrLaunchFailed)
+		return nil, fmt.Errorf("%w: browser startup timed out%s", ErrLaunchFailed, launchHint())
 	}
-	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, downloads: make(map[string]*downloadWaiter)}
+	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, downloads: make(map[string]*downloadWaiter), policy: newNetPolicy(), destroyed: make(map[target.ID]bool)}
 	if s.browser != nil && s.browser.Process() != nil {
 		s.pid = s.browser.Process().Pid
 	}
+	// The guard must be up before any page is used: it pauses new targets until
+	// request interception is installed on them. No guard, no session.
+	g, gerr := startGuard(ctx, profile, s.policy, s.onGuardBlock, s.guardLost)
+	if gerr != nil {
+		browserCancel()
+		cancel()
+		return nil, fmt.Errorf("%w: network guard failed to start: %v", ErrLaunchFailed, gerr)
+	}
+	s.guard = g
 	// Read once per session; applied to every page (initial and later
 	// targets) below. Missing (ok=false) just means running with only the
 	// launch flags, which is still better than chromedp's defaults.
 	stealth, haveStealth := stealthInit(bc, s.browser)
 	pc, pcancel := chromedp.NewContext(bc)
 	if err := chromedp.Run(pc, chromedp.Navigate("about:blank")); err != nil {
+		g.shutdown()
 		cancel()
 		pcancel()
 		return nil, fmt.Errorf("%w: %v", ErrLaunchFailed, err)
 	}
-	id := chromedp.FromContext(pc).Target.TargetID
 	// The initial target is created outside a browser event callback. Run
 	// its ready actions (domain-enable + stealth) synchronously, before
 	// publishing it via track, so callers such as handoff — or, for later
@@ -274,11 +315,13 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 	readyCtx, readyCancel := context.WithTimeout(pc, 5*time.Second)
 	if err := chromedp.Run(readyCtx, pageReadyActions(stealth, haveStealth)...); err != nil {
 		readyCancel()
+		g.shutdown()
 		cancel()
 		pcancel()
 		return nil, fmt.Errorf("%w: page readiness setup failed: %v", ErrLaunchFailed, err)
 	}
 	readyCancel()
+	id := chromedp.FromContext(pc).Target.TargetID
 	if !headless {
 		// --start-maximized's actual resize is an OS window-manager
 		// operation, asynchronous relative to Chrome's own page-load
@@ -293,9 +336,6 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		s.dispatchBrowserEvent(ev)
 		switch e := ev.(type) {
 		case *target.EventTargetCreated:
-			if e.TargetInfo != nil {
-				fmt.Fprintf(os.Stderr, "DEBUG %s target-created type=%q id=%s url=%q\n", time.Now().Format(time.RFC3339Nano), e.TargetInfo.Type, e.TargetInfo.TargetID, e.TargetInfo.URL)
-			}
 			if e.TargetInfo == nil || e.TargetInfo.Type != "page" {
 				return
 			}
@@ -303,6 +343,21 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 				return
 			}
 			id, url := e.TargetInfo.TargetID, e.TargetInfo.URL
+			// Reserve a slot now, before the setup goroutine runs: pages are only
+			// counted once tracked, so a burst of window.open calls would all
+			// see the same low count and slip past the cap.
+			if !s.reserveTab() {
+				s.mu.Lock()
+				delete(s.pendingBlocks, id)
+				s.mu.Unlock()
+				go func() {
+					_ = target.CloseTarget(id).Do(cdp.WithExecutor(bc, s.browser))
+				}()
+				if ap := s.activeTrackedPage(); ap != nil {
+					ap.recordConsole(ConsoleEntry{Level: "blocked", Text: fmt.Sprintf("tab limit reached (%d): closed a new tab opened by the page (%s)", MaxTabs, clip(url)), At: time.Now()})
+				}
+				return
+			}
 			ctx, cancel := chromedp.NewContext(bc, chromedp.WithTargetID(id))
 			// Off the event-dispatch goroutine, same as the dialog
 			// auto-dismiss inside attachPageCaptureListeners: chromedp's
@@ -314,7 +369,19 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 			// reach this context and issue its own first Run before the
 			// attach-triggering one has finished (see pageReadyActions).
 			go func() {
-				_ = chromedp.Run(ctx, pageReadyActions(stealth, haveStealth)...)
+				defer s.releaseTab()
+				if err := chromedp.Run(ctx, pageReadyActions(stealth, haveStealth)...); err != nil {
+					cancel()
+					return
+				}
+				s.mu.Lock()
+				gone := s.destroyed[id]
+				delete(s.destroyed, id)
+				s.mu.Unlock()
+				if gone {
+					cancel()
+					return
+				}
 				p, created := s.trackPage(id, ctx)
 				p.setURL(url)
 				if created {
@@ -324,6 +391,9 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 				}
 			}()
 		case *target.EventTargetDestroyed:
+			s.mu.Lock()
+			s.destroyed[e.TargetID] = true
+			s.mu.Unlock()
 			s.untrackPage(e.TargetID)
 		}
 	})
@@ -337,6 +407,7 @@ func (s *session) dispatchBrowserEvent(ev any) {
 		if s.pendingDownload != nil {
 			w := s.pendingDownload
 			s.pendingDownload = nil
+			w.guid = e.GUID
 			s.downloads[e.GUID] = w
 			select {
 			case w.begun <- e:
@@ -344,12 +415,16 @@ func (s *session) dispatchBrowserEvent(ev any) {
 			}
 		}
 	case *browser.EventDownloadProgress:
-		if w := s.downloads[e.GUID]; w != nil && (e.TotalBytes > float64(w.maxBytes) || e.ReceivedBytes > float64(w.maxBytes)) {
+		if w := s.downloads[e.GUID]; w != nil && (e.TotalBytes > float64(MaxDownloadBytes) || e.ReceivedBytes > float64(MaxDownloadBytes)) {
 			select {
-			case w.failed <- fmt.Errorf("%w: received %.0f bytes, limit is %d", ErrDownloadTooLarge, e.ReceivedBytes, w.maxBytes):
+			case w.failed <- fmt.Errorf("%w: received %.0f bytes, limit is %d", ErrDownloadTooLarge, e.ReceivedBytes, MaxDownloadBytes):
 			default:
 			}
 			delete(s.downloads, e.GUID)
+			_ = browser.CancelDownload(e.GUID).Do(context.Background())
+			if e.FilePath != "" {
+				_ = os.Remove(e.FilePath)
+			}
 			return
 		}
 		if e.State == browser.DownloadProgressStateCompleted {
@@ -396,11 +471,16 @@ func (s *session) trackPage(id target.ID, ctx context.Context) (*trackedPage, bo
 	pageCtx, cancel := context.WithCancel(ctx)
 	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now()}
 	s.pages = append(s.pages, p)
+	for _, n := range s.pendingBlocks[id] {
+		p.recordBlocked(n.url, n.err)
+	}
+	delete(s.pendingBlocks, id)
 	return p, true
 }
 
 func (s *session) untrackPage(id target.ID) {
 	s.mu.Lock()
+	delete(s.pendingBlocks, id)
 	defer s.mu.Unlock()
 	for i, p := range s.pages {
 		if p.id != id {
@@ -470,9 +550,19 @@ func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 	chromedp.ListenTarget(ctx, func(ev any) {
 		switch e := ev.(type) {
 		case *page.EventJavascriptDialogOpening:
-			// Dialogs have no browser_* interaction surface; dismiss them so
-			// a modal alert cannot block the target indefinitely.
-			go func() { _ = chromedp.Run(ctx, page.HandleJavaScriptDialog(false)) }()
+			// Dialogs have no browser_* interaction surface, so a policy
+			// answers them: alert and beforeunload are accepted (they only
+			// inform, and refusing beforeunload would block navigation);
+			// confirm and prompt are cancelled, because accepting would
+			// answer a question on the user's behalf. Every dialog is
+			// recorded in the console buffer so the agent can see it.
+			accept := e.Type == page.DialogTypeAlert || e.Type == page.DialogTypeBeforeunload
+			verb := "cancelled"
+			if accept {
+				verb = "accepted"
+			}
+			p.recordConsole(ConsoleEntry{Level: "dialog", Text: fmt.Sprintf("%s %s automatically: %s", e.Type, verb, e.Message), At: time.Now()})
+			go func() { _ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept)) }()
 		case *runtime.EventConsoleAPICalled:
 			var b strings.Builder
 			for _, a := range e.Args {
@@ -494,7 +584,16 @@ func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 			p.recordConsole(ConsoleEntry{Level: "exception", Text: text, At: time.Now()})
 		case *network.EventRequestWillBeSent:
 			if e.Request != nil {
+				if e.RedirectResponse != nil {
+					// Chrome reuses the request id across a redirect chain: close
+					// out the previous hop before the next one starts.
+					p.recordRequestUpdate(string(e.RequestID), func(n *NetworkEntry) {
+						n.Status = int(e.RedirectResponse.Status)
+						n.StatusText = e.RedirectResponse.StatusText
+					})
+				}
 				p.recordRequestStart(string(e.RequestID), e.Request.Method, e.Request.URL)
+				p.recordRequestUpdate(string(e.RequestID), func(n *NetworkEntry) { n.Type = string(e.Type) })
 			}
 		case *network.EventResponseReceived:
 			if e.Response != nil {
@@ -528,18 +627,73 @@ func actionContext(targetCtx, callCtx context.Context) (context.Context, context
 }
 func (s *session) consoleLogs(n int) []ConsoleEntry     { return s.activePage().consoleSnapshot(n) }
 func (s *session) networkRequests(n int) []NetworkEntry { return s.activePage().networkSnapshot(n) }
+
+// onGuardBlock records a request the guard refused against the page it came
+// from (or the active page, for a frame or worker target).
+func (s *session) onGuardBlock(targetID, targetType, reqURL string, err error) {
+	if p, ok := s.pageByID(target.ID(targetID)); ok {
+		p.recordBlocked(reqURL, err)
+		return
+	}
+	if targetType == "page" {
+		// A page we have not finished tracking yet (a popup still being set
+		// up): hold the note until it appears so it lands on the right tab.
+		s.mu.Lock()
+		if s.pendingBlocks == nil {
+			s.pendingBlocks = map[target.ID][]blockNote{}
+		}
+		// Bound the held notes without disturbing those already kept: a new
+		// target is dropped once the table is full, an existing one once its
+		// own list is.
+		now := time.Now()
+		for id, notes := range s.pendingBlocks { // forget targets that never showed up
+			if len(notes) == 0 || now.Sub(notes[len(notes)-1].at) > pendingBlockTTL {
+				delete(s.pendingBlocks, id)
+			}
+		}
+		known := s.pendingBlocks[target.ID(targetID)]
+		if (known == nil && len(s.pendingBlocks) >= maxPendingBlockTargets) || len(known) >= maxBufferedEntries {
+			s.mu.Unlock()
+			return
+		}
+		s.pendingBlocks[target.ID(targetID)] = append(s.pendingBlocks[target.ID(targetID)], blockNote{reqURL, err, now})
+		s.mu.Unlock()
+		return
+	}
+	if p := s.activeTrackedPage(); p != nil {
+		p.recordBlocked(reqURL, err)
+	}
+}
+
+// guardLost stops the browser at once: with the guard gone nothing is vetting
+// requests, so pages must not keep running until the next action notices.
+func (s *session) guardLost() {
+	s.browserCancel()
+	s.cancel()
+}
 func (s *session) close() error {
+	if s.guard != nil {
+		s.guard.shutdown()
+	}
 	err := chromedp.Cancel(s.browserCtx)
 	s.browserCancel()
 	s.cancel()
 	return err
 }
 func (s *session) forceCleanup() {
+	if s.guard != nil {
+		s.guard.shutdown()
+	}
 	s.browserCancel()
 	s.cancel()
 }
 func (s *session) alive() bool {
 	if s.browser == nil || s.browser.Process() == nil {
+		return false
+	}
+	if s.guard != nil && !s.guard.alive() {
+		// Without the guard the network policy is not being enforced; treat the
+		// session as dead so the next action relaunches a guarded one.
 		return false
 	}
 	return s.browser.Process().Signal(syscall.Signal(0)) == nil
@@ -597,8 +751,13 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 	p := s.activePage()
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
+	s.policy.allowExplicit(u)
+	p.takeBlock()
+	s.mu.Lock()
+	s.refs = nil
+	s.mu.Unlock()
 	if err := chromedp.Run(c, chromedp.Navigate(u)); err != nil {
-		return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
+		return NavigateResult{}, s.blockedOr(p, classifyErr(err, ErrNavigationTimeout))
 	}
 	switch strings.ToLower(w) {
 	case "domcontentloaded":
@@ -606,7 +765,7 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 			return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
 		}
 	case "networkidle":
-		if err := s.waitNetworkIdle(c, 500*time.Millisecond); err != nil {
+		if err := s.waitNetworkIdle(c, p, 500*time.Millisecond); err != nil {
 			return NavigateResult{}, classifyErr(err, ErrNavigationTimeout)
 		}
 	}
@@ -617,33 +776,92 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 	p.setURL(url)
 	return NavigateResult{url, title}, nil
 }
-func (s *session) waitNetworkIdle(ctx context.Context, quiet time.Duration) error {
-	deadline := time.NewTimer(10 * time.Second)
+
+// blockedOr prefers the network policy's explanation over chromedp's opaque
+// "net::ERR_BLOCKED_BY_CLIENT" when a request was refused during the action.
+func (s *session) blockedOr(p *trackedPage, err error) error {
+	if b := p.takeBlock(); b != nil && err != nil && strings.Contains(err.Error(), "ERR_BLOCKED_BY_CLIENT") {
+		return b
+	}
+	return err
+}
+
+// networkIdleCap bounds how long waitNetworkIdle waits for a page that never
+// goes quiet (long-polling, streaming); it then proceeds rather than failing.
+const networkIdleCap = 10 * time.Second
+
+// waitNetworkIdle returns once the document has loaded and no request has been
+// in flight for the quiet period. A request still unanswered after
+// staleRequestAge (a hung or streaming connection) stops counting, so one
+// never-ending request cannot hold the page "busy" forever.
+func (s *session) waitNetworkIdle(ctx context.Context, p *trackedPage, quiet time.Duration) error {
+	deadline := time.NewTimer(networkIdleCap)
 	defer deadline.Stop()
+	var quietSince time.Time
 	for {
 		var state string
 		if err := chromedp.Run(ctx, chromedp.Evaluate(`document.readyState`, &state)); err != nil {
 			return err
 		}
-		if state == "complete" {
-			t := time.NewTimer(quiet)
-			select {
-			case <-t.C:
-				return nil
-			case <-ctx.Done():
-				t.Stop()
-				return ctx.Err()
-			case <-deadline.C:
-				t.Stop()
+		if state == "complete" && p.pendingRequests(staleRequestAge) == 0 {
+			if quietSince.IsZero() {
+				quietSince = time.Now()
+			}
+			if time.Since(quietSince) >= quiet {
 				return nil
 			}
+		} else {
+			quietSince = time.Time{}
 		}
 		select {
 		case <-time.After(50 * time.Millisecond):
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
+			return fmt.Errorf("network idle: %w", context.DeadlineExceeded)
+		}
+	}
+}
+
+// staleRequestAge is how long an unanswered request counts as in flight.
+const staleRequestAge = 30 * time.Second
+
+// pendingRequests counts requests that have neither a response nor a failure.
+func (p *trackedPage) pendingRequests(maxAge time.Duration) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, e := range p.network {
+		// Long-lived streams never "complete"; they must not hold the page busy.
+		if e.Type == "WebSocket" || e.Type == "EventSource" || e.Type == "Preflight" {
+			continue
+		}
+		if e.Status == 0 && !e.Failed && time.Since(e.At) < maxAge {
+			n++
+		}
+	}
+	return n
+}
+
+// waitFrameText polls until text appears in the text content of the frame the
+// selector's frame path leads to ("iframe#a >>> anything" waits inside #a).
+func (s *session) waitFrameText(ctx context.Context, framePath, text string) error {
+	for {
+		inner, opts, err := s.query(ctx, framePath+" "+frameSep+" body")
+		if err != nil {
+			return err
+		}
+		var txt string
+		if err := chromedp.Run(ctx, chromedp.Text(inner, &txt, append(opts, chromedp.NodeReady)...)); err == nil && strings.Contains(txt, text) {
 			return nil
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("%w: text %q not found in frame", ErrSelectorNotFound, text)
+			}
+			return classifyErr(ctx.Err(), ErrNavigationTimeout)
 		}
 	}
 }
@@ -655,7 +873,11 @@ func (s *session) screenshot(ctx context.Context, sel string, full bool) ([]byte
 	var b []byte
 	var a chromedp.Action = chromedp.FullScreenshot(&b, 100)
 	if sel != "" {
-		a = chromedp.Screenshot(sel, &b)
+		inner, opts, err := s.query(c, sel)
+		if err != nil {
+			return nil, err
+		}
+		a = chromedp.Screenshot(inner, &b, opts...)
 	}
 	if err := chromedp.Run(c, a); err != nil {
 		return nil, fmt.Errorf("browser screenshot: %w", err)
@@ -668,20 +890,36 @@ func (s *session) inspect(ctx context.Context, sel string) (string, error) {
 	defer cancel()
 	var nodes []*accessibility.Node
 	var axErr error
+	// Every inspect creates a new ref namespace. A scoped inspect must invalidate
+	// refs too; otherwise a ref from an older snapshot could act on a changed page.
+	refs := s.resetRefs()
 	if sel == "" {
+		// A full-page snapshot starts a fresh ref numbering: every earlier ref
+		// is dropped so none can ever address a different node than it showed.
+		refs = s.resetRefs()
 		// CDP commands need chromedp's executor installed by Run.
 		axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
 			var err error
-			nodes, err = accessibility.GetFullAXTree().Do(execCtx)
+			nodes, err = fullAXTree(execCtx)
 			return err
 		}))
 	} else {
+		refs = s.refs
+		inner, opts, qerr := s.query(c, sel)
+		if qerr != nil {
+			return "", qerr
+		}
+		if frames, _ := splitFrames(sel); len(frames) > 0 {
+			// Refs resolve against the top document only; a node inside a frame
+			// would get a ref that can never be used.
+			refs = nil
+		}
 		var ids []cdp.NodeID
-		axErr = chromedp.Run(c, chromedp.NodeIDs(sel, &ids))
+		axErr = chromedp.Run(c, chromedp.NodeIDs(inner, &ids, opts...))
 		if axErr == nil && len(ids) > 0 {
 			axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
 				var err error
-				nodes, err = accessibility.GetPartialAXTree().WithNodeID(ids[0]).WithFetchRelatives(true).Do(execCtx)
+				nodes, err = partialAXTree(execCtx, ids[0])
 				return err
 			}))
 		} else if axErr == nil {
@@ -697,57 +935,68 @@ func (s *session) inspect(ctx context.Context, sel string) (string, error) {
 					const name = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
 					out.push(role + (name ? ': ' + name : ''));
 				}
-				return out.join('\\n') + (document.body ? '\\n' + document.body.innerText : '');
+				return out.join('\n') + (document.body ? '\n' + document.body.innerText : '');
 			})()`, &fallback)); err == nil && fallback != "" {
 			return fallback, nil
 		}
 		return "", fmt.Errorf("browser inspect: %w", axErr)
 	}
-	return renderAXTree(nodes), nil
+	return renderAXTreeRefs(nodes, refs), nil
 }
 func (s *session) click(ctx context.Context, sel string) error {
 	p := s.activePage()
 	before := s.pageCount()
-	startTicks, startOK := debugCPUTicks(s.pid)
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	var winW, winH int
-	var rectJSON string
-	diagCtx, diagCancel := context.WithTimeout(c, 2*time.Second)
-	diagErr := chromedp.Run(diagCtx,
-		chromedp.Evaluate(`window.innerWidth`, &winW),
-		chromedp.Evaluate(`window.innerHeight`, &winH),
-		chromedp.Evaluate(fmt.Sprintf(`JSON.stringify((function(){var e=document.querySelector(%q); if(!e) return null; var r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}})())`, sel), &rectJSON),
-	)
-	diagCancel()
-	win, bounds, boundsErr := browser.GetWindowForTarget().WithTargetID(p.id).Do(cdp.WithExecutor(s.browserCtx, s.browser))
-	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s innerWH=%dx%d rect=%s diagErr=%v windowID=%v bounds=%+v boundsErr=%v\n",
-		time.Now().Format(time.RFC3339Nano), sel, p.id, winW, winH, rectJSON, diagErr, win, bounds, boundsErr)
-	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
+	inner, opts, err := s.query(c, sel)
+	if err != nil {
+		return err
+	}
+	if err := chromedp.Run(c, chromedp.Click(inner, opts...)); err != nil {
 		return classifySelectorErr(err)
 	}
-	endTicks, endOK := debugCPUTicks(s.pid)
-	ticksMsg := "n/a"
-	if startOK && endOK {
-		ticksMsg = fmt.Sprintf("%dticks", endTicks-startTicks)
-	}
-	fmt.Fprintf(os.Stderr, "DEBUG %s click dispatched ok, cpuDuringDispatch=%s\n", time.Now().Format(time.RFC3339Nano), ticksMsg)
 	s.followNewPage(before, ctx)
 	return nil
 }
 func (s *session) typeText(ctx context.Context, sel, text string, submit bool) error {
-	a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
-	if submit {
-		a = append(a, chromedp.SendKeys(sel, "\r"))
-	}
 	pageCtx := s.activePage().ctx
 	cctx, cancel := actionContext(pageCtx, ctx)
 	defer cancel()
+	inner, opts, err := s.query(cctx, sel)
+	if err != nil {
+		return err
+	}
+	a := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
+	if submit {
+		a = append(a, chromedp.SendKeys(inner, "\r", opts...))
+	}
 	if err := chromedp.Run(cctx, a...); err != nil {
 		return classifySelectorErr(err)
 	}
 	return nil
 }
+
+// reserveTab claims one of MaxTabs slots for a page about to be set up, counting
+// pages still being set up as well as tracked ones, and reports whether there
+// was room. Without the in-flight count, every target-created event in a rapid
+// series would see the same low page count and all of them would be let in.
+func (s *session) reserveTab() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pages)+s.tabsInFlight >= MaxTabs {
+		return false
+	}
+	s.tabsInFlight++
+	return true
+}
+
+// releaseTab returns a reservation once the page is tracked (or failed).
+func (s *session) releaseTab() {
+	s.mu.Lock()
+	s.tabsInFlight--
+	s.mu.Unlock()
+}
+
 func (s *session) pageCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.pages) }
 func (s *session) followNewPage(before int, ctx context.Context) {
 	deadline := time.NewTimer(newTabDetectWindow)
@@ -798,7 +1047,11 @@ func (s *session) scroll(ctx context.Context, sel string, x, y float64) error {
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
 	if sel != "" {
-		return classifySelectorErr(chromedp.Run(c, chromedp.ScrollIntoView(sel)))
+		inner, opts, err := s.query(c, sel)
+		if err != nil {
+			return err
+		}
+		return classifySelectorErr(chromedp.Run(c, chromedp.ScrollIntoView(inner, opts...)))
 	}
 	return chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("window.scrollBy(%g,%g)", x, y), nil))
 }
@@ -809,16 +1062,25 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 	c, timeoutCancel := context.WithTimeout(c, d)
 	defer timeoutCancel()
 	if idle {
-		if e := chromedp.Run(c, chromedp.Sleep(500*time.Millisecond)); e != nil {
-			return e
+		if e := s.waitNetworkIdle(c, p, 500*time.Millisecond); e != nil {
+			return classifyErr(e, ErrNavigationTimeout)
 		}
 	}
 	if sel != "" {
-		if e := chromedp.Run(c, chromedp.WaitVisible(sel)); e != nil {
+		inner, opts, err := s.query(c, sel)
+		if err != nil {
+			return err
+		}
+		if e := chromedp.Run(c, chromedp.WaitVisible(inner, opts...)); e != nil {
 			return classifySelectorErr(e)
 		}
 	}
 	if text != "" {
+		// With "frame >>> x" the text is looked for inside that frame rather
+		// than in the top document.
+		if frames, _ := splitFrames(sel); len(frames) > 0 {
+			return s.waitFrameText(c, strings.Join(frames, " "+frameSep+" "), text)
+		}
 		// Text can be updated asynchronously by the page after an action.
 		// Watch for it with a MutationObserver running inside the page
 		// (Poll+WithPollingMutation) instead of round-tripping a fresh CDP
@@ -833,28 +1095,8 @@ func (s *session) wait(ctx context.Context, sel, text string, idle bool, d time.
 		// Bounded by c's own deadline (set to d above), not a separate
 		// timeout — no second timer to race against it.
 		predicate := fmt.Sprintf("document.body&&document.body.innerText.includes(%q)", text)
-		startTicks, startOK := debugCPUTicks(s.pid)
-		startWall := time.Now()
-		fmt.Fprintf(os.Stderr, "DEBUG %s wait poll start activeID=%s pid=%d\n", startWall.Format(time.RFC3339Nano), p.id, s.pid)
 		if e := chromedp.Run(c, chromedp.Poll(predicate, nil, chromedp.WithPollingMutation())); e != nil {
 			if errors.Is(e, context.DeadlineExceeded) || errors.Is(e, chromedp.ErrPollingTimeout) {
-				endTicks, endOK := debugCPUTicks(s.pid)
-				wallElapsed := time.Since(startWall)
-				diagCtx, diagCancel := context.WithTimeout(p.ctx, 2*time.Second)
-				var readyState, innerText, visState string
-				diagErr := chromedp.Run(diagCtx,
-					chromedp.Evaluate(`document.readyState`, &readyState),
-					chromedp.Evaluate(`document.body&&document.body.innerText`, &innerText),
-					chromedp.Evaluate(`document.visibilityState`, &visState),
-				)
-				diagCancel()
-				cpuRatio := "n/a"
-				if startOK && endOK {
-					cpuSeconds := float64(endTicks-startTicks) / 100.0 // USER_HZ is 100 on virtually all Linux
-					cpuRatio = fmt.Sprintf("%.2fs CPU / %.2fs wall = %.0f%%", cpuSeconds, wallElapsed.Seconds(), 100*cpuSeconds/wallElapsed.Seconds())
-				}
-				fmt.Fprintf(os.Stderr, "DEBUG %s wait TIMEOUT activeID=%s readyState=%q visState=%q innerText=%q diagErr=%v browserCPU=%s\n",
-					time.Now().Format(time.RFC3339Nano), p.id, readyState, visState, innerText, diagErr, cpuRatio)
 				return fmt.Errorf("%w: text %q not found", ErrSelectorNotFound, text)
 			}
 			return classifySelectorErr(e)
@@ -913,8 +1155,10 @@ func (s *session) closeTab(ctx context.Context, i int) error {
 	}
 	p := s.pages[i]
 	s.mu.Unlock()
-	_ = chromedp.Run(p.ctx, target.CloseTarget(p.id))
 	p.cancel()
+	if err := target.CloseTarget(p.id).Do(cdp.WithExecutor(s.browserCtx, s.browser)); err != nil {
+		return fmt.Errorf("close tab: %w", err)
+	}
 	s.untrack(p.id)
 	return nil
 }
@@ -922,14 +1166,25 @@ func (s *session) setFiles(ctx context.Context, sel string, paths []string) erro
 	p := s.activePage()
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	return classifySelectorErr(chromedp.Run(c, chromedp.SetUploadFiles(sel, paths)))
+	inner, opts, err := s.query(c, sel)
+	if err != nil {
+		return err
+	}
+	return classifySelectorErr(chromedp.Run(c, chromedp.SetUploadFiles(inner, paths, opts...)))
 }
 func (s *session) downloadViaClick(ctx context.Context, sel, dir string) (*browser.EventDownloadWillBegin, error) {
-	return s.download(ctx, dir, func(p context.Context) error { return chromedp.Run(p, chromedp.Click(sel)) })
+	return s.download(ctx, dir, func(p context.Context) error {
+		inner, opts, err := s.query(p, sel)
+		if err != nil {
+			return err
+		}
+		return chromedp.Run(p, chromedp.Click(inner, opts...))
+	})
 }
 
 func (s *session) downloadViaURL(ctx context.Context, u, dir string) (*browser.EventDownloadWillBegin, error) {
 	return s.download(ctx, dir, func(p context.Context) error {
+		s.policy.allowExplicit(u)
 		err := chromedp.Run(p, chromedp.Navigate(u))
 		if err != nil && strings.Contains(err.Error(), "ERR_ABORTED") {
 			return nil
@@ -938,11 +1193,20 @@ func (s *session) downloadViaURL(ctx context.Context, u, dir string) (*browser.E
 	})
 }
 
+func (s *session) cancelDownload(w *downloadWaiter) {
+	s.downloadMu.Lock()
+	if w.guid != "" {
+		delete(s.downloads, w.guid)
+		_ = browser.CancelDownload(w.guid).Do(context.Background())
+	}
+	s.downloadMu.Unlock()
+}
+
 func (s *session) download(ctx context.Context, dir string, trigger func(context.Context) error) (*browser.EventDownloadWillBegin, error) {
 	p := s.activePage()
 	triggerCtx, triggerCancel := actionContext(p.ctx, ctx)
 	defer triggerCancel()
-	w := &downloadWaiter{begun: make(chan *browser.EventDownloadWillBegin, 1), done: make(chan struct{}), failed: make(chan error, 1), maxBytes: MaxDownloadBytes}
+	w := &downloadWaiter{begun: make(chan *browser.EventDownloadWillBegin, 1), done: make(chan struct{}), failed: make(chan error, 1)}
 	s.downloadMu.Lock()
 	s.pendingDownload = w
 	s.downloadMu.Unlock()
@@ -972,6 +1236,7 @@ func (s *session) download(ctx context.Context, dir string, trigger func(context
 	case err := <-w.failed:
 		return nil, err
 	case <-wait.Done():
+		s.cancelDownload(w)
 		return nil, classifyDownloadErr(fmt.Errorf("browser download: %w", wait.Err()))
 	}
 	select {
@@ -979,6 +1244,7 @@ func (s *session) download(ctx context.Context, dir string, trigger func(context
 	case err := <-w.failed:
 		return nil, err
 	case <-wait.Done():
+		s.cancelDownload(w)
 		return nil, classifyDownloadErr(fmt.Errorf("browser download: %w", wait.Err()))
 	}
 	return info, nil

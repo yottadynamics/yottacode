@@ -194,6 +194,15 @@ func (f *fakeSession) downloadViaURL(_ context.Context, url, dir string) (*brows
 	return f.fakeDownload(dir)
 }
 
+func (f *fakeSession) selectOption(_ context.Context, selector, value, label string) (string, error) {
+	f.record(fmt.Sprintf("selectOption:%s:%s:%s", selector, value, label))
+	return label, nil
+}
+func (f *fakeSession) responseBody(_ context.Context, id string, _, _ int) (ResponseBody, error) {
+	f.record("responseBody:" + id)
+	return ResponseBody{RequestID: id, Body: "{}"}, nil
+}
+
 var _ pageSession = (*fakeSession)(nil)
 
 func (f *fakeSession) callCount(name string) int {

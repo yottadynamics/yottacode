@@ -181,7 +181,7 @@ top of the normal approval model:
 - **Approval on every action that reads or changes page state** —
   `browser_navigate`, `browser_screenshot`, `browser_inspect`,
   `browser_click`, `browser_type`, `browser_hotkey`,
-  `browser_scroll`, and `browser_handoff` all prompt. This includes the two read-only tools:
+  `browser_scroll`, `browser_select`, `browser_response_body`, and `browser_handoff` (opening the window) all prompt. This includes the two read-only tools:
   a screenshot or an accessibility-tree snapshot can surface on-screen
   private data (an inbox, a logged-in dashboard, a form someone else
   left filled in) even though nothing was clicked. `browser_status`,
@@ -211,6 +211,43 @@ top of the normal approval model:
 
   Only `/yolo` (the explicit approve-everything mode) skips these
   prompts, and a deny rule still beats both.
+- **A page cannot reach your machine or network through the browser.**
+  `browser_navigate` only vets the URL the agent types; a redirect or a
+  page's own requests (images, scripts, `fetch`, iframes, WebSockets) are
+  vetted one by one before they leave the browser. Link-local space and
+  cloud metadata endpoints (`169.254.0.0/16`, `fe80::/10`,
+  `metadata.google.internal`, …) are refused outright, even if the agent
+  navigates to them directly. Loopback (`localhost`, `127.0.0.0/8`, `::1`)
+  and private-network addresses (RFC 1918, CGNAT, ULA) are reachable only
+  from a page that is itself local, reached by an explicit navigation.
+  The permission ends as soon as the browser goes to a public site, so a
+  public page — or a redirect chain through one — cannot probe your dev
+  server, debugger port or LAN, while a dev-server page can still call
+  its own API. Frames and workers are judged by the page that owns them,
+  and a worker with no owning page gets no local access. Hostnames are resolved, so a public-looking name that points at
+  a private address is caught. Refusals show up in `browser_console_logs`
+  as `[blocked]` entries and in the failing action's error. The check
+  covers every target — cross-site iframes (separate processes), popups
+  and workers — via a guard that attaches to each one before it runs; if
+  the guard cannot start or dies, the session fails closed. It vets the
+  destination host, not DNS pinning, so a name that re-resolves between
+  the check and the connection is a residual risk.
+- **Page text is data, not instructions.** Everything page-derived a tool
+  returns — the accessibility tree, tab titles, console output, request
+  URLs, response bodies — is wrapped in an `untrusted_web_content` envelope
+  with a notice that it must not be obeyed, copies of the envelope tag in
+  the page text are neutralized so a page cannot close it early, and output
+  is capped (40,000 characters per result; 2,000 per console message or
+  URL). This is a mitigation, not a guarantee: keep approvals on for
+  `browser_click`/`browser_type` when browsing untrusted pages.
+- **Bounded resources.** At most 8 tabs (popups beyond that are closed),
+  200 buffered console/network entries per tab, 100 MB per download and per
+  upload, 40,000 bytes per response-body call (larger bodies are paged).
+- **One browser, one driver.** The session has a single browser and a
+  single active tab. `dispatch` workers and background subagents never get
+  `browser_*` tools (an unattended child would drive the parent's page and
+  could close its session). A foreground subagent shares the parent's
+  browser while the parent waits.
 - **Approvals can be remembered — narrowly.** The prompt offers the same
   `[S]` session / `[A]` always / `[D]` never choices as other tools, via
   `Browser(...)` rules (see
