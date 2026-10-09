@@ -66,7 +66,7 @@ func ReclaimEmptyDispatchWorktrees(ctx context.Context, tasks *subagents.Registr
 	}
 	n := 0
 	for _, task := range tasks.List() {
-		if task.Worktree == "" || task.Base == "" {
+		if task.Worktree == "" || task.Base == "" || task.Status == subagents.TaskRunning || task.Committing {
 			continue
 		}
 		if _, err := os.Stat(task.Worktree); err != nil {
@@ -92,7 +92,11 @@ func ReclaimEmptyDispatchWorktrees(ctx context.Context, tasks *subagents.Registr
 // `yottacode worktree add`, which must never be touched.
 const dispatchBranchPrefix = worktree.BranchPrefix + "dispatch-"
 
-// ReclaimOrphanDispatchWorktrees sweeps the repo's dispatch worktrees on disk
+func dispatchBranchMarked(ctx context.Context, repoRoot, branch, path string) bool {
+	out, err := gitOutput(ctx, repoRoot, "config", "--get", "yottacode.dispatch-worktree."+branch)
+	return err == nil && strings.TrimSpace(out) == path
+}
+
 // and reclaims the ones holding nothing, WITHOUT needing a registry record.
 //
 // ReclaimEmptyDispatchWorktrees can only see worktrees the current session
@@ -121,7 +125,7 @@ func ReclaimOrphanDispatchWorktrees(ctx context.Context, repoRoot string) int {
 	}
 	n := 0
 	for _, info := range infos {
-		if info.Locked || !strings.HasPrefix(info.Branch, dispatchBranchPrefix) {
+		if info.Locked || !strings.HasPrefix(info.Branch, dispatchBranchPrefix) || !dispatchBranchMarked(ctx, repoRoot, info.Branch, info.Path) {
 			continue
 		}
 		if _, err := os.Stat(info.Path); err != nil {

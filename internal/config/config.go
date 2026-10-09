@@ -71,6 +71,9 @@ type Config struct {
 	// Subagents tunes the subagent subsystem (the Agent tool + background
 	// runs). Absent block falls through to the defaults below.
 	Subagents SubagentsConfig `toml:"subagents"`
+
+	// Dispatch tunes the experimental dispatch fan-out tool.
+	Dispatch DispatchConfig `toml:"dispatch"`
 	// Sandbox controls whether run_bash executes inside a session-scoped
 	// podman container instead of directly on the host. Absent block or
 	// backend="none" (the default) keeps host-exec behavior; backend="podman"
@@ -336,6 +339,23 @@ func (c Config) SubagentMaxConcurrent() int {
 		return c.Subagents.MaxConcurrentSubagents
 	}
 	return DefaultMaxConcurrentSubagents
+}
+
+// DispatchConfig tunes the dispatch tool. MaxWorkers caps how many subtasks a
+// single dispatch call may fan out; it can only lower the built-in ceiling
+// (agent.MaxDispatchTasksPerCall), never raise it. <=0 means "use the ceiling".
+// The session-wide concurrency cap is still [subagents] max_concurrent_subagents.
+type DispatchConfig struct {
+	MaxWorkers int `toml:"max_workers"`
+}
+
+// DispatchMaxWorkers returns the configured per-call worker cap, or 0 when
+// unset (the caller applies its own ceiling).
+func (c Config) DispatchMaxWorkers() int {
+	if c.Dispatch.MaxWorkers > 0 {
+		return c.Dispatch.MaxWorkers
+	}
+	return 0
 }
 
 // MediaConfig bounds ffmpeg/ffprobe subprocess resource usage for the
@@ -1114,6 +1134,9 @@ func validHTTPHeaderValue(value string) bool {
 // Returns a clean error rather than silently clamping — clamping means
 // the user's intent is lost.
 func Validate(cfg Config) error {
+	if cfg.Dispatch.MaxWorkers > 0 && cfg.Dispatch.MaxWorkers < 2 {
+		return fmt.Errorf("dispatch.max_workers = %d must be >= 2 (dispatch requires at least two tasks)", cfg.Dispatch.MaxWorkers)
+	}
 	if cfg.Context.WarnThreshold < 0 || cfg.Context.WarnThreshold > 1 {
 		return fmt.Errorf("context.warn_threshold = %.3f out of range (0.0–1.0)", cfg.Context.WarnThreshold)
 	}
