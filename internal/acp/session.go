@@ -390,6 +390,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			}
 		}
 	}
+	// Cancellation is a normal ACP stop reason. Prefer it over a transport
+	// error caused by trying to emit the agent's cancellation event while the
+	// same turn is unwinding.
+	if errors.Is(turnErr, context.Canceled) {
+		return coderacp.PromptResponse{StopReason: coderacp.StopReasonCancelled}, nil
+	}
 	if updateErr != nil {
 		return coderacp.PromptResponse{}, updateErr
 	}
