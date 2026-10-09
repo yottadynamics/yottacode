@@ -193,16 +193,6 @@ func TestServer_InitializeNegotiatesProtocolVersion(t *testing.T) {
 	}
 }
 
-func TestServer_InitializeRejectsUnsupportedProtocolVersion(t *testing.T) {
-	h := newTestHarness(t)
-	ctx, cancel := withTimeout(t)
-	defer cancel()
-
-	if _, err := h.clientConn.Initialize(ctx, coderacp.InitializeRequest{ProtocolVersion: coderacp.ProtocolVersion(999)}); err == nil {
-		t.Fatal("Initialize accepted an unsupported protocol version")
-	}
-}
-
 func TestServer_NewSessionReturnsSessionId(t *testing.T) {
 	h := newTestHarness(t)
 	ctx, cancel := withTimeout(t)

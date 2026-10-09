@@ -365,6 +365,36 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Fixed
 
+- **ACP: clients can now select the model.** `yottacode acp` advertises a
+  `model` session config option (category `model`) listing every model from
+  the configured `[[providers]]`, and `session/set_config_option` switches the
+  session to it, adopting the owning provider's URL, key and headers. Hosts
+  such as Buzz (`buzz-acp --model <id>`, `buzz-acp models`) previously found no
+  model option and silently ran every session on the config default.
+  `session/load` restores the model the session last ran on. Session-only:
+  `config.toml` is not modified, and the option is hidden while advisor routing
+  owns the main model.
+- **ACP: permission mode and session title from the host.** `yottacode acp`
+  advertises a `mode` session config option (`default`, `acceptEdits`, `auto`,
+  `plan`, `bypassPermissions`, mapped onto the ask/code/architect/yolo session
+  modes; kebab-case spellings such as `bypass-permissions` are accepted), so
+  `buzz-acp --permission-mode` takes effect instead of being rejected as an
+  unknown option. `dontAsk` has no equivalent and is refused. A
+  `_meta.sessionTitle` on `session/new` (`buzz-acp --session-title`) now names
+  the session, suffixed with its UTC creation time (`jpmc-agent-20261009-165750`)
+  so sessions from one agent are distinguishable and resumable by name.
+- **ACP: context usage is a `usage_update`, not chat text.** Each iteration's
+  context fill (and cumulative cost, when known) is sent as a structured
+  `usage_update` notification. Previously it was spliced into the agent's reply
+  as `[context] n/m tokens` lines, which showed up in Buzz and editor chats.
+- **ACP: `initialize` no longer rejects other protocol versions.** A client
+  requesting an unsupported version now gets our latest version back, as the
+  ACP spec requires, instead of `-32602 Invalid params` (which stopped every
+  Buzz agent from starting).
+- **Sessions from Buzz are titled by the user's request.** The `/load` picker
+  showed `<base> You are an agent operating inside Buzz…` for every Buzz
+  session; the gist now comes from the message's `Content:` field.
+
 - **Interrupting a turn with Ctrl+C no longer leaves the terminal-tab
   "working" icon and the footer's `tools <name>` segment stuck on.** The
   pending tool state is now cleared when the turn ends.

@@ -226,3 +226,20 @@ func TestAuthenticate_UnknownMethod(t *testing.T) {
 		t.Fatal("expected an error for an unknown auth method id")
 	}
 }
+
+// TestInitialize_NegotiatesUnsupportedVersion: a client requesting a
+// protocol version we don't speak must get our latest version back, not an
+// error (ACP spec; regression for buzz-acp "Invalid params" on init).
+func TestInitialize_NegotiatesUnsupportedVersion(t *testing.T) {
+	h := newTestHarness(t)
+	ctx, cancel := withTimeout(t)
+	defer cancel()
+
+	resp, err := h.clientConn.Initialize(ctx, coderacp.InitializeRequest{ProtocolVersion: coderacp.ProtocolVersionNumber + 7})
+	if err != nil {
+		t.Fatalf("Initialize with newer version: %v", err)
+	}
+	if resp.ProtocolVersion != coderacp.ProtocolVersionNumber {
+		t.Errorf("ProtocolVersion = %d, want %d", resp.ProtocolVersion, coderacp.ProtocolVersionNumber)
+	}
+}

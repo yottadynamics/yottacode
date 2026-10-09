@@ -25,6 +25,7 @@ type Session struct {
 	ID       string            `json:"id"`
 	Name     string            `json:"name,omitempty"`
 	Model    string            `json:"model"`
+	Provider string            `json:"provider,omitempty"`
 	Created  time.Time         `json:"created"`
 	Cwd      string            `json:"cwd"`
 	Messages []adapter.Message `json:"messages"`
@@ -225,13 +226,40 @@ func (s *Session) Summary() string {
 		if m.Role != adapter.RoleUser {
 			continue
 		}
-		line := strings.Join(strings.Fields(m.Content), " ")
+		line := strings.Join(strings.Fields(unwrapBuzzTurn(m.Content)), " ")
 		if line == "" || strings.HasPrefix(line, SummaryPreamble) {
 			continue
 		}
 		return truncateRunes(line, summaryCap)
 	}
 	return ""
+}
+
+// unwrapBuzzTurn returns the user's actual request from a Buzz-wrapped
+// turn. Buzz (via ACP) prefixes every prompt with a long base-prompt and
+// conversation-context block and puts the request in the final
+// <buzz-event>'s "Content:" field; without this every Buzz session's
+// gist would read "<base> You are an agent operating inside Buzz…".
+// Non-Buzz text is returned unchanged.
+func unwrapBuzzTurn(text string) string {
+	ev := strings.LastIndex(text, "<buzz-event")
+	if ev < 0 {
+		return text
+	}
+	rest := text[ev:]
+	const key = "\nContent: "
+	i := strings.Index(rest, key)
+	if i < 0 {
+		return text
+	}
+	rest = rest[i+len(key):]
+	// Content may span lines; it ends at the next field line.
+	if j := strings.Index(rest, "\nTags: "); j >= 0 {
+		rest = rest[:j]
+	} else if j := strings.Index(rest, "</buzz-event>"); j >= 0 {
+		rest = rest[:j]
+	}
+	return rest
 }
 
 // truncateRunes cuts to max RUNES with a trailing ellipsis. Rune-based

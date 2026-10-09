@@ -315,6 +315,13 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			case decisions <- d:
 			default: // turn already ended; drop rather than block
 			}
+		case agent.ContextUsage:
+			// Structured usage_update, not chat text: hosts (e.g. Buzz) use it
+			// to track context fill and rotate sessions. Failures are
+			// non-fatal — usage is advisory, and embeddings may not have a connection.
+			if conn != nil && updateErr == nil {
+				_ = conn.SessionUpdate(ctx, usageNotification(s.id, e, s.totalCostUSD()))
+			}
 		case agent.ErrorEvent:
 			if note := correctWindow(s.rt, nil, adapter.IsContextOverflow(e.Err)); note != "" && updateErr == nil {
 				if err := emitUpdate(ctx, conn, s.id, tracker, agent.ErrorEvent{Err: fmt.Errorf("%s", strings.TrimSpace(note))}); err != nil {
@@ -529,4 +536,28 @@ func (s *Server) Shutdown(ctx context.Context) {
 		}(id)
 	}
 	wg.Wait()
+}
+
+// usageNotification builds the ACP usage_update for one context reading.
+// cost is the cumulative session cost in USD; <= 0 omits the field (unknown
+// or free), since a fabricated zero would read as a real price.
+func usageNotification(sessionID string, e agent.ContextUsage, cost float64) coderacp.SessionNotification {
+	u := &coderacp.SessionUsageUpdate{SessionUpdate: "usage_update", Used: e.Tokens, Size: e.Window}
+	if cost > 0 {
+		u.Cost = &coderacp.Cost{Amount: cost, Currency: "USD"}
+	}
+	return coderacp.SessionNotification{
+		SessionId: coderacp.SessionId(sessionID),
+		Update:    coderacp.SessionUpdate{UsageUpdate: u},
+	}
+}
+
+// totalCostUSD is the session's cumulative price estimate, 0 when unknown.
+func (s *acpSession) totalCostUSD() float64 {
+	s.historyMu.Lock()
+	defer s.historyMu.Unlock()
+	if u := s.rt.Session.TotalUsage; u.CostAvailable {
+		return u.CostUSD
+	}
+	return 0
 }
