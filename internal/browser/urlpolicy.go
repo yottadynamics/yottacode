@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -44,6 +45,15 @@ func checkNavigableURL(raw string) error {
 	case "http", "https":
 		if u.Hostname() == "" {
 			return fmt.Errorf("%w: %q has no host", ErrBlockedURL, clip(s))
+		}
+		// Link-local and cloud-metadata destinations are refused outright,
+		// even when the agent names them: they hold the host's cloud
+		// credentials. (Names that merely resolve there are caught per request
+		// by netPolicy.)
+		if h := normalizeHost(u.Hostname()); metadataHostnames[h] {
+			return fmt.Errorf("%w: %s is a cloud-metadata host", ErrBlockedURL, h)
+		} else if a, err := netip.ParseAddr(h); err == nil && classifyAddr(a) == classBlocked {
+			return fmt.Errorf("%w: %s is a link-local/cloud-metadata address", ErrBlockedURL, h)
 		}
 		return nil
 	case "":

@@ -368,6 +368,7 @@ optional local integrations in the same summary + section shape:
   - GitHub auth + rate-limit snapshot (skip with --no-github)
   - LSP code intelligence server readiness
   - media editing binary readiness
+  - browser readiness (only when the experimental browser feature is enabled)
   - permission policy syntax, readability, and advisory rule warnings
 
 Use --json for scripting.`,
@@ -394,6 +395,10 @@ Use --json for scripting.`,
 				githubResult = probeGitHub(cmd.Context())
 			}
 			summary := newDoctorSummary(providerResult, githubResult, lspResult, mediaResult, sandboxResult, permissionsResult)
+			if browserFeatureEnabled(fileCfg, opts.Experimental) {
+				br := probeBrowserDoctor(cmd.Context())
+				summary.Browser, summary.BrowserDetail = br.Status, &br
+			}
 			if jsonOutput {
 				// JSON envelope: provider-probe fields stay at top level for
 				// backward compatibility. New grouped report objects are additive.
@@ -407,6 +412,7 @@ Use --json for scripting.`,
 					LSP         LSPDoctorResult              `json:"lsp_code_intelligence"`
 					Media       MediaDoctorResult            `json:"media_editing"`
 					Sandbox     SandboxDoctorResult          `json:"sandbox"`
+					Browser     *BrowserDoctorResult         `json:"browser,omitempty"`
 					Permissions permissions.ValidationReport `json:"permissions"`
 				}{
 					ProbeResult: providerResult,
@@ -416,6 +422,7 @@ Use --json for scripting.`,
 					LSP:         lspResult,
 					Media:       mediaResult,
 					Sandbox:     sandboxResult,
+					Browser:     summary.BrowserDetail,
 					Permissions: permissionsResult,
 				}
 				if err := enc.Encode(combined); err != nil {

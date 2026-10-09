@@ -1369,12 +1369,17 @@ func safeUnattendedReadOnlyTool(name string) bool {
 }
 
 // stripUnattendedProcessTools removes tools that launch external processes or
-// subprocess-backed document/media readers, including LSP servers. Unattended
+// subprocess-backed document/media readers, including LSP servers, and the
+// shared-browser tools. Unattended
 // children have no approval surface, so language-server startup must remain a
 // foreground or sandbox-trusted operation.
 func stripUnattendedProcessTools(reg *Registry) {
 	for name := range reg.Names() {
-		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || name == "read_document" || name == "search_document" {
+		// browser_*: the session has one shared browser and one active tab.
+		// An unattended child running beside the parent would drive the same
+		// page (and browser_close from it would end the parent's session), and
+		// it has no approval surface for the page-reading calls anyway.
+		if strings.HasPrefix(name, "lsp_") || strings.HasPrefix(name, "media_") || strings.HasPrefix(name, "browser_") || name == "read_document" || name == "search_document" {
 			reg.Deregister(name)
 		}
 	}

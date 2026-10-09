@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,10 @@ type fakeBrowserSession struct {
 	consoleLogsErr        error
 	networkRequestsResult []browser.NetworkEntry
 	networkRequestsErr    error
+
+	selectErr          error
+	responseBodyResult browser.ResponseBody
+	responseBodyErr    error
 
 	calls []string
 }
@@ -124,6 +129,21 @@ func (f *fakeBrowserSession) NetworkRequests(ctx context.Context, limit int) ([]
 	return f.networkRequestsResult, f.networkRequestsErr
 }
 
+func (f *fakeBrowserSession) SelectOption(ctx context.Context, selector, value, label string) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("select:%s:%s:%s", selector, value, label))
+	if f.selectErr != nil {
+		return "", f.selectErr
+	}
+	if label != "" {
+		return label, nil
+	}
+	return value, nil
+}
+func (f *fakeBrowserSession) ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (browser.ResponseBody, error) {
+	f.calls = append(f.calls, fmt.Sprintf("response_body:%s:%d:%d", requestID, maxBytes, offset))
+	return f.responseBodyResult, f.responseBodyErr
+}
+
 var _ browserSession = (*fakeBrowserSession)(nil)
 
 // browserToolCases enumerates every browser_* tool against a shared
@@ -159,6 +179,8 @@ func browserToolCases(fake *fakeBrowserSession) []struct {
 		{"browser_download", &BrowserDownloadTool{browserToolBase: base}, `{"selector":"#dl","path":"out.bin"}`, true},
 		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: base}, `{}`, true},
 		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: base}, `{}`, true},
+		{"browser_select", &BrowserSelectTool{browserToolBase: base}, `{"selector":"#s","value":"a"}`, true},
+		{"browser_response_body", &BrowserResponseBodyTool{browserToolBase: base}, `{"request_id":"1"}`, true},
 	}
 }
 
@@ -204,6 +226,8 @@ func TestBrowserTools_DisabledMessage(t *testing.T) {
 		{"browser_download", &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#dl","path":"out.bin"}`},
 		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_select", &BrowserSelectTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#s","value":"a"}`},
+		{"browser_response_body", &BrowserResponseBodyTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"request_id":"1"}`},
 	}
 	for _, tc := range disabledCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -533,6 +557,14 @@ func TestBrowserUploadTool_Success(t *testing.T) {
 	fake := &fakeBrowserSession{}
 	dir := t.TempDir()
 	cwd := NewCwdRef(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"a.txt", "sub/b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	tool := &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
 	out, err := tool.Execute(context.Background(), `{"selector":"#f","paths":["a.txt","sub/b.txt"]}`)
 	if err != nil {
