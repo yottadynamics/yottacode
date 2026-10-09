@@ -818,7 +818,7 @@ func (s *session) waitNetworkIdle(ctx context.Context, p *trackedPage, quiet tim
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return fmt.Errorf("network idle: %w", context.DeadlineExceeded)
+			return nil
 		}
 	}
 }

@@ -239,10 +239,11 @@ func (g *guard) readLoop() {
 				ch <- r
 			}
 		case m.Method == "Target.attachedToTarget":
+			sessionID, params := m.SessionID, append(json.RawMessage(nil), m.Params...)
 			g.attaching.Add(1)
 			go func() {
 				defer g.attaching.Done()
-				g.attachSession(m.SessionID, m.Params)
+				g.attachSession(sessionID, params)
 			}()
 		case m.Method == "Target.detachedFromTarget":
 			var ev struct {
