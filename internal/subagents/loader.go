@@ -105,6 +105,7 @@ func loadDir(dir, source string) ([]AgentConfig, []string) {
 // agent definitions. A disabled feature removes them from the live registry;
 // that is normal degradation, not a broken built-in worth warning about.
 var optionalBuiltinTools = map[string]bool{
+	"web_search":                true,
 	"code_map":                  true,
 	"code_symbols":              true,
 	"code_structure_projection": true,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,11 @@ type AgentConfig struct {
 	Background  bool     // when true, dispatches default to background unless the caller opts in to foreground
 	Source      string   // "builtin" | "global" | "project" — diagnostics only
 	SourcePath  string   // absolute path of the source file (empty for builtins)
+
+	// MaxIterations optionally lowers this agent's iteration budget (frontmatter
+	// `max_iterations`). 0 means the session default. It can only lower the
+	// default, never raise it: children must stay bounded.
+	MaxIterations int
 }
 
 // agentNamePattern matches the slug rules subagents follow:
@@ -74,6 +80,10 @@ func ParseAgentFile(data []byte) (AgentConfig, error) {
 			cfg.Model = val
 		case "background":
 			cfg.Background = parseBool(val)
+		case "max_iterations":
+			if n, err := strconv.Atoi(val); err == nil && n > 0 {
+				cfg.MaxIterations = n
+			}
 		}
 	}
 	if cfg.Name == "" {
