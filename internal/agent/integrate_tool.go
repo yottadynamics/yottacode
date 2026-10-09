@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/worktree"
@@ -37,6 +38,15 @@ type IntegrateTool struct {
 	// (integrate and dispatch ship together). When false, Execute returns
 	// a recoverable error string.
 	Enabled bool
+
+	// Tasks is the session registry. Integrate refuses to touch branches whose
+	// dispatch workers are still running, committing, or otherwise active.
+	Tasks *subagents.Registry
+
+	// sem serializes integrate calls: two concurrent merges into the same
+	// integration worktree would race on its index. Lazily created.
+	semOnce sync.Once
+	sem     chan struct{}
 }
 
 func (t *IntegrateTool) Name() string { return IntegrateToolName }
@@ -97,6 +107,14 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		return "error: `integrate` is part of the experimental `dispatch` feature and is not enabled in this session. Enable it with `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental] dispatch = true` in config.toml.", nil
 	}
 
+	t.semOnce.Do(func() { t.sem = make(chan struct{}, 1) })
+	select {
+	case t.sem <- struct{}{}:
+		defer func() { <-t.sem }()
+	case <-ctx.Done():
+		return "error: integrate cancelled while waiting for another integrate to finish", nil
+	}
+
 	a := parseIntegrateArgs(argsJSON)
 	if len(a.Branches) == 0 && strings.TrimSpace(a.IntegrationBranch) == "" {
 		return "error: integrate requires at least one branch (the branches returned by dispatch), or an integration_branch to finalize after resolving a conflict", nil
@@ -145,6 +163,10 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		}
 	}
 
+	if msg := t.rejectActiveBranches(a.Branches); msg != "" {
+		return msg, nil
+	}
+
 	if msg := t.ensureIntegrationWorktree(ctx, repoRoot, integBranch, integDir, base); msg != "" {
 		return msg, nil
 	}
@@ -189,6 +211,25 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 	removedWts, keptWts := cleanupSourceWorktrees(ctx, repoRoot, integDir, cleanupMerged, skipped)
 	clearPendingCleanupBranches(ctx, integDir, integBranch)
 	return t.successMessage(integBranch, integDir, merged, skipped, removedWts, keptWts), nil
+}
+
+func (t *IntegrateTool) rejectActiveBranches(branches []string) string {
+	if t.Tasks == nil {
+		return ""
+	}
+	active := make(map[string]string)
+	for _, task := range t.Tasks.List() {
+		if task.Status == subagents.TaskRunning && task.Branch != "" {
+			active[task.Branch] = task.ID
+		}
+	}
+	for _, branch := range branches {
+		branch = strings.TrimSpace(branch)
+		if id, ok := active[branch]; ok {
+			return fmt.Sprintf("error: branch %q belongs to active dispatch task %s; wait for the worker to finish before integrating", branch, shortTaskIDPrefix(id))
+		}
+	}
+	return ""
 }
 
 // cleanupSourceWorktrees reclaims the per-task worktrees after a clean
