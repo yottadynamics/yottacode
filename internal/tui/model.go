@@ -5500,6 +5500,21 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 		// the last worker's completion re-enters here and releases the batch.
 		return m, nil
 	}
+	// Finished deep-research runs never wake the model: their summary is
+	// printed and recorded here (see deep_research_delivery.go). Anything else
+	// in the batch still gets its model turn below.
+	var rest []agent.SubagentBackgroundDone
+	for _, w := range wakes {
+		if w.AgentType == agent.DeepResearchTaskType {
+			m.deliverDeepResearch(w)
+			continue
+		}
+		rest = append(rest, w)
+	}
+	if len(rest) == 0 {
+		return m, nil
+	}
+	wakes = rest
 	input := buildSubagentWakeMessage(wakes)
 	var label string
 	if len(wakes) == 1 {
@@ -6416,6 +6431,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// scrollback log and hides the other agents. Detailed activity remains
 		// available in the child's transcript via Tab/Enter or /subagents.
 		m.flushPendingGroupedTools()
+	case agent.WorkflowPhase:
+		m.flushPendingGroupedTools()
+		m.appendLine(styleSubagentMeta.Render("◆ " + e.Line()))
 	case agent.SubagentDone:
 		m.flushPendingGroupedTools()
 		m.appendLine(renderSubagentDone(e))

@@ -298,6 +298,8 @@ func streamWithOptions(
 			fmt.Fprintf(stderr, "[subagent:%s] start (%s) — %s\n", e.AgentType, label, truncateOneLine(e.Prompt, 120))
 		case agent.SubagentProgress:
 			fmt.Fprintf(stderr, "[subagent:%s] %s\n", e.AgentType, e.Activity)
+		case agent.WorkflowPhase:
+			fmt.Fprintf(stderr, "[workflow] %s\n", e.Line())
 		case agent.SubagentDone:
 			tag := "done"
 			if e.Errored {

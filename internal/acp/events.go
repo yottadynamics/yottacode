@@ -153,6 +153,8 @@ func emitUpdate(ctx context.Context, conn *coderacp.AgentSideConnection, session
 		return diag("[subagent:%s] start (%s) — %s\n", e.AgentType, label, truncateOneLine(e.Prompt, 120))
 	case agent.SubagentProgress:
 		return diag("[subagent:%s] %s\n", e.AgentType, e.Activity)
+	case agent.WorkflowPhase:
+		return diag("[workflow] %s\n", e.Line())
 	case agent.SubagentDone:
 		tag := "done"
 		if e.Errored {

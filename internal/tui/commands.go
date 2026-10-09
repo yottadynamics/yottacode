@@ -92,6 +92,7 @@ func init() {
 		{Name: "permissions", Help: "show where permissions are configured", Run: cmdPermissions, PreservesTurn: true},
 		{Name: "theme", Help: "change the theme", Run: cmdThemes, PreservesTurn: true},
 		{Name: "loop", Args: "<dur> [Nx] <prompt>", Help: "repeat on interval; stop <id> or stop all", Run: cmdLoop, PreservesTurn: true},
+		{Name: "deep-research", Args: promptmacros.MustGet("deep-research").ArgHint, Help: promptmacros.MustGet("deep-research").Description, Run: cmdDeepResearch},
 
 		// Git workflow.
 		// Palette order mirrors the daily flow: commit → push →
@@ -280,12 +281,12 @@ func renderHelpPanel(m Model) string {
 	b.WriteString("\n")
 
 	renderHelpCommonSection(&b, width, popupW)
-	renderHelpGroup(&b, "Workflow", allSlash[0:19], wrapWidth)
-	renderHelpGroup(&b, "Git", allSlash[19:27], wrapWidth)
-	renderHelpGroup(&b, "Integrations", allSlash[27:28], wrapWidth)
-	renderHelpGroup(&b, "Utilities", allSlash[28:40], wrapWidth)
-	renderHelpGroup(&b, "Mode", allSlash[40:41], wrapWidth)
-	renderHelpGroup(&b, "Meta", allSlash[41:], wrapWidth)
+	renderHelpGroup(&b, "Workflow", allSlash[0:20], wrapWidth)
+	renderHelpGroup(&b, "Git", allSlash[20:28], wrapWidth)
+	renderHelpGroup(&b, "Integrations", allSlash[28:29], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[29:41], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[41:42], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[42:], wrapWidth)
 	if len(m.customSlash) > 0 {
 		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}
