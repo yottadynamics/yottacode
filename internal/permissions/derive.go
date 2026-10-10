@@ -21,11 +21,14 @@ type PathNormalizer func(string) string
 // Strategy per tool family:
 //
 //   - Bash: take the first argv-token of the command + " *". e.g.
-//     `go test ./...` → `Bash(go *)`. Compound commands (multiple
-//     segments separated by ;|&&|||) and commands whose first token is
-//     in a small "obviously dangerous" set return ok=false — the user
-//     should write the rule by hand instead of getting a footgun-wide
-//     blanket grant.
+//     `go test ./...` → `Bash(go *)`. A chained command (;|&&||) yields
+//     one rule per distinct segment verb (see DeriveAllowRules). Any
+//     segment whose first token is in a small "obviously dangerous" set,
+//     or any substitution/unbalanced quoting, makes the whole call
+//     ok=false — the user should write the rule by hand instead of
+//     getting a footgun-wide blanket grant.
+//   - Worktree: `Worktree(enter *)`, `Worktree(exit keep *)`,
+//     `Worktree(exit auto *)`. cleanup=remove is never derived.
 //   - Path-typed tools (Edit/Write/Mkdir/Delete/Read/List):
 //     In-cwd descriptors → `Tool(<absolute-cwd>/**)`. The rule
 //     documents which working directory it applies to, so a
@@ -60,57 +63,178 @@ type PathNormalizer func(string) string
 // ok=false means the modal should suppress the [a]lways-allow option
 // for this call.
 func DeriveAllowRule(toolName, argsJSON, cwd string, normalize PathNormalizer) (rule string, ok bool) {
+	rules, ok := DeriveAllowRules(toolName, argsJSON, cwd, normalize)
+	if !ok || len(rules) != 1 {
+		return "", false
+	}
+	return rules[0], true
+}
+
+// DeriveAllowRules is DeriveAllowRule for calls that need more than one rule
+// to cover them. Today that is only run_bash with a chained command
+// (`gofmt -w x.go && go test ./...`): Bash rules are matched per segment
+// (see targetFor), so one rule per distinct segment verb covers the whole
+// chain exactly as the evaluator will check it. All-or-nothing — if any
+// segment is dangerous or unparseable, nothing is derived, so a one-click
+// grant never silently covers only part of a chain.
+func DeriveAllowRules(toolName, argsJSON, cwd string, normalize PathNormalizer) (rules []string, ok bool) {
 	if normalize == nil {
 		normalize = identityPath
 	}
+	liveCwd := cwd
 	cwd = normalize(cwd)
-	target := targetFor(toolName, argsJSON, cwd)
+	target := scopeCommitTarget(toolName, targetFor(toolName, argsJSON, cwd), liveCwd)
 	if target.PermName == "" {
-		return "", false
+		return nil, false
+	}
+	one := func(rule string, ok bool) ([]string, bool) {
+		if !ok {
+			return nil, false
+		}
+		return []string{rule}, true
 	}
 	switch target.PermName {
 	case "Bash":
-		return deriveBash(target.Descriptor)
+		return deriveBashSegments(target)
 	case "Git":
-		first := strings.SplitN(strings.TrimSpace(target.Descriptor), " ", 2)[0]
-		if first == "" {
-			return "", false
+		desc := strings.TrimSpace(target.Descriptor)
+		first := strings.SplitN(desc, " ", 2)[0]
+		// A leading option (`git -C dir push`) hides the real subcommand from
+		// a verb-level rule, so it would also defeat the push/commit guards.
+		if first == "" || strings.HasPrefix(first, "-") || neverDeriveGitVerbs[first] {
+			return nil, false
 		}
-		return "Git(" + first + " *)", true
+		// A bare descriptor ("checkpoint", `git status`) has no args to
+		// wildcard, and `<verb> *` would not match it (the glob needs the
+		// space), so the rule is the bare verb.
+		pattern := first + " *"
+		if target.Descriptor == first {
+			pattern = first
+		}
+		if commitVerbs[first] {
+			// Commits made from inside a worktree get a worktree-scoped rule,
+			// so the grant doesn't silently extend to the main checkout.
+			// Anywhere else — and for the unified git tool's `commit`, whose
+			// calls carry no scope — the only rule derivable is the unscoped
+			// Git(commit *), which would also cover every worktree. Withheld:
+			// approve per call, or hand-write the rule.
+			if target.Scope == scopeInWT {
+				return one("Git("+pattern+scopeWorktree+")", true)
+			}
+			return nil, false
+		}
+		return one("Git("+pattern+")", true)
+	case "Worktree":
+		return one(deriveWorktreeAllow(target.Descriptor))
 	case "Browser":
-		return deriveBrowserAllow(target.Descriptor)
+		return one(deriveBrowserAllow(target.Descriptor))
 	case "MCP":
 		// Exact match only — never derive a glob. See the doc comment
 		// above and the destructive-glob-refusal check in loop.go.
 		if strings.TrimSpace(target.Descriptor) == "" {
-			return "", false
+			return nil, false
 		}
-		return "MCP(" + target.Descriptor + ")", true
+		return one("MCP("+target.Descriptor+")", true)
 	case "Read", "Write", "Edit", "Mkdir", "Delete", "List":
+		if target.Multi {
+			// apply_diff / lsp_apply_workspace_edit: one rule per distinct
+			// pattern across every touched path, all-or-nothing, so the grant
+			// covers exactly the files in this call.
+			if len(target.Descriptors) == 0 {
+				return nil, false
+			}
+			var rules []string
+			seen := map[string]bool{}
+			for _, d := range target.Descriptors {
+				pat, ok := derivePathPattern(d, cwd, normalize)
+				if !ok {
+					return nil, false
+				}
+				rule := target.PermName + "(" + pat + ")"
+				if !seen[rule] {
+					seen[rule] = true
+					rules = append(rules, rule)
+				}
+			}
+			return rules, true
+		}
 		pat, ok := derivePathPattern(target.Descriptor, cwd, normalize)
 		if !ok {
-			return "", false
+			return nil, false
 		}
-		return target.PermName + "(" + pat + ")", true
+		return one(target.PermName+"("+pat+")", true)
 	case "Tests":
+		// Single-target: the whole command is matched against one rule, so a
+		// chained command must stay underivable (a `Tests(cd *)` rule would
+		// also cover `cd x; anything`).
 		verb, ok := deriveCommandVerb(target.Descriptor)
 		if !ok {
-			return "", false
+			return nil, false
 		}
-		return "Tests(" + verb + " *)", true
+		return one("Tests("+verb+" *)", true)
 	case "Move", "Copy":
 		src, dst, ok := splitSrcDst(target.Descriptor)
 		if !ok {
-			return "", false
+			return nil, false
 		}
 		srcPat, sok := derivePathPattern(src, cwd, normalize)
 		dstPat, dok := derivePathPattern(dst, cwd, normalize)
 		if !sok || !dok {
-			return "", false
+			return nil, false
 		}
-		return target.PermName + "(" + srcPat + " -> " + dstPat + ")", true
+		return one(target.PermName+"("+srcPat+" -> "+dstPat+")", true)
+	}
+	return nil, false
+}
+
+// neverDeriveGitVerbs are Git verbs whose one-click "always allow" is
+// withheld: publishing history stays a per-call decision. A hand-written
+// rule still works. (Commits outside a worktree are withheld separately, via
+// commitVerbs in the Git case of DeriveAllowRules.)
+var neverDeriveGitVerbs = map[string]bool{"push": true}
+
+// commitVerbs are the leading verbs of the calls that write history: the
+// commit-family helpers and the unified git tool's `commit`.
+var commitVerbs = map[string]bool{
+	"commit": true, "commit_apply": true, "commit_amend": true,
+	"commit_fixup": true, "checkpoint": true,
+}
+
+// deriveWorktreeAllow turns a Worktree descriptor ("enter <name>" /
+// "exit <cleanup> <name>") into a rule. Entering any worktree is
+// derivable — the name is ephemeral, so the rule wildcards it. Leaving is
+// derivable only for the non-destructive cleanups; "remove" force-deletes
+// uncommitted work and so is never offered as a standing grant.
+func deriveWorktreeAllow(desc string) (string, bool) {
+	f := strings.Fields(desc)
+	switch {
+	case len(f) >= 1 && f[0] == "enter":
+		return "Worktree(enter *)", true
+	case len(f) >= 2 && f[0] == "exit" && (f[1] == "keep" || f[1] == "auto"):
+		return "Worktree(exit " + f[1] + " *)", true
 	}
 	return "", false
+}
+
+// deriveBashSegments derives one "Bash(<verb> *)" per distinct verb across
+// every segment of the command. See DeriveAllowRules.
+func deriveBashSegments(t Target) ([]string, bool) {
+	if t.Unparseable || len(t.Descriptors) == 0 {
+		return nil, false
+	}
+	var rules []string
+	seen := map[string]bool{}
+	for _, seg := range t.Descriptors {
+		rule, ok := deriveBash(seg)
+		if !ok {
+			return nil, false
+		}
+		if !seen[rule] {
+			seen[rule] = true
+			rules = append(rules, rule)
+		}
+	}
+	return rules, true
 }
 
 // DeriveDenyRule produces a "never allow / block" pattern from a single
@@ -312,4 +436,13 @@ var dangerousBashVerbs = map[string]bool{
 	"eval":  true,
 	"curl":  true,
 	"wget":  true,
+	// Interpreters and command launchers: `Bash(bash *)` is `Bash(*)` with
+	// extra steps, since the real command is an argument the rule can't see.
+	"bash":    true,
+	"sh":      true,
+	"zsh":     true,
+	"env":     true,
+	"xargs":   true,
+	"python":  true,
+	"python3": true,
 }

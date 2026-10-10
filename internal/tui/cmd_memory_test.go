@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +39,13 @@ func newMemoryTestModel(t *testing.T) Model {
 	t.Helper()
 	t.Setenv("YOTTACODE_HOME", "")
 	return newTestModel(t)
+}
+
+// setBrowseVisible sizes the terminal so the browse popup shows exactly n
+// entry rows; the window is derived from m.height, not stored directly.
+func setBrowseVisible(m *Model, n int) {
+	m.height = n + memoryBrowseChromeLines(m.memoryPicker, m.popupWidth()) + 2
+	m.clampMemoryBrowseCursor()
 }
 
 func seedUserMemoryFile(t *testing.T, name, body string) string {
@@ -331,7 +340,121 @@ func TestMemoryPickerRowCount_WithEmbedClient(t *testing.T) {
 	}
 }
 
-var (
-	_ = memory.ProjectSlug
-	_ = seedUserFile
-)
+func TestMemoryPicker_BrowseWindowKeepsCursorVisible(t *testing.T) {
+	m := newMemoryTestModel(t)
+	entries := make([]memory.MemoryEntry, 12)
+	for i := range entries {
+		entries[i].Name = fmt.Sprintf("memory-%02d", i)
+	}
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: entries}
+	m.memoryPickerOpen = true
+	setBrowseVisible(&m, 4)
+
+	for i := 0; i < 7; i++ {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	p := m.memoryPicker
+	if p.entryCursor != 7 || p.browseOffset != 4 {
+		t.Fatalf("cursor/window = %d/%d, want 7/4", p.entryCursor, p.browseOffset)
+	}
+	view := stripANSI(renderMemoryBrowse(p, 80, nil))
+	if strings.Contains(view, "memory-00") || !strings.Contains(view, "memory-07") || strings.Contains(view, "memory-11") {
+		t.Fatalf("browse view does not show the bounded window:\n%s", view)
+	}
+	if !strings.Contains(view, "showing 5–8 of 12") {
+		t.Fatalf("browse view missing range hint:\n%s", view)
+	}
+}
+
+func TestMemoryPicker_BrowsePagingAndBoundaries(t *testing.T) {
+	m := newMemoryTestModel(t)
+	entries := make([]memory.MemoryEntry, 10)
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: entries}
+	m.memoryPickerOpen = true
+	setBrowseVisible(&m, 3)
+
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.memoryPicker.entryCursor != 3 || m.memoryPicker.browseOffset != 1 {
+		t.Fatalf("after PgDown cursor/window = %d/%d, want 3/1", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnd})
+	if m.memoryPicker.entryCursor != 9 || m.memoryPicker.browseOffset != 7 {
+		t.Fatalf("after End cursor/window = %d/%d, want 9/7", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyHome})
+	if m.memoryPicker.entryCursor != 0 || m.memoryPicker.browseOffset != 0 {
+		t.Fatalf("after Home cursor/window = %d/%d, want 0/0", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+}
+
+func TestMemoryPicker_BrowseWindowRecomputesOnResize(t *testing.T) {
+	m := newMemoryTestModel(t)
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: make([]memory.MemoryEntry, 20), entryCursor: 19, browseOffset: 17}
+	m.memoryPickerOpen = true
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 12})
+	// The header wraps with width, so the budget is measured, not fixed.
+	want := max(1, 12-memoryBrowseChromeLines(m.memoryPicker, m.popupWidth())-2)
+	if m.memoryPicker.browseVisible != want {
+		t.Fatalf("browseVisible = %d, want %d", m.memoryPicker.browseVisible, want)
+	}
+	if m.memoryPicker.entryCursor != 19 || m.memoryPicker.browseOffset != 20-want {
+		t.Fatalf("cursor/window = %d/%d, want 19/%d", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset, 20-want)
+	}
+}
+
+func TestMemoryPicker_BrowsePopupNeverExceedsTerminalHeight(t *testing.T) {
+	for _, h := range []int{8, 12, 24, 40} {
+		m := newMemoryTestModel(t)
+		entries := make([]memory.MemoryEntry, 60)
+		for i := range entries {
+			entries[i].Name = fmt.Sprintf("memory-%02d", i)
+			entries[i].Description = strings.Repeat("long description ", 20)
+		}
+		m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, browseScope: "user", browseDir: "/tmp/x", browseMessage: "deleted one", entries: entries}
+		m.memoryPickerOpen = true
+		m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: h})
+		box := popupBox(renderMemoryPicker(m.memoryPicker, m.popupWidth()))
+		got := strings.Count(box, "\n") + 1
+		// Terminals below ~16 rows bottom out at one entry row; larger ones must fit.
+		if h >= 20 && got > h {
+			t.Errorf("height %d: popup is %d lines tall, exceeds terminal", h, got)
+		}
+	}
+}
+
+func TestMemoryPicker_BrowseWrappedDescriptionsKeepClicksAligned(t *testing.T) {
+	m := newMemoryTestModel(t)
+	entries := []memory.MemoryEntry{
+		{Name: "first", Description: strings.Repeat("wraps across the popup ", 12)},
+		{Name: "second", Description: "short"},
+		{Name: "third", Description: "short"},
+	}
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: entries}
+	m.memoryPickerOpen = true
+	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 40})
+	hits := &pickerHits{}
+	box := popupBox(renderMemoryPicker(m.memoryPicker, m.popupWidth(), hits))
+	lines := strings.Split(stripANSI(box), "\n")
+	// An unbounded description makes the popup wider than the terminal, which
+	// the terminal then wraps, desynchronizing hit rows from drawn rows.
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > m.width {
+			t.Fatalf("popup line is %d cells wide, terminal is %d: %q", w, m.width, l)
+		}
+	}
+	for idx, name := range []string{"first", "second", "third"} {
+		found := false
+		for _, r := range hits.regions {
+			if r.Kind != hitItem || r.Index != idx {
+				continue
+			}
+			// body row r.Row sits below the top border line.
+			if r.Row+1 < len(lines) && strings.Contains(lines[r.Row+1], name) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("hit row for %q does not land on its rendered line:\n%s", name, strings.Join(lines, "\n"))
+		}
+	}
+}

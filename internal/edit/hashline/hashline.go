@@ -52,6 +52,9 @@ const (
 	ErrOverlap         ErrorKind = "overlapping_hunks"
 	ErrInvalidText     ErrorKind = "invalid_text"
 	ErrInvalidRange    ErrorKind = "invalid_range"
+	// ErrEmptyAnchor means a hunk has no old text. An empty span hashes to a
+	// constant, so it verifies nothing about the file; anchor on adjacent text.
+	ErrEmptyAnchor ErrorKind = "empty_anchor"
 	// ErrHashMismatch means the hunk's Old text does not hash to Anchor.Hash.
 	// It is distinct from ErrStaleAnchor, which means the input is internally
 	// consistent but no longer matches the live source file.
@@ -119,22 +122,42 @@ func Apply(src []byte, hunks []Hunk) ([]byte, error) {
 		if !validHash(hunk.Anchor.Hash) {
 			return nil, &ApplyError{Kind: ErrInvalidHash, Message: fmt.Sprintf("hunk %d hash must be exactly %d lowercase hexadecimal characters", i, HashHexLength), ExpectedHash: hunk.Anchor.Hash}
 		}
+		if len(hunk.Old) == 0 {
+			return nil, &ApplyError{
+				Kind:    ErrEmptyAnchor,
+				Message: fmt.Sprintf("hunk %d has no old text; an empty span hashes to a constant, so it cannot prove the file is unchanged — to insert, anchor on adjacent text: set old to the neighbouring line(s) from a fresh read and new to that text plus the addition", i),
+			}
+		}
 		if hashBytes(hunk.Old) != hunk.Anchor.Hash {
 			rereadStart, rereadEnd := rereadRange(src, hunk.Anchor)
 			return nil, &ApplyError{
 				Kind:         ErrHashMismatch,
-				Message:      fmt.Sprintf("hunk %d old bytes do not match anchor hash — old and hash must come from the same read; recompute the hash from the exact old text, or re-read the file and copy both together", i),
+				Message:      fmt.Sprintf("hunk %d old bytes do not match anchor hash — old and hash must come from the same read; re-read the file and copy both together", i),
 				ExpectedHash: hunk.Anchor.Hash,
 				FoundHash:    hashBytes(hunk.Old),
 				RereadStart:  rereadStart,
 				RereadEnd:    rereadEnd,
 			}
 		}
+		// Length is caller-supplied and decides how many bytes get replaced, so
+		// it must be exactly the span that old (and therefore the hash) covers.
+		// Without this, a relocated hunk could replace bytes nobody verified.
+		// It is checked after the hash so wholly wrong old text still reports
+		// the more fundamental hash mismatch.
+		if hunk.Anchor.Length != len(hunk.Old) {
+			rereadStart, rereadEnd := rereadRange(src, hunk.Anchor)
+			return nil, &ApplyError{
+				Kind:        ErrInvalidRange,
+				Message:     fmt.Sprintf("hunk %d length %d does not match the %d bytes of old — length must be the byte length of old; copy offset, length and hash from a fresh read receipt", i, hunk.Anchor.Length, len(hunk.Old)),
+				RereadStart: rereadStart,
+				RereadEnd:   rereadEnd,
+			}
+		}
 		start, err := resolveHunk(src, hunk)
 		if err != nil {
 			return nil, err
 		}
-		resolved = append(resolved, resolvedHunk{index: i, start: start, end: start + hunk.Anchor.Length, new: hunk.New})
+		resolved = append(resolved, resolvedHunk{index: i, start: start, end: start + len(hunk.Old), new: hunk.New})
 	}
 	if err := rejectOverlaps(resolved); err != nil {
 		return nil, err
@@ -278,10 +301,7 @@ func rereadEnd(src []byte, anchor Anchor) int {
 }
 
 func rereadRange(src []byte, anchor Anchor) (int, int) {
-	length := anchor.Length
-	if length < 1 {
-		length = 1
-	}
+	length := max(anchor.Length, 1)
 	start := clamp(anchor.Offset-rereadContextBytes, 0, len(src))
 	end := clamp(anchor.Offset+length+rereadContextBytes, 0, len(src))
 	if end <= start && len(src) > 0 {

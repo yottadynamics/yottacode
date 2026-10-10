@@ -116,7 +116,7 @@ func authenticateOpenAIChatGPT(ctx context.Context) error {
 	if err := openaiauth.Save(storePath, ts); err != nil {
 		return fmt.Errorf("save tokens: %w", err)
 	}
-	if _, err := openaiauth.ScanAndPersistWithOptions(ctx, ts.AccessToken, openaiauth.ScanOptions{}); err != nil {
+	if _, err := openaiauth.ScanAndPersistWithOptions(ctx, ts.AccessToken, ts.ChatGPTAccountID, openaiauth.ScanOptions{}); err != nil {
 		return fmt.Errorf("scan available models: %w", err)
 	}
 	return nil

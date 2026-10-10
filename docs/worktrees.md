@@ -185,7 +185,16 @@ floor (alongside `run_bash`, `git_commit`, `git_checkpoint`, and
 `rollback`). The plain `git_worktree_*` wrappers stay auto-allowed
 in auto mode because they're narrow and explicit. Use
 `[A]-always` on the safety-floor prompt once if you want the agent
-to spin worktrees freely in the rest of the session.
+to spin worktrees freely: it saves `Worktree(enter *)` (or
+`Worktree(exit keep *)` / `Worktree(exit auto *)` for leaving), which
+overrides the floor for that action only. `exit_worktree` with
+`cleanup=remove` is never offered as a saved rule. A commit approved
+with `[A]` from inside a worktree saves the worktree-scoped
+`Git(commit * @worktree)`, so it does not also unlock commits in your
+main checkout. From the main checkout itself no commit rule is offered;
+approve each commit, or hand-write `Git(commit *)`. Rules can also be
+written by hand in `permissions.json`; see
+[security-and-allow-lists.md](security-and-allow-lists.md).
 
 ## Base ref — `fresh` vs `head`
 

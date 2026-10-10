@@ -56,6 +56,8 @@ type memoryPickerState struct {
 	browseDir     string
 	entries       []memory.MemoryEntry
 	entryCursor   int
+	browseOffset  int
+	browseVisible int
 	browseMessage string
 
 	showEnableSemanticRow bool
@@ -67,6 +69,45 @@ func (p *memoryPickerState) rowCount() int {
 		n++
 	}
 	return n
+}
+
+const memoryPopupBorderCols = 4
+
+func (m *Model) recomputeMemoryBrowseWindow() {
+	m.clampMemoryBrowseCursor()
+}
+func (m *Model) clampMemoryBrowseCursor() {
+	p := m.memoryPicker
+	if p == nil {
+		return
+	}
+	if p.entryCursor < 0 {
+		p.entryCursor = 0
+	}
+	if len(p.entries) == 0 {
+		p.entryCursor, p.browseOffset = 0, 0
+		return
+	}
+	if p.entryCursor >= len(p.entries) {
+		p.entryCursor = len(p.entries) - 1
+	}
+	// Recomputed on every clamp so a changed header (status message after a
+	// delete) or terminal resize can never leave a stale window height.
+	// Reserve the real chrome plus the two-line "showing a–b of n" hint.
+	p.browseVisible = max(1, m.height-memoryBrowseChromeLines(p, m.popupWidth())-2)
+	if p.entryCursor < p.browseOffset {
+		p.browseOffset = p.entryCursor
+	}
+	if p.entryCursor >= p.browseOffset+p.browseVisible {
+		p.browseOffset = p.entryCursor - p.browseVisible + 1
+	}
+	maxOffset := len(p.entries) - p.browseVisible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if p.browseOffset > maxOffset {
+		p.browseOffset = maxOffset
+	}
 }
 
 func (m *Model) openMemoryPicker() {
@@ -85,6 +126,7 @@ func (m *Model) openMemoryPicker() {
 	}
 	st.showEnableSemanticRow = (m.embedClient == nil)
 	m.memoryPicker = st
+	m.recomputeMemoryBrowseWindow()
 	m.memoryPickerOpen = true
 }
 
@@ -236,8 +278,10 @@ func (m Model) enterMemoryBrowse(scope, dir string) (Model, tea.Cmd) {
 	p.browseDir = dir
 	p.entries = entries
 	p.entryCursor = 0
+	p.browseOffset = 0
 	p.browseMessage = ""
 	p.mode = memoryBrowseMode
+	m.recomputeMemoryBrowseWindow()
 	return m, nil
 }
 
@@ -272,11 +316,29 @@ func (m Model) updateMemoryBrowse(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if p.entryCursor > 0 {
 			p.entryCursor--
 		}
+		m.clampMemoryBrowseCursor()
 		return m, nil
 	case tea.KeyDown:
 		if p.entryCursor < len(p.entries)-1 {
 			p.entryCursor++
 		}
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyPgUp:
+		p.entryCursor -= max(1, p.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyPgDown:
+		p.entryCursor += max(1, p.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyHome:
+		p.entryCursor = 0
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	case tea.KeyEnd:
+		p.entryCursor = len(p.entries) - 1
+		m.clampMemoryBrowseCursor()
 		return m, nil
 	case tea.KeyEnter:
 		return m.commitMemoryBrowseOpen()
@@ -321,6 +383,7 @@ func (m Model) commitMemoryBrowseDelete() (Model, tea.Cmd) {
 	}
 	entries, _ := scanMemoryEntriesForBrowse(p.browseScope, m.cwd)
 	p.entries = entries
+	m.clampMemoryBrowseCursor()
 	if p.entryCursor >= len(p.entries) && p.entryCursor > 0 {
 		p.entryCursor = len(p.entries) - 1
 	}
@@ -384,13 +447,13 @@ func openInFileManager(path string) {
 	go func() { _ = cmd.Wait() }()
 }
 
-func renderMemoryPicker(p *memoryPickerState, _ int, hits ...*pickerHits) string {
+func renderMemoryPicker(p *memoryPickerState, width int, hits ...*pickerHits) string {
 	var h *pickerHits
 	if len(hits) > 0 {
 		h = hits[0]
 	}
 	if p.mode == memoryBrowseMode {
-		return renderMemoryBrowse(p, h)
+		return renderMemoryBrowse(p, width, h)
 	}
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Memory",
@@ -432,23 +495,52 @@ func renderMemoryPicker(p *memoryPickerState, _ int, hits ...*pickerHits) string
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
+const memoryBrowseFooter = "↵ open · d delete · f open folder · esc back · ↑↓ navigate"
+
+// memoryBrowseChromeLines counts every non-item line of the browse popup:
+// rounded border (2), the head block, the blank line and footer. Measured from
+// the real head renderer so it cannot drift from what is drawn.
+func memoryBrowseChromeLines(p *memoryPickerState, width int) int {
+	head := memoryBrowseHead(p, width)
+	return 2 + strings.Count(head, "\n") + 2
+}
+
+func memoryBrowseHead(p *memoryPickerState, width int) string {
+	contentW := max(width-memoryPopupBorderCols, 1)
 	var b strings.Builder
 	header := "Browse " + p.browseScope + "-scope memories"
 	b.WriteString(renderMenuHeader(header,
-		"Pick a memory to open, delete, or open the folder in your file manager."))
+		"Pick a memory to open, delete, or open the folder in your file manager.", contentW))
 	b.WriteString("\n")
 	if p.browseDir != "" {
-		fmt.Fprintf(&b, "  %s\n\n", styleAuto.Render(abbrevHome(p.browseDir)))
+		fmt.Fprintf(&b, "  %s\n\n", styleAuto.Render(truncateDisplayMiddle(abbrevHome(p.browseDir), max(contentW-2, 1))))
 	}
 	if p.browseMessage != "" {
-		b.WriteString(styleAuto.Render("  · " + p.browseMessage))
+		b.WriteString(styleAuto.Render(truncateDisplay("  · "+p.browseMessage, contentW)))
 		b.WriteString("\n\n")
 	}
+	return b.String()
+}
+
+func renderMemoryBrowse(p *memoryPickerState, width int, h *pickerHits) string {
+	var b strings.Builder
+	b.WriteString(memoryBrowseHead(p, width))
 	if len(p.entries) == 0 {
 		b.WriteString(styleEmpty.Render("  (no memories)"))
 	} else {
-		for i, e := range p.entries {
+		start := p.browseOffset
+		end := start + p.browseVisible
+		if end > len(p.entries) {
+			end = len(p.entries)
+		}
+		if start > end {
+			start = end
+		}
+		if start > 0 || end < len(p.entries) {
+			fmt.Fprintf(&b, "  %s\n\n", styleMeta.Render(fmt.Sprintf("showing %d–%d of %d", start+1, end, len(p.entries))))
+		}
+		for i := start; i < end; i++ {
+			e := p.entries[i]
 			label := e.Name
 			if e.Type != "" {
 				label = e.Name + " [" + e.Type + "]"
@@ -463,13 +555,14 @@ func renderMemoryBrowse(p *memoryPickerState, h *pickerHits) string {
 				Label:      label,
 				LabelWidth: 32,
 				Desc:       desc,
+				MaxWidth:   max(width-4, 1), // one rendered row per entry keeps hit rows aligned
 				Cursor:     i == p.entryCursor,
 			}))
 			b.WriteString("\n")
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleFooter.Render("↵ open · d delete · f open folder · esc back · ↑↓ navigate"))
+	b.WriteString(styleFooter.Render(truncateDisplay(memoryBrowseFooter, max(width-memoryPopupBorderCols, 1))))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -631,9 +724,10 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 	if len(hits) > 0 {
 		h = hits[0]
 	}
+	width := m.popupWidth()
 	var b strings.Builder
 	b.WriteString(renderMenuHeader("Enable Semantic Search",
-		"Pick an embedding model to pull via Ollama."))
+		"Pick an embedding model to pull via Ollama.", width-memoryPopupBorderCols))
 	b.WriteString("\n")
 
 	if m.embedSetupPulling {
@@ -650,6 +744,7 @@ func (m Model) renderEmbedSetup(hits ...*pickerHits) string {
 			LabelWidth: 22,
 			Desc:       em.Desc + " · " + em.Size,
 			Cursor:     i == m.embedSetupCursor,
+			MaxWidth:   width - memoryPopupBorderCols,
 		}))
 		b.WriteString("\n")
 	}

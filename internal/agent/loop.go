@@ -949,7 +949,9 @@ func parallelBatchSize(cfg LoopConfig, calls []adapter.ToolCall) int {
 		// branch goes straight to Execute via the read-only fast
 		// path).
 		if cfg.PlanMode.IsActive() {
-			break
+			if _, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
+				break
+			}
 		}
 		n++
 	}
@@ -1121,22 +1123,12 @@ func executeToolCallImpl(
 	preview := tool.PreviewCall(argsJSON)
 	var approvalSource string
 
-	verdict := permissions.Default
-	var verdictRule permissions.Rule
-	if cfg.Permissions != nil {
-		verdict, verdictRule = cfg.Permissions.EvaluateWithRule(tool.Name(), argsJSON)
-	}
-
-	if verdict == permissions.Deny {
-		_ = send(ctx, events, ApprovalAuto{
-			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
-		})
-		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
-	}
-
-	// Plan-mode gate runs after permission denies: explicit deny rules must
-	// still block every mutating tool, while non-plan-file mutations remain
-	// blocked by the plan-mode gate.
+	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
+	// rules still beat the gate (the model never gets to call a denied
+	// tool, plan mode or not), but the gate beats the tool's own
+	// RequiresApproval policy. Returning the gate's error string as a
+	// tool result lets the model recover by switching to a read-only
+	// or plan-file alternative on the next iteration.
 	if cfg.PlanMode.IsActive() {
 		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
@@ -1144,6 +1136,22 @@ func executeToolCallImpl(
 			})
 			return msg, nil, true, "plan-mode-block", nil
 		}
+	}
+
+	verdict := permissions.Default
+	var verdictRule permissions.Rule
+	if cfg.Permissions != nil {
+		verdict, verdictRule = cfg.Permissions.EvaluateWithRuleAt(cfg.Cwd.Get(), tool.Name(), argsJSON)
+	}
+
+	// Permission Deny always wins, even over plan-mode auto-allow. A
+	// user who explicitly denies write_file via permissions.json wants
+	// no writes at all, plan file included.
+	if verdict == permissions.Deny {
+		_ = send(ctx, events, ApprovalAuto{
+			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
+		})
+		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
 	}
 
 	// Background policy runs before the mode chain so unattended children cannot
@@ -1297,6 +1305,22 @@ approved:
 	if err := send(ctx, events, ToolStart{ToolCallID: callID, ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON}); err != nil {
 		return "", nil, false, "", err
 	}
+	var cwdRecovery CwdRecovery
+	if cfg.Cwd != nil {
+		var recoverErr error
+		cwdRecovery, recoverErr = cfg.Cwd.Recover()
+		if recoverErr != nil {
+			msg := "error: cwd unavailable: " + recoverErr.Error()
+			_ = send(ctx, events, ToolResult{ToolCallID: callID, ToolName: tool.Name(), Output: msg, Errored: true})
+			return msg, nil, false, "cwd-recovery", nil
+		}
+		if cwdRecovery.Recovered && !IsReadOnlyTool(tc.Name) {
+			msg := fmt.Sprintf("error: session cwd %q no longer exists; recovered to %q, but %s was not executed. Reconfirm the intended working directory before retrying", cwdRecovery.Requested, cwdRecovery.Actual, tc.Name)
+			_ = send(ctx, events, ToolResult{ToolCallID: callID, ToolName: tool.Name(), Output: msg, Errored: true})
+			_ = send(ctx, events, CwdChanged{NewCwd: cwdRecovery.Actual, Previous: cwdRecovery.Requested, Recovered: true, Reason: "directory_deleted"})
+			return msg, nil, false, "cwd-recovery", nil
+		}
+	}
 	// Attach the parent's events + decisions channels so tools that
 	// need to participate in the parent's approval flow (today:
 	// AgentTool, which forwards a foreground subagent's child
@@ -1437,6 +1461,9 @@ approved:
 		if after := cfg.Cwd.Get(); after != cwdBefore {
 			_ = send(ctx, events, CwdChanged{NewCwd: after})
 		}
+	}
+	if cwdRecovery.Recovered {
+		_ = send(ctx, events, CwdChanged{NewCwd: cwdRecovery.Actual, Previous: cwdRecovery.Requested, Recovered: true, Reason: "directory_deleted"})
 	}
 	if pa, ok := tool.(planAware); ok {
 		if store := pa.PlanStore(); store != nil {
@@ -1583,19 +1610,23 @@ func promptForApproval(
 		// otherwise. The deriver applies it to both cwd and any
 		// absolute descriptor, so relative-path AND absolute-path tool
 		// args produce the same name-agnostic rule.
-		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
-			if err := cfg.Permissions.AddAllow(rule); err != nil {
-				_ = send(ctx, events, ApprovalAuto{
-					ToolName: tool.Name(),
-					Preview:  fmt.Sprintf("[warn] could not save rule %q: %v", rule, err),
-					Source:   "permissions",
-				})
-			} else {
-				_ = send(ctx, events, ApprovalAuto{
-					ToolName: tool.Name(),
-					Preview:  "saved rule: " + rule,
-					Source:   "permissions",
-				})
+		// A chained run_bash command derives one rule per segment verb;
+		// every other call derives exactly one.
+		if rules, ok := permissions.DeriveAllowRules(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
+			for _, rule := range rules {
+				if err := cfg.Permissions.AddAllow(rule); err != nil {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  fmt.Sprintf("[warn] could not save rule %q: %v", rule, err),
+						Source:   "permissions",
+					})
+				} else {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  "saved rule: " + rule,
+						Source:   "permissions",
+					})
+				}
 			}
 		}
 	}
@@ -1604,19 +1635,21 @@ func promptForApproval(
 		// normalization), but the grant lands in Permissions.sessionAllow
 		// instead of permissions.local.json — memory-only, gone on
 		// restart, immune to a `/permissions` file edit + reload.
-		if rule, ok := permissions.DeriveAllowRule(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
-			if err := cfg.Permissions.AddSessionAllow(rule); err != nil {
-				_ = send(ctx, events, ApprovalAuto{
-					ToolName: tool.Name(),
-					Preview:  fmt.Sprintf("[warn] could not allow %q for this session: %v", rule, err),
-					Source:   "permissions",
-				})
-			} else {
-				_ = send(ctx, events, ApprovalAuto{
-					ToolName: tool.Name(),
-					Preview:  "allowed for this session (not saved to disk): " + rule,
-					Source:   "permissions",
-				})
+		if rules, ok := permissions.DeriveAllowRules(tool.Name(), tc.ArgsJSON, cfg.Cwd.Get(), worktree.NormalizeForRule); ok {
+			for _, rule := range rules {
+				if err := cfg.Permissions.AddSessionAllow(rule); err != nil {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  fmt.Sprintf("[warn] could not allow %q for this session: %v", rule, err),
+						Source:   "permissions",
+					})
+				} else {
+					_ = send(ctx, events, ApprovalAuto{
+						ToolName: tool.Name(),
+						Preview:  "allowed for this session (not saved to disk): " + rule,
+						Source:   "permissions",
+					})
+				}
 			}
 		}
 	}

@@ -34,6 +34,7 @@ func (m Model) dismissStaticPopup() Model {
 	m.usagePanel = ""
 	m.usageScrollOffset = 0
 	m.inspectOpen = false
+	m.inspectView = nil
 	m.inspectPanel = ""
 	m.inspectScrollOffset = 0
 	m.experimentalOpen = false
@@ -46,20 +47,6 @@ func (m Model) dismissStaticPopup() Model {
 	m.contextReportBody = ""
 	m.contextReportScrollOffset = 0
 	return m
-}
-
-// popupCloseHit reports whether a screen coordinate landed on the popup's
-// top-right close affordance. It intentionally accepts the glyph cell and its
-// one-cell breathing room so the target is usable with terminal mouse reporting.
-func popupCloseHit(box string, originX, originY, screenX, screenY int) bool {
-	if screenY != originY {
-		return false
-	}
-	bw := lipgloss.Width(box)
-	if bw < 6 {
-		return false
-	}
-	return screenX >= originX+bw-3 && screenX <= originX+bw-2
 }
 
 // handleScrollableStaticPopupClick routes mouse clicks inside scrollable static
@@ -127,17 +114,6 @@ func (m Model) scrollPopupLines(delta int) Model {
 		m.contextReportScrollOffset = min(max(m.contextReportScrollOffset+delta, 0), m.contextReportMaxScrollOffset())
 	}
 	return m
-}
-
-// handlePopupCloseClick centralizes the shared × affordance. It mirrors each
-// surface's Esc behavior instead of inventing a second close path.
-func (m Model) handlePopupCloseClick(box string, msg tea.MouseClickMsg) (Model, tea.Cmd, bool) {
-	ox, oy := m.popupOrigin(box)
-	if !popupCloseHit(box, ox, oy, msg.X, msg.Y) {
-		return m, nil, false
-	}
-	out, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
-	return out.(Model), cmd, true
 }
 
 // before its first body row/column. Both popupBox (rounded, Padding(0,1))
@@ -1166,6 +1142,18 @@ func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
 }
 
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
+	if m.memoryPickerOpen && m.memoryPicker != nil && m.memoryPicker.mode == memoryBrowseMode {
+		step := 1
+		if msg.Button == tea.MouseWheelUp {
+			step = -1
+		}
+		if msg.Button != tea.MouseWheelUp && msg.Button != tea.MouseWheelDown {
+			return m, nil
+		}
+		m.memoryPicker.entryCursor += step * max(1, m.memoryPicker.browseVisible)
+		m.clampMemoryBrowseCursor()
+		return m, nil
+	}
 	if !m.enteredConversation {
 		return m, nil
 	}

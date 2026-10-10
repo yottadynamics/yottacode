@@ -12,9 +12,13 @@ package acp
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"time"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
+	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -89,7 +93,11 @@ func (s *Server) SetConnection(conn *coderacp.AgentSideConnection) {
 // requires a non-empty list here (CI-verified — see
 // roadmap/acp-adapter.md's Phase 2 notes) with at least one method of
 // type "agent" or "terminal". See auth.go for both implementations.
-func (s *Server) Initialize(_ context.Context, _ coderacp.InitializeRequest) (coderacp.InitializeResponse, error) {
+func (s *Server) Initialize(_ context.Context, req coderacp.InitializeRequest) (coderacp.InitializeResponse, error) {
+	// Version negotiation per the ACP spec: an unsupported requested
+	// version is not an error — reply with the latest version we support
+	// and let the client decide whether to proceed. Rejecting here broke
+	// clients (e.g. buzz-acp) that send a different version number.
 	return coderacp.InitializeResponse{
 		ProtocolVersion: coderacp.ProtocolVersionNumber,
 		AgentCapabilities: coderacp.AgentCapabilities{
@@ -126,16 +134,46 @@ func (s *Server) ResumeSession(_ context.Context, _ coderacp.ResumeSessionReques
 
 // NewSession creates a session via agentruntime.Builder and registers it.
 func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionRequest) (coderacp.NewSessionResponse, error) {
+	if err := validateMCPServers(params.McpServers); err != nil {
+		return coderacp.NewSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
+	}
 	spec := s.sessionSpec(params.Cwd, params.McpServers)
 	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {
 		return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": err.Error()})
 	}
+	// Hosts such as Buzz pass a session title out-of-band in _meta
+	// (--session-title); use it as the session's name so it is
+	// recognisable in /load. Persisted with the session's next save.
+	if title, _ := params.Meta["sessionTitle"].(string); strings.TrimSpace(title) != "" {
+		// Suffix the creation time (UTC, like the session id) so sessions
+		// from the same agent stay distinguishable and resumable by name.
+		rt.Session.Name = sessionTitleName(strings.TrimSpace(title), rt.Session.Created)
+	}
 	sess := newACPSession(s, rt)
 	s.mu.Lock()
 	s.sessions[rt.Session.ID] = sess
 	s.mu.Unlock()
-	s.sendAvailableCommands(ctx, rt.Session.ID)
+	if err := s.sendAvailableCommands(ctx, rt.Session.ID); err != nil {
+		sess.requestCancel()
+		sess.waitForTurn(ctx, closeSessionDrainTimeout)
+		sess.rt.Close(context.Background())
+		s.mu.Lock()
+		delete(s.sessions, rt.Session.ID)
+		s.mu.Unlock()
+		return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send available commands: " + err.Error()})
+	}
+	if s.conn != nil {
+		for _, warning := range rt.Warnings {
+			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText("[warning] "+truncateOneLine(warning, 240)+"\n")); err != nil {
+				rt.Close(context.Background())
+				s.mu.Lock()
+				delete(s.sessions, rt.Session.ID)
+				s.mu.Unlock()
+				return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send warning: " + err.Error()})
+			}
+		}
+	}
 	return coderacp.NewSessionResponse{
 		SessionId:     coderacp.SessionId(rt.Session.ID),
 		Modes:         sessionModeState(rt),
@@ -146,39 +184,90 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 // LoadSession resumes a persisted session by id — session/load becomes
 // session.Load via SessionSpec.Resume, same as the TUI's --continue.
 func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionRequest) (coderacp.LoadSessionResponse, error) {
+	if err := validateMCPServers(params.McpServers); err != nil {
+		return coderacp.LoadSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
+	}
 	spec := s.sessionSpec(params.Cwd, params.McpServers)
 	spec.Resume = string(params.SessionId)
 	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {
 		return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": err.Error()})
 	}
+	// The adapter is built from process defaults; restore the model this
+	// session last ran on. Best effort: a model no longer in config simply
+	// keeps the default rather than failing the load.
+	if saved := rt.Session.Model; saved != "" && (saved != rt.ChatOptions.Model || rt.Session.Provider != "") {
+		if rt.Session.Provider != "" {
+			rt.ChatOptions.Provider = rt.Session.Provider
+		}
+		_ = agentruntime.RebuildAdapterForModel(rt, saved)
+	}
 	sess := newACPSession(s, rt)
 
 	s.mu.Lock()
 	old, hadOld := s.sessions[rt.Session.ID]
-	s.sessions[rt.Session.ID] = sess
 	s.mu.Unlock()
 	if hadOld {
-		// A client reloading a session that's already live (e.g. a
-		// reconnect racing a stale registration) must not orphan the
-		// previous instance's resources — cancel any in-flight turn,
-		// wait for it to unwind, then release its MCP/LSP/recall
-		// handles before the replacement takes over. Mirrors
-		// CloseSession's cancel-then-teardown shape; no save here since
-		// the fresh Build() call above already reconstructed session
-		// state from disk.
+		// Block new prompts before waiting for the current lifecycle owner.
+		old.mu.Lock()
+		old.closing = true
+		old.mu.Unlock()
+		old.lifecycle.Lock()
 		old.requestCancel()
-		old.waitForTurn(ctx, closeSessionDrainTimeout)
-		old.rt.Close(context.Background())
+		drained := old.waitForTurn(ctx, closeSessionDrainTimeout)
+		if !drained {
+			old.mu.Lock()
+			old.closing = false
+			old.mu.Unlock()
+			old.lifecycle.Unlock()
+			rt.Close(context.Background())
+			return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "timed out draining replaced session"})
+		}
+		old.mu.Lock()
+		old.closed = true
+		old.mu.Unlock()
+		old.rt.Close(ctx)
+		old.lifecycle.Unlock()
 	}
+	s.mu.Lock()
+	s.sessions[rt.Session.ID] = sess
+	s.mu.Unlock()
 
-	s.sendAvailableCommands(ctx, rt.Session.ID)
-	// Whether the response needs to replay the transcript back to the
-	// client via session/update is still an open question (see
-	// roadmap/acp-adapter.md open question #4) — v1 does state
-	// restoration only. rt.Session.Messages already holds the full
-	// transcript in memory regardless, so replaying it later is additive,
-	// not blocked by anything here.
+	if err := s.sendAvailableCommands(ctx, rt.Session.ID); err != nil {
+		rt.Close(context.Background())
+		s.mu.Lock()
+		delete(s.sessions, rt.Session.ID)
+		s.mu.Unlock()
+		return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send available commands: " + err.Error()})
+	}
+	// Replay persisted conversational transcript as standard ACP updates. Tool
+	// and system messages are intentionally omitted: loading restores context,
+	// it must not re-run side effects or expose internal instructions.
+	for _, msg := range rt.Session.Messages {
+		switch msg.Role {
+		case adapter.RoleUser:
+			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateUserMessageText(msg.Content)); err != nil {
+				rt.Close(context.Background())
+				s.mu.Lock()
+				delete(s.sessions, rt.Session.ID)
+				s.mu.Unlock()
+				return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "replay session: " + err.Error()})
+			}
+		case adapter.RoleAssistant:
+			if msg.Content != "" {
+				if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText(msg.Content)); err != nil {
+					rt.Close(context.Background())
+					s.mu.Lock()
+					delete(s.sessions, rt.Session.ID)
+					s.mu.Unlock()
+					return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "replay session: " + err.Error()})
+				}
+			}
+		}
+	}
+	// Transcript replay is intentionally limited to standard user and agent
+	// message chunks; internal system prompts, historical tool calls, and
+	// approvals are restored only in server-side session state.
 	return coderacp.LoadSessionResponse{Modes: sessionModeState(rt), ConfigOptions: sessionConfigOptions(rt)}, nil
 }
 
@@ -209,12 +298,35 @@ func (s *Server) sessionSpec(cwd string, mcpServers []coderacp.McpServer) agentr
 	}
 }
 
-// convertMCPServers translates every variant of ACP's McpServer union
-// into config.MCPServer — stdio (every agent must support it), and
-// http/sse (advertised via Initialize's McpCapabilities above, so a
-// spec-compliant client only ever sends these once we've said we accept
-// them). The unstable Acp variant has no yottacode equivalent and is
-// skipped, same as an unrecognized/empty entry.
+func validateMCPServers(servers []coderacp.McpServer) error {
+	for i, s := range servers {
+		variants := 0
+		if s.Stdio != nil {
+			variants++
+		}
+		if s.Http != nil {
+			variants++
+		}
+		if s.Sse != nil {
+			variants++
+		}
+		if variants != 1 {
+			return fmt.Errorf("acp: mcp server %d must specify exactly one supported variant", i)
+		}
+		if s.Stdio != nil && (s.Stdio.Name == "" || s.Stdio.Command == "") {
+			return fmt.Errorf("acp: mcp server %d has empty stdio name or command", i)
+		}
+		if s.Http != nil && (s.Http.Name == "" || s.Http.Url == "") {
+			return fmt.Errorf("acp: mcp server %d has empty http name or url", i)
+		}
+		if s.Sse != nil && (s.Sse.Name == "" || s.Sse.Url == "") {
+			return fmt.Errorf("acp: mcp server %d has empty sse name or url", i)
+		}
+	}
+	return nil
+}
+
+// convertMCPServers translates ACP's supported MCP variants.
 func convertMCPServers(servers []coderacp.McpServer) []config.MCPServer {
 	if len(servers) == 0 {
 		return nil
@@ -260,10 +372,29 @@ func httpHeadersToMap(headers []coderacp.HttpHeader) map[string]string {
 	return out
 }
 
+// replayUpdate sends one load transcript update and keeps outbound failures
+// visible to the caller.
+func (s *Server) replayUpdate(ctx context.Context, id string, update coderacp.SessionUpdate) error {
+	if s.conn == nil {
+		return nil
+	}
+	return s.conn.SessionUpdate(ctx, coderacp.SessionNotification{SessionId: coderacp.SessionId(id), Update: update})
+}
+
 // session looks up a registered session by id under the read lock.
 func (s *Server) session(id string) (*acpSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sess, ok := s.sessions[id]
 	return sess, ok
+}
+
+// sessionTitleName builds "<title>-YYYYMMDD-HHMMSS" from a host-supplied
+// title and the session's creation time. No spaces, so it is typeable as
+// `--resume <name>`.
+func sessionTitleName(title string, created time.Time) string {
+	if created.IsZero() {
+		return title
+	}
+	return title + "-" + created.UTC().Format("20060102-150405")
 }

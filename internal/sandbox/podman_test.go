@@ -140,7 +140,7 @@ func TestPodmanRunArgsIncludesConfiguredDNS(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestPodmanRunArgsMountsPersistentGoCacheDir(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -199,11 +199,11 @@ func TestPodmanRunArgsGoCacheDirIsCanonicalNotWorktreeScoped(t *testing.T) {
 	mountRootB := filepath.Join(t.TempDir(), "repo-b")
 	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
 
-	argsA, err := podmanRunArgs(cfg, "yc-a", mountRootA, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	argsA, err := podmanRunArgs(cfg, "yc-a", mountRootA, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs(a): %v", err)
 	}
-	argsB, err := podmanRunArgs(cfg, "yc-b", mountRootB, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	argsB, err := podmanRunArgs(cfg, "yc-b", mountRootB, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs(b): %v", err)
 	}
@@ -232,7 +232,7 @@ func TestPodmanRunArgsOmitsDNSWhenNetworkNone(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestPodmanRunArgsOmitsResourceLimitsWhenCgroupUnsupported(t *testing.T) {
 		CPUs:      1,
 		PidsLimit: 128,
 	}
-	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: false}, sandboxOwner{PID: 4242})
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: false}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 		Memory: "256m", CPUs: 1, PidsLimit: 128, Disk: 4096,
 	}
 
-	unsupported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: false, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	unsupported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: false, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 
 	zeroDisk := baseCfg
 	zeroDisk.Disk = 0
-	noQuota, err := podmanRunArgs(zeroDisk, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	noQuota, err := podmanRunArgs(zeroDisk, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestPodmanRunArgsOmitsStorageOptWhenUnsupportedOrZeroDisk(t *testing.T) {
 		t.Errorf("podman args must omit --storage-opt when Disk is 0: %v", noQuota)
 	}
 
-	supported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242})
+	supported, err := podmanRunArgs(baseCfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestPodmanRunArgsIncludesOwnerLabels(t *testing.T) {
 	mountRoot := filepath.Join(t.TempDir(), "repo")
 	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
 
-	withTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, StartTicks: 987654, HaveStartTicks: true})
+	withTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, StartTicks: 987654, HaveStartTicks: true}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestPodmanRunArgsIncludesOwnerLabels(t *testing.T) {
 		t.Errorf("podman args missing owner_started label: %v", withTicks)
 	}
 
-	withoutTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, HaveStartTicks: false})
+	withoutTicks, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242, HaveStartTicks: false}, nil)
 	if err != nil {
 		t.Fatalf("podmanRunArgs: %v", err)
 	}
@@ -334,6 +334,46 @@ func TestPodmanRunArgsIncludesOwnerLabels(t *testing.T) {
 	}
 	if strings.Contains(joined, "yottacode.owner_started") {
 		t.Errorf("podman args must omit owner_started label when start ticks are unknown: %v", withoutTicks)
+	}
+}
+
+// TestPodmanRunArgsIncludesSecretMounts guards the EnvPassthrough delivery
+// mechanism: values are mounted as podman secrets (--secret NAME,target=X),
+// never baked in as a container-level `-e NAME=value` — see
+// createSessionSecrets' doc comment for why (podman inspect / on-disk
+// config.json exposure).
+func TestPodmanRunArgsIncludesSecretMounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
+
+	mounts := []secretMount{{SecretName: "yc-test-secret-GITHUB_TOKEN", EnvName: "GITHUB_TOKEN"}}
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, mounts)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--secret yc-test-secret-GITHUB_TOKEN,target=GITHUB_TOKEN") {
+		t.Errorf("podman args missing secret mount: %v", args)
+	}
+	if strings.Contains(joined, "-e GITHUB_TOKEN") {
+		t.Errorf("podman args must not also pass -e GITHUB_TOKEN (secrets replace bare env passthrough): %v", args)
+	}
+}
+
+func TestPodmanRunArgsOmitsSecretFlagWithNoMounts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mountRoot := filepath.Join(t.TempDir(), "repo")
+	cfg := config.SandboxConfig{Image: "sandbox-image", Network: "host", Mounts: []string{"."}, Memory: "256m", CPUs: 1, PidsLimit: 128}
+
+	args, err := podmanRunArgs(cfg, "yc-test", mountRoot, hostCapabilities{StorageOpt: true, CgroupLimits: true}, sandboxOwner{PID: 4242}, nil)
+	if err != nil {
+		t.Fatalf("podmanRunArgs: %v", err)
+	}
+	if strings.Contains(strings.Join(args, " "), "--secret") {
+		t.Errorf("podman args must omit --secret when no EnvPassthrough values resolved: %v", args)
 	}
 }
 
@@ -400,6 +440,26 @@ func TestPodmanSandbox_CommandBuildsExpectedArgv(t *testing.T) {
 	}
 	if cmd.Cancel == nil {
 		t.Error("Command should set cmd.Cancel to kill the in-container process on cancellation")
+	}
+}
+
+// TestPodmanSandbox_CommandExportsMountedSecrets guards Command's env-var
+// compatibility shim: a podman secret is only readable as a file at
+// /run/secrets/<target> inside the container, but most CLIs (gh, aws, git
+// credential helpers) expect an actual env var — so each exec's wrapped
+// script must re-export it fresh (there is no container-wide env to
+// inherit it from the way a baked `-e NAME=value` would provide).
+func TestPodmanSandbox_CommandExportsMountedSecrets(t *testing.T) {
+	s := &PodmanSandbox{name: "yc-test", secretExportPrelude: secretExportPrelude([]secretMount{
+		{SecretName: "yc-test-secret-GITHUB_TOKEN", EnvName: "GITHUB_TOKEN"},
+	})}
+	cmd := s.Command(context.Background(), "gh api user", "/proj")
+	wrapped := cmd.Args[len(cmd.Args)-1]
+	if !strings.Contains(wrapped, `export GITHUB_TOKEN="$(cat /run/secrets/GITHUB_TOKEN 2>/dev/null)"`) {
+		t.Errorf("wrapped command = %q, want it to export GITHUB_TOKEN from the mounted secret", wrapped)
+	}
+	if !strings.HasSuffix(wrapped, "\ngh api user") {
+		t.Errorf("wrapped command = %q, want it to still end with the original command", wrapped)
 	}
 }
 

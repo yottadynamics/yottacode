@@ -150,3 +150,40 @@ func TestRenderWriteFileApprovalSummary_RequiresPath(t *testing.T) {
 		t.Errorf("expected ok=false when path is missing")
 	}
 }
+
+func TestEmitWriteFileBodyToScrollback_CapsLongPreview(t *testing.T) {
+	m := newTestModel(t)
+	total := cardBodyLineCap + 15
+	content := strings.TrimSuffix(strings.Repeat("// filler\n", total), "\n")
+	args, _ := json.Marshal(struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{Path: "x.go", Content: content})
+	before := len(m.historyLines)
+	emitWriteFileBodyToScrollback(&m, string(args))
+	var plain []string
+	for _, l := range m.historyLines[before:] {
+		plain = append(plain, stripANSI(l))
+	}
+	joined := strings.Join(plain, "\n")
+	if got := strings.Count(joined, "// filler"); got != cardBodyLineCap {
+		t.Errorf("rendered %d content lines, want %d", got, cardBodyLineCap)
+	}
+	if !strings.Contains(joined, "…15 more line(s)") {
+		t.Errorf("missing overflow marker: %q", joined)
+	}
+	if !strings.Contains(joined, "awaiting approval") {
+		t.Errorf("footer missing: %q", joined)
+	}
+}
+
+func TestEmitWriteFileBodyToScrollback_ShortPreviewUntruncated(t *testing.T) {
+	m := newTestModel(t)
+	args := `{"path":"x.go","content":"a\nb\nc"}`
+	before := len(m.historyLines)
+	emitWriteFileBodyToScrollback(&m, args)
+	joined := stripANSI(strings.Join(m.historyLines[before:], "\n"))
+	if strings.Contains(joined, "more line(s)") {
+		t.Errorf("short preview should not be truncated: %q", joined)
+	}
+}

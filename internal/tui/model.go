@@ -33,6 +33,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/cost"
+	"github.com/yottadynamics/yottacode/internal/doctor"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	githubapi "github.com/yottadynamics/yottacode/internal/github"
 	"github.com/yottadynamics/yottacode/internal/lsp"
@@ -843,6 +844,7 @@ type Model struct {
 	inspectOpen         bool
 	inspectPanel        string
 	inspectSession      *session.Session
+	inspectView         *inspectViewState
 	inspectScrollOffset int
 	inspectPickerOpen   bool
 	inspectPicker       *inspectPickerState
@@ -1085,6 +1087,10 @@ type textareaSyncMsg struct{}
 type providerProbeMsg struct {
 	result   adapter.ProbeResult
 	announce bool
+}
+
+type doctorMsg struct {
+	result doctor.Result
 }
 
 type doctorPermissionsMsg struct {
@@ -1484,16 +1490,24 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if _, ok := msg.(cursorBlinkMsg); ok {
-		// Toggle and re-arm. Unlike the spinner tick, the cursor
-		// blink runs perpetually — there's no "idle" state where we
-		// hide the input row, so the tick has work to do every
-		// cycle. The 530ms cadence keeps redraw churn low compared
-		// to the spinner's 100ms.
+		// Busy work keeps the cursor steady and dim so it remains an input
+		// affordance without adding blink churn to the live agent view.
+		if m.cursorBusy() {
+			m.cursorVisible = true
+			return m, cursorBlinkCmd()
+		}
 		m.cursorVisible = !m.cursorVisible
 		return m, cursorBlinkCmd()
 	}
 	if _, ok := msg.(cmdlineClickFlashDoneMsg); ok {
 		m.cmdlineClickFlash = false
+		return m, nil
+	}
+	if doctorResult, ok := msg.(doctorMsg); ok {
+		m.appendLine(formatDoctor(doctorResult.result))
+		if doctorResult.result.Provider.Profile.Provider != "" {
+			m.providerProfile = doctorResult.result.Provider.Profile
+		}
 		return m, nil
 	}
 	if doctor, ok := msg.(doctorPermissionsMsg); ok {
@@ -1538,6 +1552,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.width = msg.Width // terminal too narrow; bypass the margin
 		}
 		m.height = msg.Height
+		m.recomputeMemoryBrowseWindow()
 		m.md = newMarkdownRenderer(msg.Width - 4)
 		m.textInput.SetWidth(liveContentWidth(msg.Width))
 		m.fitTextareaHeight()
@@ -2784,6 +2799,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case turnEndedMsg:
 		m.turnActive = false
+		// An interrupted turn never delivers the ToolResult that normally
+		// clears the pending tool, which would leave the footer's "tools X"
+		// segment and the terminal-tab working icon stuck on.
+		m.pendingToolName = ""
+		m.pendingToolPreview = ""
+		m.pendingToolArgs = ""
+		m.pendingToolStart = time.Time{}
 		// If this turn was a /loop prose iteration and the agent called
 		// loop_control{stop}, disarm that loop now that the turn is over. Also
 		// clears the per-turn loop-control flag so the tool is hidden again.
@@ -3310,7 +3332,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.loopExitConfirmOpen:
-		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
+		return popupBox(renderLoopExitConfirm(m)), true
 	case m.worktreeExitConfirmOpen:
 		return renderWorktreeExitConfirm(m), true
 	case m.cheatsheetOpen:
@@ -3661,10 +3683,25 @@ func (m Model) renderInputRule() string {
 	return lipgloss.NewStyle().Foreground(colorDim).Render(strings.Repeat("─", w))
 }
 
+// cursorBusy reports whether the cmdline should use its steady busy treatment.
+// The predicate matches the activity that keeps the live work indicator running.
+func (m Model) cursorBusy() bool {
+	return m.turnActive || m.summarizing || m.hasRunningSubagents() || m.skillsBusy()
+}
+
+// renderEmptyCursorState renders the cursor with a steady dim treatment while
+// work is active, without changing the cursor cell's one-column layout.
+func renderEmptyCursorState(visible, busy bool) string {
+	if busy {
+		return styleBusyCursor.Render(" ")
+	}
+	return renderEmptyCursor(visible)
+}
+
 // renderEmptyCursor returns a single-cell cursor block for the empty
 // input row. When `visible` is true the cell is reverse-video so it
-// reads as a typical block cursor; when false a plain space holds the
-// position so the placeholder/hints don't shift across blink phases.
+// reads as a typical block cursor; when false a plain space holds
+// the position so the placeholder/hints don't shift across blink phases.
 func renderEmptyCursor(visible bool) string {
 	if !visible {
 		return " "
@@ -3840,7 +3877,7 @@ func (m Model) renderInputBody(contentW int) string {
 		// onboarding hints inlined on the same row. The cursor block
 		// is fixed at column 0 so the placeholder doesn't shift as
 		// the cursor toggles visible/invisible.
-		cur := renderEmptyCursor(m.cursorVisible)
+		cur := renderEmptyCursorState(m.cursorVisible, m.cursorBusy())
 		placeholder := "build anything…"
 		if m.cfg.PlanMode.IsActive() {
 			// Surface the mode in the placeholder too — even if the
@@ -3878,7 +3915,7 @@ func (m Model) renderInputBody(contentW int) string {
 		text := r.text
 		if (i + start) == cursorVisRow {
 			col := cursorLogicalCol - r.startChar
-			text = insertCursor(text, col, m.cursorVisible)
+			text = insertCursorState(text, col, m.cursorVisible, m.cursorBusy())
 		}
 		out = append(out, prefix+text)
 	}
@@ -3891,6 +3928,30 @@ func (m Model) renderInputBody(contentW int) string {
 // way (the trailing space is appended in both branches when col is past
 // the row's end), so the placeholder/content above doesn't shift on
 // each tick.
+// insertCursorState preserves the cursor cell while applying the steady dim
+// busy treatment. Normal idle rendering delegates to the existing blink helper.
+func insertCursorState(row string, col int, visible, busy bool) string {
+	if busy {
+		return insertCursorBusy(row, col)
+	}
+	return insertCursor(row, col, visible)
+}
+
+func insertCursorBusy(row string, col int) string {
+	rs := []rune(row)
+	if col < 0 {
+		col = 0
+	}
+	cur := styleBusyCursor.Render(" ")
+	if col >= len(rs) {
+		return row + cur
+	}
+	return string(rs[:col]) + cur + string(rs[col+1:])
+}
+
+// insertCursor returns row with a cursor block at rune index col. The
+// block is reverse-video when `visible` is true and a plain pass-through
+// when false.
 func insertCursor(row string, col int, visible bool) string {
 	rs := []rune(row)
 	atEnd := col >= len(rs)
@@ -5440,6 +5501,21 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 		// the last worker's completion re-enters here and releases the batch.
 		return m, nil
 	}
+	// Finished deep-research runs never wake the model: their summary is
+	// printed and recorded here (see deep_research_delivery.go). Anything else
+	// in the batch still gets its model turn below.
+	var rest []agent.SubagentBackgroundDone
+	for _, w := range wakes {
+		if w.AgentType == agent.DeepResearchTaskType {
+			m.deliverDeepResearch(w)
+			continue
+		}
+		rest = append(rest, w)
+	}
+	if len(rest) == 0 {
+		return m, nil
+	}
+	wakes = rest
 	input := buildSubagentWakeMessage(wakes)
 	var label string
 	if len(wakes) == 1 {
@@ -5989,12 +6065,13 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.approvalScrollOffset = 0
 		// Pre-derive the "always allow" pattern so the modal can show
 		// the user exactly what rule they'd be saving. Suppressed
-		// (approvalAllowAlwaysOK = false) for compound shell commands
-		// and other shapes where derivation would be a footgun — see
-		// permissions.DeriveAllowRule.
-		if rule, ok := permissions.DeriveAllowRule(e.ToolName, e.ArgsJSON, m.cwd, worktree.NormalizeForRule); ok && m.perms != nil {
+		// (approvalAllowAlwaysOK = false) for dangerous shell verbs and
+		// other shapes where derivation would be a footgun — see
+		// permissions.DeriveAllowRules. A chained command shows one rule
+		// per segment, comma-separated.
+		if rules, ok := permissions.DeriveAllowRules(e.ToolName, e.ArgsJSON, m.cwd, worktree.NormalizeForRule); ok && m.perms != nil {
 			m.approvalAllowAlwaysOK = true
-			m.approvalDerivedRule = rule
+			m.approvalDerivedRule = strings.Join(rules, ", ")
 		} else {
 			m.approvalAllowAlwaysOK = false
 			m.approvalDerivedRule = ""
@@ -6349,11 +6426,15 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.appendLine("")
 		m.appendLine(renderSubagentStart(e))
 	case agent.SubagentProgress:
+		// Progress is live state, not transcript history. The pinned subagent
+		// dock reads the registry's latest activity and redraws in place; adding
+		// every tick here turns concurrent foreground work into an unbounded
+		// scrollback log and hides the other agents. Detailed activity remains
+		// available in the child's transcript via Tab/Enter or /subagents.
 		m.flushPendingGroupedTools()
-		// One-line tick. Multiple of these will land in quick
-		// succession while a child works through its tool budget; let
-		// scrollback collect them rather than overwriting.
-		m.appendLine(renderSubagentProgress(e))
+	case agent.WorkflowPhase:
+		m.flushPendingGroupedTools()
+		m.appendLine(styleSubagentMeta.Render("◆ " + e.Line()))
 	case agent.SubagentDone:
 		m.flushPendingGroupedTools()
 		m.appendLine(renderSubagentDone(e))

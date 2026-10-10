@@ -101,7 +101,7 @@ func newOpenAIAuthLoginCmd() *cobra.Command {
 			)
 
 			fmt.Fprintf(cmd.ErrOrStderr(), "\nfetching model catalog and verifying account access via %s\n\n", openaiauth.DefaultCodexEndpoint)
-			results, err := openaiauth.ScanWithToken(ctx, ts.AccessToken, openaiauth.ScanOptions{})
+			results, err := openaiauth.ScanWithToken(ctx, ts.AccessToken, ts.ChatGPTAccountID, openaiauth.ScanOptions{})
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "\nerror: %v; tokens remain saved, rerun login to retry\n", err)
 				return err

@@ -8,9 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/launcher/flags"
 )
 
 func TestFindChromeBinary_Found(t *testing.T) {
@@ -133,29 +130,5 @@ func TestDisplayAvailableFor(t *testing.T) {
 				t.Errorf("displayAvailableFor(%q, %v) = %t, want %t", tc.goos, tc.env, got, tc.want)
 			}
 		})
-	}
-}
-
-// rod's launch defaults switch site isolation off and run the network service
-// inside the browser process. Pin both undone, and that the automation flags
-// the tools rely on are left alone.
-func TestHardenBrowserFlags(t *testing.T) {
-	l := hardenBrowserFlags(launcher.New())
-	for _, gone := range []string{"disable-site-isolation-trials", "enable-features"} {
-		if l.Has(flags.Flag(gone)) {
-			t.Errorf("flag --%s should be removed (it weakens process isolation)", gone)
-		}
-	}
-	if got := l.Get("disable-features"); strings.Contains(got, "site-per-process") {
-		t.Errorf("--disable-features=%q must not disable site isolation", got)
-	}
-	// Not a security flag: must survive, or the tools stop working.
-	for _, kept := range []string{"remote-debugging-port", "user-data-dir", "no-first-run"} {
-		if !l.Has(flags.Flag(kept)) {
-			t.Errorf("flag --%s should be left in place", kept)
-		}
-	}
-	if l.Has(flags.Flag("no-sandbox")) {
-		t.Error("nothing here may pass --no-sandbox; Chrome's own sandbox must stay on")
 	}
 }

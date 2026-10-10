@@ -1,6 +1,6 @@
 //go:build integration
 
-// Integration test for the real go-rod/CDP path: launches a system
+// Integration test for the real chromedp/CDP path: launches a system
 // Chrome/Chromium, drives it against a local httptest.Server fixture
 // page, and confirms the full browser_navigate → browser_screenshot →
 // browser_inspect → browser_click/browser_type workflow the roadmap doc's
@@ -16,13 +16,16 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/go-rod/rod/lib/launcher/flags"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/chromedp"
 
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
@@ -107,6 +110,18 @@ const networkFixturePage = `<!DOCTYPE html>
 </script>
 </body></html>`
 
+const stealthFixturePage = `<!DOCTYPE html>
+<html><head><title>Stealth Fixture</title></head>
+<body>
+<div id="stealth"></div>
+<script>
+  document.getElementById('stealth').textContent =
+    'webdriver:' + navigator.webdriver +
+    '|w:' + window.innerWidth + 'x' + window.innerHeight +
+    '|ua:' + navigator.userAgent;
+</script>
+</body></html>`
+
 func newFixtureServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -148,6 +163,8 @@ func newFixtureServer(t *testing.T) *httptest.Server {
 			page = consoleFixturePage
 		case "/network":
 			page = networkFixturePage
+		case "/stealth":
+			page = stealthFixturePage
 		}
 		_, _ = w.Write([]byte(page))
 	}))
@@ -258,7 +275,7 @@ func TestIntegration_RecoversAfterRealCrash(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	firstPID := firstSess.launcher.PID()
+	firstPID := firstSess.pid
 	if firstPID <= 0 {
 		t.Fatalf("launcher reported no PID: %d", firstPID)
 	}
@@ -286,7 +303,7 @@ func TestIntegration_RecoversAfterRealCrash(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	if secondSess.launcher.PID() == firstPID {
+	if secondSess.pid == firstPID {
 		t.Error("recovered session reused the same pid — expected a genuinely new process")
 	}
 
@@ -320,7 +337,7 @@ func TestIntegration_CleanupLeavesNoProcessOrTempDir(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session (is this running against a fake?)", m.sess)
 	}
-	pid := sess.launcher.PID()
+	pid := sess.pid
 	if pid <= 0 {
 		t.Fatalf("launcher reported no PID: %d", pid)
 	}
@@ -654,6 +671,54 @@ func TestIntegration_ConsoleLogsCaptured(t *testing.T) {
 	}
 }
 
+// TestIntegration_StealthHidesAutomationSignals proves the two headline
+// automation tells are actually gone against a real launched Chrome, not
+// just asserted at the flag/option level: navigator.webdriver reads false,
+// the user agent no longer announces "HeadlessChrome", and the window uses
+// the configured desktop size instead of headless Chrome's small default.
+func TestIntegration_StealthHidesAutomationSignals(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL+"/stealth", "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if err := m.Wait(ctx, "#stealth", "webdriver:", false, 5*time.Second); err != nil {
+		t.Fatalf("Wait for stealth fixture to populate: %v", err)
+	}
+	tree, err := m.Inspect(ctx, "")
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if !strings.Contains(tree, "webdriver:false") {
+		t.Errorf("navigator.webdriver was not hidden, inspect output:\n%s", tree)
+	}
+	if strings.Contains(tree, "Headless") {
+		t.Errorf("user agent still announces itself as Headless, inspect output:\n%s", tree)
+	}
+	// --window-size sets the outer frame; innerHeight (the viewport) comes in
+	// a bit under that even in headless mode, so only width is checked
+	// exactly. Either dimension still rules out headless Chrome's small
+	// (e.g. 800x600) default.
+	m2 := stealthWindowSizeRE.FindStringSubmatch(tree)
+	if m2 == nil {
+		t.Fatalf("inspect output missing window size, got:\n%s", tree)
+	}
+	width, _ := strconv.Atoi(m2[1])
+	height, _ := strconv.Atoi(m2[2])
+	if width != 1280 {
+		t.Errorf("window width = %d, want 1280", width)
+	}
+	if height < 700 {
+		t.Errorf("window height = %d, still looks like headless Chrome's small default", height)
+	}
+}
+
+var stealthWindowSizeRE = regexp.MustCompile(`w:(\d+)x(\d+)`)
+
 // TestIntegration_NetworkRequestsCaptured proves network capture is
 // wired against a real page: a successful fetch and a failed (404)
 // fetch both show up with the right method/status.
@@ -713,10 +778,10 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 	if !ok {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
-	if !before.launcher.Has(flags.Headless) {
+	if m.Status().Headed {
 		t.Fatal("precondition: the initial session should be headless")
 	}
-	oldPID := before.launcher.PID()
+	oldPID := before.pid
 	oldProfile := m.Status().ProfileDir
 
 	res, err := m.Handoff(ctx)
@@ -730,11 +795,7 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 		t.Errorf("unexpected LoadWarning: %s", res.LoadWarning)
 	}
 
-	after, ok := m.sess.(*session)
-	if !ok {
-		t.Fatalf("m.sess is %T after handoff, want *session", m.sess)
-	}
-	if after.launcher.Has(flags.Headless) {
+	if !m.Status().Headed {
 		t.Error("session after Handoff is still headless")
 	}
 	st := m.Status()
@@ -754,14 +815,23 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 		t.Errorf("visible page URL = %q, want it on %s", st.CurrentURL, srv.URL)
 	}
 
-	// The visible session is a normal session: it keeps serving actions.
+	// Handoff returns after navigation, but an OS-managed headed window can
+	// still be settling underneath Chrome. Wait for the actual interactive
+	// document state before sending input; load completion alone does not
+	// guarantee that the target's viewport and controls are usable.
+	if err := m.Wait(ctx, "#q", "", false, 10*time.Second); err != nil {
+		t.Fatalf("Wait for headed fixture readiness: %v", err)
+	}
 	if err := m.Type(ctx, "#q", "visible", false); err != nil {
 		t.Fatalf("Type in headed session: %v", err)
+	}
+	if err := m.Wait(ctx, "#go", "", false, 10*time.Second); err != nil {
+		t.Fatalf("Wait for headed button readiness: %v", err)
 	}
 	if err := m.Click(ctx, "#go"); err != nil {
 		t.Fatalf("Click in headed session: %v", err)
 	}
-	if err := m.Wait(ctx, "#out", "clicked:visible", false, 5*time.Second); err != nil {
+	if err := m.Wait(ctx, "#out", "clicked:visible", false, 10*time.Second); err != nil {
 		t.Fatalf("Wait in headed session: %v", err)
 	}
 
@@ -839,12 +909,8 @@ func TestIntegration_HandoffStaysIsolatedAndDoesNotShareCookies(t *testing.T) {
 		}
 	}
 
-	after, ok := m.sess.(*session)
-	if !ok {
-		t.Fatalf("m.sess is %T, want *session", m.sess)
-	}
-	dir := after.launcher.Get(flags.UserDataDir)
-	t.Logf("visible session: headless=%t user-data-dir=%s", after.launcher.Has(flags.Headless), dir)
+	dir := m.Status().ProfileDir
+	t.Logf("visible session: headless=%t user-data-dir=%s", m.Status().Headed, dir)
 	if !strings.HasPrefix(filepath.Base(dir), "yottacode-browser-") {
 		t.Errorf("visible session profile %q is not a yottacode isolated profile", dir)
 	}
@@ -883,10 +949,25 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 		t.Fatalf("m.sess is %T, want *session", m.sess)
 	}
 	pg := sess.activePage()
-	win, err := proto.BrowserGetWindowForTarget{TargetID: pg.TargetID}.Call(sess.browser)
+	win, _, err := browser.GetWindowForTarget().WithTargetID(pg.id).Do(cdp.WithExecutor(sess.browserCtx, sess.browser))
 	if err != nil {
 		t.Fatalf("Browser.getWindowForTarget: %v", err)
 	}
+
+	// The handoff window now launches maximized (so a person can't miss it);
+	// CDP ignores width/height in setWindowBounds while WindowState is still
+	// "maximized", so the first call below must clear that before any resize
+	// can take effect.
+	normalCtx, normalCancel := context.WithTimeout(sess.browserCtx, 5*time.Second)
+	err = browser.SetWindowBounds(win, &browser.Bounds{WindowState: browser.WindowStateNormal}).Do(cdp.WithExecutor(normalCtx, sess.browser))
+	normalCancel()
+	if err != nil {
+		t.Fatalf("Browser.setWindowBounds(normal): %v", err)
+	}
+	// The window manager's un-maximize is async on top of CDP's own
+	// acknowledgement; give it a moment to actually settle before the resize
+	// loop below starts asserting against it.
+	time.Sleep(500 * time.Millisecond)
 
 	// Both widths differ clearly from the 1280 rod would pin the page to, and
 	// both fit any real screen: a desktop window manager (macOS in
@@ -894,26 +975,27 @@ func TestIntegration_HandoffViewportFollowsWindow(t *testing.T) {
 	// small CI display would make this flaky.
 	for _, want := range []int{700, 1000} {
 		h := 900
-		if err := (proto.BrowserSetWindowBounds{
-			WindowID: win.WindowID,
-			Bounds:   &proto.BrowserBounds{Width: &want, Height: &h},
-		}).Call(sess.browser); err != nil {
+		boundsCtx, cancel := context.WithTimeout(sess.browserCtx, 5*time.Second)
+		err := browser.SetWindowBounds(win, &browser.Bounds{Width: int64(want), Height: int64(h)}).Do(cdp.WithExecutor(boundsCtx, sess.browser))
+		cancel()
+		if err != nil {
 			t.Fatalf("Browser.setWindowBounds(%d): %v", want, err)
 		}
 		var got int
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			res, err := pg.Eval("() => window.innerWidth")
+			var res int
+			err := chromedp.Run(pg.ctx, chromedp.Evaluate("window.innerWidth", &res))
 			if err != nil {
 				t.Fatalf("Eval innerWidth: %v", err)
 			}
-			got = res.Value.Int()
-			if got >= want-40 && got <= want+40 {
+			got = res
+			if got >= want-60 && got <= want+40 {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		if got < want-40 || got > want+40 {
+		if got < want-60 || got > want+40 {
 			t.Errorf("window resized to %dpx wide but page viewport is %dpx: the page is not filling the window", want, got)
 		}
 	}

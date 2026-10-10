@@ -32,14 +32,15 @@ func renderSubagentDock(tasks []subagents.Task, width int, defaultModel string, 
 	if width < 20 {
 		width = 20
 	}
-	running := make([]subagents.Task, 0, len(tasks))
-	for _, t := range tasks {
-		if t.Status == subagents.TaskRunning {
-			running = append(running, t)
-		}
-	}
+	running := dockRunning(tasks)
 	if len(running) == 0 {
 		return ""
+	}
+	workflows := 0
+	for _, t := range running {
+		if isWorkflowTask(t) {
+			workflows++
+		}
 	}
 	// Clamp the focus cursor defensively: a subagent may have finished since
 	// the last keystroke, leaving the cursor past the end of the running set.
@@ -53,20 +54,28 @@ func renderSubagentDock(tasks []subagents.Task, width int, defaultModel string, 
 	// Header: count + (when the whole set shares one dispatch batch) the
 	// batch id, so a fan-out reads as one unit. A dim hint trails it: how
 	// to enter keyboard focus, or the nav keys once focused.
-	header := fmt.Sprintf("subagents · %d running", len(running))
-	if batch := commonBatch(running); batch != "" {
+	// With a workflow running the dock has two sections — "Workflows" (one
+	// card each) above "subagents" (the agents rows, workflow task excluded
+	// from the count). Without one it is the single subagents section, exactly
+	// as before.
+	agentsRunning := running[workflows:]
+	header := fmt.Sprintf("subagents · %d running", len(agentsRunning))
+	if batch := commonBatch(agentsRunning); batch != "" {
 		header += " · batch " + batch
 	}
 	hint := "tab to inspect"
 	if focused {
 		hint = "↑/↓ select · enter open · q/esc exit"
 	}
+	hintText := "  " + lipgloss.NewStyle().Foreground(colorDim).Render(hint)
 
 	var b strings.Builder
-	b.WriteString(styleSubagentTableHeader.Render(header))
-	b.WriteString("  ")
-	b.WriteString(lipgloss.NewStyle().Foreground(colorDim).Render(hint))
-	b.WriteString("\n")
+	if workflows > 0 {
+		b.WriteString(styleSubagentTableHeader.Render(fmt.Sprintf("Workflows · %d", workflows)))
+		b.WriteString(hintText)
+		b.WriteString("\n")
+		hintText = "" // the hint trails the first header only
+	}
 
 	shown := running
 	overflow := 0
@@ -74,8 +83,22 @@ func renderSubagentDock(tasks []subagents.Task, width int, defaultModel string, 
 		overflow = len(shown) - dockMaxRows
 		shown = shown[:dockMaxRows]
 	}
+	wroteAgentsHeader := false
 	for i, t := range shown {
-		b.WriteString(renderDockRow(t, width, defaultModel, focused && i == cursor))
+		if !isWorkflowTask(t) && !wroteAgentsHeader {
+			if workflows > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(styleSubagentTableHeader.Render(header))
+			b.WriteString(hintText)
+			b.WriteString("\n")
+			wroteAgentsHeader = true
+		}
+		if isWorkflowTask(t) {
+			b.WriteString(renderWorkflowCard(t, tasks, width, focused && i == cursor))
+		} else {
+			b.WriteString(renderDockRow(t, width, defaultModel, focused && i == cursor))
+		}
 		if i < len(shown)-1 || overflow > 0 {
 			b.WriteString("\n")
 		}
@@ -212,21 +235,36 @@ func shortBranch(branch string) string {
 	return strings.TrimPrefix(branch, "worktree-")
 }
 
+// dockRunning is the single source of dock order: running tasks in registry
+// List() order (newest-first), with workflow tasks stably moved to the front so
+// the "Workflows" section renders above the agents. renderSubagentDock and
+// runningSubagents both use it, so keyboard focus can never drift from what is
+// on screen.
+func dockRunning(tasks []subagents.Task) []subagents.Task {
+	var workflows, agents []subagents.Task
+	for _, t := range tasks {
+		if t.Status != subagents.TaskRunning {
+			continue
+		}
+		if isWorkflowTask(t) {
+			workflows = append(workflows, t)
+		} else {
+			agents = append(agents, t)
+		}
+	}
+	return append(workflows, agents...)
+}
+
 // runningSubagents returns the currently-running tasks in the same order
-// the dock renders them (registry List() order, newest-first), capped at
-// dockMaxRows so the focus cursor only ever addresses a visible row.
+// the dock renders them (dockRunning), capped at dockMaxRows so the focus
+// cursor only ever addresses a visible row.
 func (m Model) runningSubagents() []subagents.Task {
 	if m.subagentTasks == nil {
 		return nil
 	}
-	var out []subagents.Task
-	for _, t := range m.subagentTasks.List() {
-		if t.Status == subagents.TaskRunning {
-			out = append(out, t)
-			if len(out) == dockMaxRows {
-				break
-			}
-		}
+	out := dockRunning(m.subagentTasks.List())
+	if len(out) > dockMaxRows {
+		out = out[:dockMaxRows]
 	}
 	return out
 }

@@ -1240,13 +1240,20 @@ func TestWriteDoneSkipsOpenAIAuthOnError(t *testing.T) {
 // scan step and dispatches the scan cmd.
 func TestOpenAIAuthDoneRoutesThroughScan(t *testing.T) {
 	m := newWizardModel(context.Background(), Options{})
-	updated, cmd := m.Update(openAIAuthDoneMsg{err: nil, accessToken: "tkn"})
+	updated, cmd := m.Update(openAIAuthDoneMsg{err: nil, accessToken: "tkn", chatgptAccountID: "acct-123"})
 	wm := updated.(wizardModel)
 	if wm.step != stepOpenAIAuthScan {
 		t.Errorf("step = %v, want stepOpenAIAuthScan", wm.step)
 	}
 	if wm.openAIAuthAccessToken != "tkn" {
 		t.Errorf("openAIAuthAccessToken = %q, want %q", wm.openAIAuthAccessToken, "tkn")
+	}
+	// Regression coverage: the chatgpt-account-id claim must survive
+	// the login->scan handoff, not just the access token. Losing it
+	// here is what makes every model probe 401 with an unrelated
+	// "Incorrect API key" error even though the token itself is valid.
+	if wm.openAIAuthChatGPTAccountID != "acct-123" {
+		t.Errorf("openAIAuthChatGPTAccountID = %q, want %q", wm.openAIAuthChatGPTAccountID, "acct-123")
 	}
 	if cmd == nil {
 		t.Errorf("expected scan cmd; got nil")

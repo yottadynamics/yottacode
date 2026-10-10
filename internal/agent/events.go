@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
@@ -169,7 +170,10 @@ type ToolResult struct {
 // tool's ToolResult when LoopConfig.Cwd.Get() differs from the
 // pre-call value.
 type CwdChanged struct {
-	NewCwd string
+	NewCwd    string
+	Previous  string
+	Recovered bool
+	Reason    string
 }
 
 // TodoUpdate fires after a tool implementing the planAware interface
@@ -273,6 +277,38 @@ type SubagentProgress struct {
 	TaskID    string
 	AgentType string
 	Activity  string
+}
+
+// WorkflowPhase is a coarse progress marker from a multi-phase workflow tool
+// (today: deep_research). Current indexes Phases; len(Phases) means the
+// workflow finished. Unlike SubagentProgress it is transcript history: one
+// line per phase change, so a long blocking run does not look stuck.
+type WorkflowPhase struct {
+	Workflow string
+	Phases   []string
+	Current  int
+	Detail   string
+}
+
+// Line renders the marker as one plain-text line, e.g.
+// "deep-research: Plan ✓ · Research ● · Verify ○ · Report ○ — 4 questions".
+func (e WorkflowPhase) Line() string {
+	parts := make([]string, len(e.Phases))
+	for i, p := range e.Phases {
+		mark := "○"
+		switch {
+		case i < e.Current:
+			mark = "✓"
+		case i == e.Current:
+			mark = "●"
+		}
+		parts[i] = p + " " + mark
+	}
+	line := e.Workflow + ": " + strings.Join(parts, " · ")
+	if e.Detail != "" {
+		line += " — " + e.Detail
+	}
+	return line
 }
 
 // SubagentDone fires when a foreground subagent completes. The Result
@@ -394,6 +430,7 @@ func (Fallback) event()                 {}
 func (SubagentStart) event()          {}
 func (SubagentProgress) event()       {}
 func (SubagentDone) event()           {}
+func (WorkflowPhase) event()          {}
 func (SubagentBackgroundDone) event() {}
 func (UserMessageAppended) event()    {}
 

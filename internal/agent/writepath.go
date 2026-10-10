@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/memory"
+	"github.com/yottadynamics/yottacode/internal/permissions"
 )
 
 // WritePathOptions configures the validator for a single tool. Build it
@@ -550,6 +551,12 @@ func DefaultDenyPaths(cwd string) []string {
 			filepath.Join(cwd, ".git", "packed-refs"),
 			filepath.Join(cwd, ".git", "objects"),
 		)
+		// Inside a linked worktree the permissions store redirects
+		// permissions.local.json to the main repo root; deny that file too
+		// or an extra workspace root could be used to self-grant.
+		if root := permissions.StorageRoot(cwd); root != cwd {
+			out = append(out, filepath.Join(root, ".yottacode", "permissions.local.json"))
+		}
 		// In a *linked git worktree* (what dispatch's write subtasks run
 		// in), `.git` is a pointer FILE — `gitdir: …/.git/worktrees/<name>`
 		// — not a directory. Rewriting it repoints the worktree at another

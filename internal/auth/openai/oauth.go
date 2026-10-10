@@ -162,6 +162,7 @@ func postToken(ctx context.Context, httpClient *http.Client, issuer string, body
 	if claims, err := DecodeClaims(tr.AccessToken); err == nil {
 		ts.AccountID = claims.Subject
 		ts.Email = claims.Email
+		ts.ChatGPTAccountID = claims.ChatGPTAccountID
 	}
 	return ts, nil
 }

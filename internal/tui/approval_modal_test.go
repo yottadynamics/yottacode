@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -8,10 +9,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// On a very wide terminal the approval modal caps at 120 columns
-// (per Phase 6) instead of stretching across the whole screen.
-// Asserted via the rendered top-border line width.
-func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
+// On a very wide terminal the approval modal stays compact instead of
+// stretching across the whole screen. Asserted via the rendered top-border
+// line width.
+func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 240
 	m.awaitingApproval = true
@@ -24,8 +25,8 @@ func TestRenderApprovalModal_CapsAt120OnWideTerminal(t *testing.T) {
 	got := renderApprovalModal(m)
 	first := strings.SplitN(got, "\n", 2)[0]
 	w := ansi.StringWidth(first)
-	if w > 124 {
-		t.Errorf("approval modal top border width = %d, expected ≤ 124 (120 + 2 corners + 2 outer chars)", w)
+	if w > approvalModalMaxInnerWidth+4 {
+		t.Errorf("approval modal top border width = %d, expected ≤ %d", w, approvalModalMaxInnerWidth+4)
 	}
 	if w < 30 {
 		t.Errorf("approval modal too narrow on a 240-col terminal: width=%d", w)
@@ -342,5 +343,71 @@ func TestApprovalDenyToast_ContainsRule(t *testing.T) {
 	}
 	if !strings.Contains(got, "permissions.local.json") {
 		t.Errorf("deny toast should name the file it saved to: %q", got)
+	}
+}
+
+// A chained command derives several comma-joined rules. The rule list is
+// shown once, while [S]/[A] describe the two scopes that can apply it.
+func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
+	for _, width := range []int{50, 60, 80, 120} {
+		m := newTestModel(t)
+		m.width = width
+		m.height = 40
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"}`
+		m.approvalPreview = "gofmt -w a.go && go vet ./... && staticcheck ./... && golangci-lint run"
+		m.approvalAllowAlwaysOK = true
+		m.approvalDerivedRule = "Bash(gofmt *), Bash(go *), Bash(staticcheck *), Bash(golangci-lint *)"
+		out := renderApprovalModal(m)
+		for i, line := range strings.Split(out, "\n") {
+			if w := ansi.StringWidth(line); w > width {
+				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
+			}
+		}
+		plain := ansi.Strip(out)
+		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
+			if n := strings.Count(plain, rule); n != 1 {
+				t.Errorf("width %d: rule %q appears whole %d times, want exactly 1 shared rule summary", width, rule, n)
+			}
+		}
+		if !strings.Contains(plain, "session — allow the rules above") || !strings.Contains(plain, "always — save the rules above") {
+			t.Errorf("width %d: scope actions should refer to the shared rule summary: %q", width, plain)
+		}
+	}
+}
+
+func TestApprovalBodyShortensHome(t *testing.T) {
+	m := newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	m.approvalTool = "git"
+	m.approvalPreview = "$ git -C " + home + "/src/x status --short"
+	got := stripANSI(approvalBodyFor(m))
+	if strings.Contains(got, home) || !strings.Contains(got, "-C ~/src/x") {
+		t.Fatalf("home not shortened: %q", got)
+	}
+}
+
+func TestTildeifyHomeInTextBoundaries(t *testing.T) {
+	_ = newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	cases := map[string]string{
+		"cd " + home + "/x && ls":    "cd ~/x && ls",
+		"cd '" + home + "'":          "cd '~'",
+		"ls " + home:                 "ls ~",
+		"ls /mnt" + home + "/x":      "ls /mnt" + home + "/x",
+		"ls " + home + "-old/x":      "ls " + home + "-old/x",
+		"a " + home + "/x b " + home: "a ~/x b ~",
+	}
+	for in, want := range cases {
+		if got := tildeifyHomeInText(in); got != want {
+			t.Errorf("tildeifyHomeInText(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

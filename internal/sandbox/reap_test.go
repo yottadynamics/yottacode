@@ -261,3 +261,159 @@ func TestPruneOrphaned_NoStaleContainersIsNoop(t *testing.T) {
 		t.Fatalf("PruneOrphaned = %v, want nil", err)
 	}
 }
+
+// TestSelectPruneSecretTargets_SkipsUnlabeled mirrors
+// TestSelectPruneTargets_SkipsUnlabeledRunning: a secret with no owner
+// label (created before this labeling existed, or by something other than
+// yottacode) can't be identified as abandoned, so it must be left alone.
+func TestSelectPruneSecretTargets_SkipsUnlabeled(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-1 * time.Hour).Format(time.RFC3339Nano)
+	entries := []secretInspectEntry{{CreatedAt: old, Spec: secretSpecInfo{Name: "yc-session-secret-GITHUB_TOKEN"}}}
+	got := selectPruneSecretTargets(entries, now)
+	if len(got) != 0 {
+		t.Fatalf("selectPruneSecretTargets = %v, want empty (unlabeled secret must never be pruned)", got)
+	}
+}
+
+func TestSelectPruneSecretTargets_SkipsLiveOwner(t *testing.T) {
+	origAlive := processAlive
+	defer func() { processAlive = origAlive }()
+	processAlive = func(pid int, startTicks int64, haveStartTicks bool) bool { return true }
+
+	now := time.Now()
+	old := now.Add(-30 * time.Hour).Format(time.RFC3339Nano)
+	entries := []secretInspectEntry{{CreatedAt: old, Spec: secretSpecInfo{Name: "yc-session-secret-GITHUB_TOKEN", Labels: map[string]string{"yottacode.owner_pid": "4242"}}}}
+	got := selectPruneSecretTargets(entries, now)
+	if len(got) != 0 {
+		t.Fatalf("selectPruneSecretTargets = %v, want empty (owner still alive)", got)
+	}
+}
+
+func TestSelectPruneSecretTargets_PrunesDeadOwner(t *testing.T) {
+	origAlive := processAlive
+	defer func() { processAlive = origAlive }()
+	processAlive = func(pid int, startTicks int64, haveStartTicks bool) bool { return false }
+
+	now := time.Now()
+	old := now.Add(-30 * time.Hour).Format(time.RFC3339Nano)
+	entries := []secretInspectEntry{{CreatedAt: old, Spec: secretSpecInfo{Name: "yc-session-secret-GITHUB_TOKEN", Labels: map[string]string{"yottacode.owner_pid": "4242"}}}}
+	got := selectPruneSecretTargets(entries, now)
+	if len(got) != 1 || got[0] != "yc-session-secret-GITHUB_TOKEN" {
+		t.Fatalf("selectPruneSecretTargets = %v, want the dead-owner secret pruned", got)
+	}
+}
+
+func TestSelectPruneSecretTargets_RespectsGracePeriod(t *testing.T) {
+	origAlive := processAlive
+	defer func() { processAlive = origAlive }()
+	processAlive = func(pid int, startTicks int64, haveStartTicks bool) bool { return false }
+
+	now := time.Now()
+	recent := now.Add(-1 * time.Minute).Format(time.RFC3339Nano)
+	entries := []secretInspectEntry{{CreatedAt: recent, Spec: secretSpecInfo{Name: "yc-just-created-secret-GITHUB_TOKEN", Labels: map[string]string{"yottacode.owner_pid": "4242"}}}}
+	got := selectPruneSecretTargets(entries, now)
+	if len(got) != 0 {
+		t.Fatalf("selectPruneSecretTargets = %v, want empty (within grace period)", got)
+	}
+}
+
+func TestSelectPruneSecretTargets_SkipsUnparsableCreatedAt(t *testing.T) {
+	entries := []secretInspectEntry{{CreatedAt: "not-a-timestamp", Spec: secretSpecInfo{Name: "yc-weird-secret-X"}}}
+	got := selectPruneSecretTargets(entries, time.Now())
+	if len(got) != 0 {
+		t.Fatalf("selectPruneSecretTargets = %v, want empty for unparsable CreatedAt", got)
+	}
+}
+
+// TestParseSecretInspectOutput_RealPodmanShape decodes a trimmed fixture
+// captured from an actual `podman secret inspect` run (podman 4.9.3):
+// CreatedAt is RFC3339 (unlike podman ps -a's Unix-seconds Created), and
+// Name/Labels live under Spec, not at the top level.
+func TestParseSecretInspectOutput_RealPodmanShape(t *testing.T) {
+	const fixture = `[
+  {
+    "ID": "e7b96236719fceb7b26fae82d",
+    "CreatedAt": "2026-09-21T21:18:43.34020319-04:00",
+    "UpdatedAt": "2026-09-21T21:18:43.354971035-04:00",
+    "Spec": {
+      "Name": "yc-e2e-test-session-secret-GITHUB_TOKEN",
+      "Driver": {"Name": "file", "Options": {"path": "/home/user/.local/share/containers/storage/secrets/filedriver"}},
+      "Labels": {"yottacode.owner_pid": "12345", "yottacode.owner_started": "999"}
+    }
+  }
+]`
+	entries, err := parseSecretInspectOutput([]byte(fixture))
+	if err != nil {
+		t.Fatalf("parseSecretInspectOutput: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Spec.Name != "yc-e2e-test-session-secret-GITHUB_TOKEN" {
+		t.Errorf("Spec.Name = %q, want yc-e2e-test-session-secret-GITHUB_TOKEN", e.Spec.Name)
+	}
+	if e.Spec.Labels["yottacode.owner_pid"] != "12345" {
+		t.Errorf("Spec.Labels[owner_pid] = %q, want 12345", e.Spec.Labels["yottacode.owner_pid"])
+	}
+	if e.CreatedAt != "2026-09-21T21:18:43.34020319-04:00" {
+		t.Errorf("CreatedAt = %q, unexpected", e.CreatedAt)
+	}
+}
+
+func TestParseSecretInspectOutput_EmptyBytes(t *testing.T) {
+	entries, err := parseSecretInspectOutput(nil)
+	if err != nil {
+		t.Fatalf("parseSecretInspectOutput: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("entries = %v, want empty", entries)
+	}
+}
+
+func TestPruneOrphanedSecrets_NoPodmanReturnsNilError(t *testing.T) {
+	origLookPath := podmanLookPath
+	defer func() { podmanLookPath = origLookPath }()
+	podmanLookPath = func(string) (string, error) { return "", errors.New("no such file") }
+
+	if err := PruneOrphanedSecrets(context.Background()); err != nil {
+		t.Fatalf("PruneOrphanedSecrets = %v, want nil when podman is not on PATH", err)
+	}
+}
+
+func TestPruneOrphanedSecrets_LSErrorIsWrapped(t *testing.T) {
+	origLookPath := podmanLookPath
+	origLS := podmanSecretLS
+	defer func() {
+		podmanLookPath = origLookPath
+		podmanSecretLS = origLS
+	}()
+	podmanLookPath = func(string) (string, error) { return "/usr/bin/podman", nil }
+	podmanSecretLS = func(context.Context) ([]byte, error) { return nil, errors.New("boom") }
+
+	if err := PruneOrphanedSecrets(context.Background()); err == nil {
+		t.Fatal("PruneOrphanedSecrets = nil, want an error when podman secret ls fails")
+	}
+}
+
+func TestPruneOrphanedSecrets_NoMatchesSkipsInspect(t *testing.T) {
+	origLookPath := podmanLookPath
+	origLS := podmanSecretLS
+	origInspect := podmanSecretInspect
+	defer func() {
+		podmanLookPath = origLookPath
+		podmanSecretLS = origLS
+		podmanSecretInspect = origInspect
+	}()
+	podmanLookPath = func(string) (string, error) { return "/usr/bin/podman", nil }
+	podmanSecretLS = func(context.Context) ([]byte, error) { return []byte(""), nil }
+	podmanSecretInspect = func(context.Context, []string) ([]byte, error) {
+		t.Fatal("podman secret inspect must not be called when ls found nothing")
+		return nil, nil
+	}
+
+	if err := PruneOrphanedSecrets(context.Background()); err != nil {
+		t.Fatalf("PruneOrphanedSecrets = %v, want nil", err)
+	}
+}

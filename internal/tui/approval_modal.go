@@ -30,7 +30,13 @@ import (
 // prompt itself — after the user picks `[A]` we emit a toast
 // (`✓ Added Bash(go *) to permissions.local.json`) into scrollback.
 // Keeps the prompt focused on the immediate decision.
-const approvalModalMinInnerWidth = 64
+const (
+	approvalModalMinInnerWidth = 64
+	// Keep approval decisions compact on wide terminals. The preview can scroll
+	// vertically, so a wider card only wastes horizontal space and makes the
+	// hotkeys harder to scan.
+	approvalModalMaxInnerWidth = 96
+)
 
 func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	var h *pickerHits
@@ -164,10 +170,10 @@ func approvalBodyFor(m Model) string {
 		}
 	case "run_bash":
 		if rendered, _, ok := renderRunBashApproval(m.approvalArgs, m.cwd); ok {
-			return styleApprovalCommand.Render("$ ") + rendered
+			return styleApprovalCommand.Render("$ ") + tildeifyHomeInText(rendered)
 		}
 	}
-	return styleApprovalCommand.Render(m.approvalPreview)
+	return styleApprovalCommand.Render(tildeifyHomeInText(m.approvalPreview))
 }
 
 // renderPRApprovalPreview builds a compact, readable approval body for PR
@@ -263,18 +269,26 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("no — reject this call")},
 	}
 	// [S] shares allowAlways's gate: it needs the same derivable pattern
-	// as [A], just kept in memory instead of written to
-	// permissions.local.json — the middle ground between "once" and
-	// "forever".
+	// as [A], just kept in memory instead of written to permissions.local.json.
 	if allowAlways {
-		rows = append(rows, approvalHotkeyRow{
-			hotkey: styleApprovalHotkey.Render("[S]"),
-			desc:   styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session"),
-		})
-		rows = append(rows, approvalHotkeyRow{
-			hotkey: styleApprovalHotkey.Render("[A]"),
-			desc:   styleApprovalChoiceDim.Render("always — adds " + derivedRule),
-		})
+		rules := strings.Split(derivedRule, ", ")
+		if len(rules) > 1 {
+			// Show each chained rule once; repeating the list under both
+			// actions makes one approval look like several bash approvals.
+			rows = append(rows, approvalHotkeyRow{hotkey: "", desc: styleApprovalChoiceDim.Render("rules:")})
+			for _, rule := range rules {
+				rows = append(rows, approvalHotkeyRow{hotkey: "", desc: styleApprovalChoiceDim.Render("  " + rule)})
+			}
+			rows = append(rows,
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoiceDim.Render("session — allow the rules above for this session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoiceDim.Render("always — save the rules above")},
+			)
+		} else {
+			rows = append(rows,
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoiceDim.Render("session — allow " + derivedRule + " for this session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoiceDim.Render("always — adds " + derivedRule)},
+			)
+		}
 	}
 	if denyAlways {
 		rows = append(rows, approvalHotkeyRow{
@@ -297,7 +311,11 @@ func approvalHotkeyColumnWidths(rows []approvalHotkeyRow, capW int) (keyW, descW
 }
 
 func capApprovalBoxWidth(termWidth int) int {
-	return capLabeledBoxWidth(termWidth)
+	capW := capLabeledBoxWidth(termWidth)
+	if capW <= 0 {
+		return capW
+	}
+	return min(capW, approvalModalMaxInnerWidth)
 }
 
 func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {

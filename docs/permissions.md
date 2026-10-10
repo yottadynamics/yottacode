@@ -10,7 +10,7 @@ Yottacode evaluates three optional permission policy files:
 
 The system file is an administrator-managed, machine-wide baseline. It is read by yottacode but is never created or modified by approval flows. Install it as a root-owned, readable file such as `root:root` mode `0644` when ordinary users should be able to run yottacode under the policy.
 
-The project `permissions.json` file is the committable team policy. The project `permissions.local.json` file is personal, gitignored policy for the current checkout. Automatic **always allow** and **always deny** decisions write only to the project-local file.
+The project `permissions.json` file is the committable team policy. The project `permissions.local.json` file is personal, gitignored policy for the current checkout. Automatic **always allow** and **always deny** decisions write only to the project-local file. When the session runs inside a linked git worktree, `permissions.local.json` is read from and written to the **main repository root**, not the ephemeral worktree directory, so grants survive worktree removal. The committed `permissions.json` is still read from the worktree's own checkout. Path rules are still evaluated relative to the active worktree.
 
 All loaded rules use the same precedence regardless of source:
 

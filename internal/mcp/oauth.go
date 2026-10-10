@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -295,7 +296,6 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string), br
 			err              error
 		}
 		resultCh := make(chan callbackResult, 1)
-		callbackDone := make(chan struct{}, 1)
 		mux := http.NewServeMux()
 		mux.HandleFunc(oauthLoopbackPath, func(w http.ResponseWriter, r *http.Request) {
 			q := r.URL.Query()
@@ -316,14 +316,21 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string), br
 			case resultCh <- res:
 			default:
 			}
-			// Let net/http finish writing the callback response before the
-			// fetcher closes the listener after receiving resultCh. Closing
-			// the server immediately can make the browser/test client see EOF.
-			callbackDone <- struct{}{}
 		})
 		srv := &http.Server{Handler: mux}
 		go func() { _ = srv.Serve(listener) }()
-		defer srv.Close()
+		defer func() {
+			// Shutdown (rather than Close) waits for the in-flight callback
+			// response to actually finish writing to the client before the
+			// listener goes away. The handler returning doesn't mean
+			// net/http has flushed the response yet — that happens in
+			// net/http's own code right after the handler returns — so an
+			// immediate Close can sever the connection mid-write and the
+			// browser/test client sees EOF instead of the response.
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
 
 		if onAuthURL != nil {
 			onAuthURL(authURL)
@@ -332,7 +339,6 @@ func oauthAuthorizationCodeFetcher(serverName string, onAuthURL func(string), br
 
 		select {
 		case res := <-resultCh:
-			<-callbackDone
 			if res.err != nil {
 				return nil, res.err
 			}

@@ -20,6 +20,13 @@ type TokenSet struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 	AccountID    string    `json:"account_id,omitempty"`
 	Email        string    `json:"email,omitempty"`
+	// ChatGPTAccountID is the JWT's nested chatgpt_account_id claim
+	// (distinct from AccountID/sub, which is the Auth0 identity, not
+	// the ChatGPT account). Required as the `chatgpt-account-id`
+	// header on every chatgpt.com/backend-api/codex/* call — without
+	// it the backend can't resolve which account's plan to bill
+	// against and 401s with an unrelated "Incorrect API key" error.
+	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
 }
 
 // ErrNotFound is returned by Load when no token file exists at the

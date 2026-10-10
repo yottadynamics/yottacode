@@ -118,7 +118,7 @@ func (o *ScanOptions) defaults() {
 // this generic catalog metadata is the same for every caller and
 // does not by itself confirm *this* account's plan/trust level can
 // reach a given slug.
-func FetchModels(ctx context.Context, accessToken string, opts ScanOptions) ([]FetchedModel, error) {
+func FetchModels(ctx context.Context, accessToken, chatgptAccountID string, opts ScanOptions) ([]FetchedModel, error) {
 	opts.defaults()
 
 	url := opts.ModelsEndpoint + "?client_version=" + modelsClientVersion
@@ -129,6 +129,9 @@ func FetchModels(ctx context.Context, accessToken string, opts ScanOptions) ([]F
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("originator", opts.Originator)
+	if chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
 
 	resp, err := opts.HTTPClient.Do(req)
 	if err != nil {
@@ -213,7 +216,7 @@ func Scan(ctx context.Context, path string, opts ScanOptions) ([]ScanResult, err
 		}
 		ts = fresh
 	}
-	return ScanWithToken(ctx, ts.AccessToken, opts)
+	return ScanWithToken(ctx, ts.AccessToken, ts.ChatGPTAccountID, opts)
 }
 
 // ScanWithToken is the inner form for callers that already hold a
@@ -225,9 +228,9 @@ func Scan(ctx context.Context, path string, opts ScanOptions) ([]ScanResult, err
 // plan/trust level is entitled to it (the gap that let gpt-5.3-codex
 // and gpt-5.2 keep 400ing under the old static candidate list even
 // though the account had no access).
-func ScanWithToken(ctx context.Context, accessToken string, opts ScanOptions) ([]ScanResult, error) {
+func ScanWithToken(ctx context.Context, accessToken, chatgptAccountID string, opts ScanOptions) ([]ScanResult, error) {
 	opts.defaults()
-	candidates, err := FetchModels(ctx, accessToken, opts)
+	candidates, err := FetchModels(ctx, accessToken, chatgptAccountID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +240,7 @@ func ScanWithToken(ctx context.Context, accessToken string, opts ScanOptions) ([
 			results = append(results, ScanResult{Name: m.Slug, DisplayName: m.DisplayName, OK: false, Status: "ERR", Detail: err.Error()})
 			continue
 		}
-		results = append(results, probeOne(ctx, opts.HTTPClient, opts.ProbeEndpoint, opts.Originator, accessToken, m))
+		results = append(results, probeOne(ctx, opts.HTTPClient, opts.ProbeEndpoint, opts.Originator, accessToken, chatgptAccountID, m))
 	}
 	return results, nil
 }
@@ -274,15 +277,15 @@ func OKDisplayNames(results []ScanResult) map[string]string {
 //
 // This is the helper called by the wizard, TUI inline, and CLI login
 // flows; centralising it keeps the post-login UX consistent.
-func ScanAndPersist(ctx context.Context, accessToken string) (models []string, err error) {
-	return ScanAndPersistWithOptions(ctx, accessToken, ScanOptions{})
+func ScanAndPersist(ctx context.Context, accessToken, chatgptAccountID string) (models []string, err error) {
+	return ScanAndPersistWithOptions(ctx, accessToken, chatgptAccountID, ScanOptions{})
 }
 
 // ScanAndPersistWithOptions is the configurable form of ScanAndPersist.
 // Tests inject an httptest endpoint here; production callers use the
 // thin wrapper above.
-func ScanAndPersistWithOptions(ctx context.Context, accessToken string, opts ScanOptions) (models []string, err error) {
-	results, err := ScanWithToken(ctx, accessToken, opts)
+func ScanAndPersistWithOptions(ctx context.Context, accessToken, chatgptAccountID string, opts ScanOptions) (models []string, err error) {
+	results, err := ScanWithToken(ctx, accessToken, chatgptAccountID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -309,10 +312,10 @@ func ScanAndPersistWithOptions(ctx context.Context, accessToken string, opts Sca
 // 5xx responses retry up to maxAttempts; 4xx responses are final on
 // the first attempt (the backend has answered "no" — retrying won't
 // change that). The returned ScanResult reflects the last attempt.
-func probeOne(ctx context.Context, client *http.Client, endpoint, originator, token string, model FetchedModel) ScanResult {
+func probeOne(ctx context.Context, client *http.Client, endpoint, originator, token, chatgptAccountID string, model FetchedModel) ScanResult {
 	var last ScanResult
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		last = probeAttempt(ctx, client, endpoint, originator, token, model)
+		last = probeAttempt(ctx, client, endpoint, originator, token, chatgptAccountID, model)
 		if last.OK {
 			return last
 		}
@@ -348,7 +351,7 @@ func isTransient(r ScanResult) bool {
 
 // probeAttempt is one HTTP round-trip against the codex responses
 // endpoint. The per-candidate retry loop in probeOne wraps this.
-func probeAttempt(ctx context.Context, client *http.Client, endpoint, originator, token string, model FetchedModel) ScanResult {
+func probeAttempt(ctx context.Context, client *http.Client, endpoint, originator, token, chatgptAccountID string, model FetchedModel) ScanResult {
 	body := map[string]any{
 		"model":        model.Slug,
 		"instructions": "You are a helpful assistant. Reply briefly.",
@@ -375,6 +378,9 @@ func probeAttempt(ctx context.Context, client *http.Client, endpoint, originator
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("OpenAI-Beta", "responses=experimental")
 	req.Header.Set("originator", originator)
+	if chatgptAccountID != "" {
+		req.Header.Set("chatgpt-account-id", chatgptAccountID)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

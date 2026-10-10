@@ -27,6 +27,10 @@ Nine agent types ship with the binary:
 | `docs` | read + `write_file`/`edit_file` + git read + `fetch_url` | Update documentation and comments for a change, owning the doc files only. Write-capable; in `dispatch` fan-out it runs in an isolated background worktree. |
 | `review` | read-only (Explore's tools + more git read) | Read-only critique of a diff — findings ranked by severity (file:line + scenario). Cannot edit; complements `verification`. Foreground. |
 | `code-verifier` | read-only code/navigation, git-read, LSP, and Code Map tools listed in its definition | Read-only adversarial check of exactly one review finding: given one `file:line` + claim, try to refute it from the code, end with `VERDICT: PASS\|FAIL\|PARTIAL`. It does not re-review the whole diff. Foreground; used by `/code-review`'s verification pass. |
+| `research-planner` | `todo_write` only | Splits one query into ≤ N independent research questions and returns a JSON object. Used by `/deep-research`; see [deep-research.md](deep-research.md). |
+| `researcher` | `web_search`, `fetch_url` only | Investigates ONE question and returns ≤ 6 atomic, source-backed claims as JSON. No local-file tools, by design (see below); used by `/deep-research`. |
+| `research-verifier` | same as `researcher` | Re-opens the cited sources for a packet of claims and returns exactly one verdict per claim ID. Same least-privilege tool set; used by `/deep-research`. |
+| `research-synthesizer` | `todo_write` only | Writes the report body from verified claims using `[Sn]` citation markers; the caller validates the markers. Used by `/deep-research`. |
 
 The `implement` / `test` / `docs` / `review` roster rounds out the
 **parallel-implementation** story behind `dispatch`: a typical fan-out is
@@ -188,6 +192,10 @@ Fields:
   the model name resolves successfully. An unknown or unconfigured name falls
   through to normal auto-routing or parent-model inheritance. With routing
   `off`, the field is parsed but inert.
+- `max_iterations` (optional) — a lower iteration budget for this agent. It can
+  only lower the session cap (100), never raise it; a missing, zero, negative
+  or non-numeric value leaves the default. The `researcher` and
+  `research-verifier` built-ins use `30`.
 - `background` (optional) — when `true`, standalone `Agent` calls automatically
   use background only for read-only definitions when background execution is
   available; write-capable definitions remain foreground unless the caller
@@ -216,15 +224,14 @@ The `Agent` tool accepts `run_in_background: true`:
   long-running session to host the task; retry without the flag to run it in
   foreground. Use background when the parent can keep working without the answer.
 
-  Background subagents stream the **same live progress card** as
-  foreground ones — a start header followed by `├` activity ticks —
-  for as long as the spawning turn stays active (the spawn-then-wait
-  case, e.g. spawn several background subagents and then collect them
-  in the same turn). The forward is best-effort: once the spawning
-  turn ends, interim ticks are dropped (a later turn never inherits a
-  stale child's ticks) and the live view falls back to the bottom
-  dock, which tracks every running subagent from the task registry.
-  Approvals are still auto-denied for background subagents regardless —
+  Foreground and background subagents share the same live activity surface: a
+  start header is written once, while subsequent activity updates the pinned
+  subagent dock in place. This keeps concurrent foreground work visible without
+  turning the main conversation into a scrolling activity log. Select a row with
+  `Tab` and press `Enter` to inspect the full child transcript. Background
+  progress forwarding is best-effort while the spawning turn is active; after
+  that, the dock continues tracking every running subagent from the task
+  registry. Approvals are still auto-denied for background subagents regardless —
   nobody is watching to answer a modal.
 
   Background subagents are **generally available** in the

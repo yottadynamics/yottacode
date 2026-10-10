@@ -89,6 +89,32 @@ func TestRunBashTool_ReportsNonZeroExit(t *testing.T) {
 // working directory no longer exists), Run() fails before a process
 // is created and ProcessState stays nil. The exit-code read used to
 // happen before the error check and panicked the whole turn.
+
+func TestRunBashTool_RecoversDeletedCwd(t *testing.T) {
+	root := t.TempDir()
+	dead := filepath.Join(root, "deleted-worktree")
+	if err := os.Mkdir(dead, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := NewCwdRef(root)
+	cwd.Set(dead)
+	if err := os.Remove(dead); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := &RunBashTool{Cwd: cwd}
+	out, err := tool.Execute(context.Background(), `{"command":"pwd"}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if cwd.Get() != root {
+		t.Fatalf("cwd = %q, want recovered root %q", cwd.Get(), root)
+	}
+	if !strings.Contains(out, "exit=0") {
+		t.Fatalf("command did not run after recovery: %q", out)
+	}
+}
+
 func TestRunBashTool_ShellStartFailureReturnsError(t *testing.T) {
 	tool := &RunBashTool{Cwd: NewCwdRef("/nonexistent/yottacode-gone-dir")}
 	out, err := tool.Execute(context.Background(), `{"command":"echo unreachable"}`)

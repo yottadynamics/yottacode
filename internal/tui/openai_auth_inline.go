@@ -31,9 +31,10 @@ type inlineOpenAIAuthDoneMsg struct {
 	// handler ignores the message unless it matches m.openAIAuthPending,
 	// so a superseded attempt — one the user abandoned, whose Wait later
 	// times out — can't tear down the current attempt's state.
-	pending     *openaiauth.PendingLogin
-	err         error
-	accessToken string
+	pending          *openaiauth.PendingLogin
+	err              error
+	accessToken      string
+	chatgptAccountID string
 }
 
 // inlineOpenAIAuthScanDoneMsg is sent by scanInlineOpenAIAuthCmd
@@ -81,16 +82,16 @@ func waitInlineOpenAIAuthLoginCmd(ctx context.Context, pending *openaiauth.Pendi
 		if err := openaiauth.Save(path, ts); err != nil {
 			return inlineOpenAIAuthDoneMsg{pending: pending, err: fmt.Errorf("save tokens: %w", err)}
 		}
-		return inlineOpenAIAuthDoneMsg{pending: pending, err: nil, accessToken: ts.AccessToken}
+		return inlineOpenAIAuthDoneMsg{pending: pending, err: nil, accessToken: ts.AccessToken, chatgptAccountID: ts.ChatGPTAccountID}
 	}
 }
 
 // scanInlineOpenAIAuthCmd runs the post-login model scan. Failures
 // don't touch the existing models file (if any); the caller surfaces
 // the error to the transcript so the user knows to retry login.
-func scanInlineOpenAIAuthCmd(ctx context.Context, accessToken string) tea.Cmd {
+func scanInlineOpenAIAuthCmd(ctx context.Context, accessToken, chatgptAccountID string) tea.Cmd {
 	return func() tea.Msg {
-		models, err := openaiauth.ScanAndPersist(ctx, accessToken)
+		models, err := openaiauth.ScanAndPersist(ctx, accessToken, chatgptAccountID)
 		return inlineOpenAIAuthScanDoneMsg{models: models, err: err}
 	}
 }
@@ -162,7 +163,7 @@ func handleInlineOpenAIAuthDone(m Model, msg inlineOpenAIAuthDoneMsg) (Model, te
 		return m, nil
 	}
 	m.appendLine(styleAuto.Render(statusOKLine("openai-auth", "signed in; token saved; scanning models…")))
-	scanCmd := scanInlineOpenAIAuthCmd(m.parentCtx, msg.accessToken)
+	scanCmd := scanInlineOpenAIAuthCmd(m.parentCtx, msg.accessToken, msg.chatgptAccountID)
 	// Persist the deferred profile now that the OAuth token is on
 	// disk. Reuses commitProviderAddNow so the success transcript
 	// (added line, config-written line, etc.) matches the non-deferred

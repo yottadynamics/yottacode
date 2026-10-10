@@ -3,6 +3,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestRenderRunBashApproval_SingleCommand(t *testing.T) {
@@ -116,6 +119,44 @@ func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
 	}
 }
 
+func TestRenderRunBashApproval_TruncatesUnicodeWithoutCorruption(t *testing.T) {
+	long := strings.Repeat("界", 200)
+	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	if !utf8.ValidString(body) {
+		t.Fatalf("truncation split a UTF-8 rune: %q", body)
+	}
+	if !strings.Contains(body, "…") {
+		t.Fatalf("long segment should be truncated with ellipsis: %q", body)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if w := ansi.StringWidth(line); w > 120 {
+			t.Fatalf("segment line width = %d, want within display budget: %q", w, line)
+		}
+	}
+}
+
+func TestTruncSegment(t *testing.T) {
+	cases := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"abc", 5, "abc"},
+		{"abcdef", 4, "abc…"},
+		{"界界界界", 5, "界界…"},
+		{"abc", 1, "…"},
+	}
+	for _, c := range cases {
+		got := truncSegment(c.in, c.max)
+		if got != c.want || !utf8.ValidString(got) {
+			t.Errorf("truncSegment(%q,%d) = %q, want %q", c.in, c.max, got, c.want)
+		}
+	}
+}
+
 // Approval body collapses cwd inside command segments — `cd /abs/cwd`
 // reads as `cd .` while everything else stays put.
 func TestRenderRunBashApproval_CollapsesCwd(t *testing.T) {
@@ -167,6 +208,45 @@ func TestRenderRunBashApproval_FlagsGitHookWrite(t *testing.T) {
 	}
 }
 
+func TestRenderRunBashApproval_GroupsSensitiveReads(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"find ~ -maxdepth 4 -print %p 2>/dev/null | sort | head -300"}`, "/home/me/project")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !strings.Contains(body, "reads ~/.yottacode/.env, ~/.yottacode/auth") {
+		t.Fatalf("sensitive reads should be grouped, got: %q", body)
+	}
+	if strings.Count(body, "reads ") != 1 {
+		t.Fatalf("expected one grouped reads warning, got: %q", body)
+	}
+}
+
+func TestWrapApprovalWarningPreservesAllPaths(t *testing.T) {
+	got := wrapApprovalWarning("reads ~/.yottacode/.env, ~/.yottacode/auth, ~/.ssh, ~/.gnupg, ~/.aws, ~/.config/gcloud", 32)
+	for _, want := range []string{"~/.yottacode/.env,", "~/.yottacode/auth,", "~/.ssh,", "~/.gnupg,", "~/.aws,", "~/.config/gcloud"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("wrapped warning lost %q: %q", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("warning line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
+func TestGroupedSensitiveWarningsKeepsHookWarningSeparate(t *testing.T) {
+	got := groupedSensitiveWarnings([]string{"reads ~/.ssh", "reads ~/.aws", "touches .git/hooks — runs on future git operations"})
+	if len(got) != 2 {
+		t.Fatalf("warning groups = %d, want 2: %v", len(got), got)
+	}
+	if got[0] != "reads ~/.ssh, ~/.aws" {
+		t.Fatalf("grouped reads = %q", got[0])
+	}
+	if !strings.HasPrefix(got[1], "touches .git/hooks") {
+		t.Fatalf("hook warning should remain separate: %q", got[1])
+	}
+}
 func TestRenderRunBashApproval_NoWarningOnBenign(t *testing.T) {
 	body, _, ok := renderRunBashApproval(`{"command":"ls -la"}`, "/home/me/proj")
 	if !ok {

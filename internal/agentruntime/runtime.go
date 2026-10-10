@@ -356,6 +356,9 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.RouterAdapters = routerAdapters
 	rt.Model = opts.Model
 	rt.ChatOptions = opts
+	if rt.Session != nil {
+		rt.Session.Provider = opts.Provider
+	}
 	// Mirrors fileCfg.Router.RoutingAuto() only when the pair actually
 	// resolved — persisted mode="auto" with an unresolved pair must report
 	// live routing as off, not claim a toggle that silently does nothing
@@ -437,6 +440,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		// are swallowed the same way podman.removeContainer's own callers
 		// already do for best-effort cleanup elsewhere in this package.
 		_ = sandbox.PruneOrphaned(ctx)
+		_ = sandbox.PruneOrphanedSecrets(ctx)
 		mgr := NewSandboxManager(fileCfg.Sandbox, sess.ID, cwd, podmanSandboxConstructor)
 		mgr.SetConfigReloader(config.LoadDefault)
 		rt.SandboxManager = mgr
@@ -608,6 +612,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(agentTool)
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 	rt.AgentTool = agentTool
+	reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})
 
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
