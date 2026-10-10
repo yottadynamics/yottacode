@@ -45,6 +45,10 @@ type DoctorSummary struct {
 	Media       doctorStatus `json:"media"`
 	Sandbox     doctorStatus `json:"sandbox"`
 	Permissions doctorStatus `json:"permissions"`
+	// Browser is set only when the experimental browser feature is enabled,
+	// so the report is unchanged for everyone else.
+	Browser       doctorStatus         `json:"browser,omitempty"`
+	BrowserDetail *BrowserDoctorResult `json:"-"`
 }
 
 // SandboxDoctorResult reports sandbox configuration and Go cache visibility.
@@ -319,6 +323,9 @@ func formatDoctorReport(summary DoctorSummary, provider adapter.ProbeResult, git
 	renderGitHubSection(&b, github)
 	renderLSPSection(&b, lsp)
 	renderMediaSection(&b, media)
+	if summary.BrowserDetail != nil {
+		renderBrowserSection(&b, *summary.BrowserDetail)
+	}
 	renderSandboxSection(&b, sandbox)
 	renderPermissionsSection(&b, permissionReport)
 	return strings.TrimRight(b.String(), "\n")
@@ -331,6 +338,9 @@ func renderDoctorSummary(b *strings.Builder, summary DoctorSummary) {
 	fmt.Fprintf(b, "- lsp: %s\n", summary.LSP)
 	fmt.Fprintf(b, "- media: %s\n", summary.Media)
 	fmt.Fprintf(b, "- sandbox: %s\n", summary.Sandbox)
+	if summary.Browser != "" {
+		fmt.Fprintf(b, "- browser: %s\n", summary.Browser)
+	}
 	fmt.Fprintf(b, "- permissions: %s\n", summary.Permissions)
 }
 

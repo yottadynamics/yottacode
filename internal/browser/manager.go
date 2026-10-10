@@ -653,6 +653,39 @@ func (m *Manager) Scroll(ctx context.Context, selector string, deltaX, deltaY fl
 	return s.scroll(ctx, selector, deltaX, deltaY)
 }
 
+// SelectOption chooses an <option> of a <select> element by value or visible
+// label and returns the label it selected. Lazily launches like every other
+// mutating action.
+func (m *Manager) SelectOption(ctx context.Context, selector, value, label string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	return s.selectOption(ctx, selector, value, label)
+}
+
+// ResponseBody returns the body of a response the active page received, by the
+// request id browser_network_requests reports. It never launches: with no
+// session there is nothing buffered to read.
+func (m *Manager) ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (ResponseBody, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return ResponseBody{}, err
+	}
+	if !ok {
+		return ResponseBody{}, fmt.Errorf("browser response body: no browser session active")
+	}
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	return sess.responseBody(ctx, requestID, maxBytes, offset)
+}
+
 // Wait deliberately does NOT launch the browser: waiting is defined as
 // blocking until an already-visible condition is met, and a session that
 // was never launched has nothing to wait for. Launching a process is a

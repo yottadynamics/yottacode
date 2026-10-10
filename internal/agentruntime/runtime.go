@@ -274,15 +274,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	rt.Skills = skillsRes.Skills
 
-	expSet := experimental.NewSet()
-	for name, on := range fileCfg.Experimental {
-		if on {
-			expSet.Enable(name)
-		}
-	}
-	for _, name := range opts.Experimental {
-		expSet.Enable(name)
-	}
+	expSet := experimental.Resolve(fileCfg.Experimental, opts.Experimental)
 	for _, unknown := range expSet.UnknownNames() {
 		rt.Warnings = append(rt.Warnings, fmt.Sprintf(
 			"warning: --experimental %q is not a recognized feature (typo? graduated? see docs/experimental.md)", unknown))
