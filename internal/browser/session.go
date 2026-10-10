@@ -974,9 +974,12 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 	if err != nil {
 		return err
 	}
-	a := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
+	a := []chromedp.Action{chromedp.SetValue(inner, text, opts...)}
 	if submit {
 		a = append(a, chromedp.SendKeys(inner, "\r", opts...))
+	}
+	if err := chromedp.Run(cctx, a...); err != nil {
+		return classifySelectorErr(err)
 	}
 	if err := chromedp.Run(cctx, a...); err != nil {
 		return classifySelectorErr(err)
