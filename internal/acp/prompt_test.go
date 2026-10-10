@@ -10,6 +10,7 @@ import (
 	coderacp "github.com/coder/acp-go-sdk"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
@@ -433,5 +434,47 @@ func TestPrompt_ConcurrentPromptForSameSessionIsRejected(t *testing.T) {
 		<-promptDone
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for the first Prompt to return after Cancel")
+	}
+}
+
+// TestPrompt_ReportsContextUsageAsUsageUpdate: per-iteration context fill
+// goes out as a structured usage_update (hosts like Buzz consume it), not as
+// "[context] n/m tokens" text spliced into the agent's reply.
+func TestPrompt_ReportsContextUsageAsUsageUpdate(t *testing.T) {
+	h, sessionID := newPromptHarness(t, [][]adapter.StreamEvent{{sseToken("Hi"), sseDone("Hi")}})
+	ctx, cancel := withTimeout(t)
+	defer cancel()
+	if _, err := h.clientConn.Prompt(ctx, coderacp.PromptRequest{
+		SessionId: coderacp.SessionId(sessionID),
+		Prompt:    []coderacp.ContentBlock{coderacp.TextBlock("hi")},
+	}); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	var got *coderacp.SessionUsageUpdate
+	for _, u := range h.client.Updates() {
+		if c := u.Update.AgentMessageChunk; c != nil && c.Content.Text != nil && strings.HasPrefix(c.Content.Text.Text, "[context]") {
+			t.Errorf("context usage leaked into chat text: %q", c.Content.Text.Text)
+		}
+		if u.Update.UsageUpdate != nil {
+			got = u.Update.UsageUpdate
+		}
+	}
+	if got == nil {
+		t.Fatal("no usage_update notification sent")
+	}
+	if got.Size <= 0 || got.Used <= 0 || got.Used > got.Size {
+		t.Errorf("usage_update used=%d size=%d, want 0 < used <= size", got.Used, got.Size)
+	}
+}
+
+func TestUsageNotification_OmitsUnknownCost(t *testing.T) {
+	n := usageNotification("s", agent.ContextUsage{Tokens: 10, Window: 100}, 0)
+	if n.Update.UsageUpdate.Cost != nil {
+		t.Error("cost must be omitted when unknown")
+	}
+	n = usageNotification("s", agent.ContextUsage{Tokens: 10, Window: 100}, 1.5)
+	if c := n.Update.UsageUpdate.Cost; c == nil || c.Amount != 1.5 || c.Currency != "USD" {
+		t.Errorf("cost = %+v", c)
 	}
 }

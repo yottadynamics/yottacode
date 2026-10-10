@@ -13,6 +13,8 @@ package acp
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
@@ -92,9 +94,10 @@ func (s *Server) SetConnection(conn *coderacp.AgentSideConnection) {
 // roadmap/acp-adapter.md's Phase 2 notes) with at least one method of
 // type "agent" or "terminal". See auth.go for both implementations.
 func (s *Server) Initialize(_ context.Context, req coderacp.InitializeRequest) (coderacp.InitializeResponse, error) {
-	if req.ProtocolVersion != 0 && req.ProtocolVersion != coderacp.ProtocolVersionNumber {
-		return coderacp.InitializeResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unsupported ACP protocol version"})
-	}
+	// Version negotiation per the ACP spec: an unsupported requested
+	// version is not an error — reply with the latest version we support
+	// and let the client decide whether to proceed. Rejecting here broke
+	// clients (e.g. buzz-acp) that send a different version number.
 	return coderacp.InitializeResponse{
 		ProtocolVersion: coderacp.ProtocolVersionNumber,
 		AgentCapabilities: coderacp.AgentCapabilities{
@@ -139,6 +142,14 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 	if err != nil {
 		return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": err.Error()})
 	}
+	// Hosts such as Buzz pass a session title out-of-band in _meta
+	// (--session-title); use it as the session's name so it is
+	// recognisable in /load. Persisted with the session's next save.
+	if title, _ := params.Meta["sessionTitle"].(string); strings.TrimSpace(title) != "" {
+		// Suffix the creation time (UTC, like the session id) so sessions
+		// from the same agent stay distinguishable and resumable by name.
+		rt.Session.Name = sessionTitleName(strings.TrimSpace(title), rt.Session.Created)
+	}
 	sess := newACPSession(s, rt)
 	s.mu.Lock()
 	s.sessions[rt.Session.ID] = sess
@@ -181,6 +192,15 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {
 		return coderacp.LoadSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": err.Error()})
+	}
+	// The adapter is built from process defaults; restore the model this
+	// session last ran on. Best effort: a model no longer in config simply
+	// keeps the default rather than failing the load.
+	if saved := rt.Session.Model; saved != "" && (saved != rt.ChatOptions.Model || rt.Session.Provider != "") {
+		if rt.Session.Provider != "" {
+			rt.ChatOptions.Provider = rt.Session.Provider
+		}
+		_ = agentruntime.RebuildAdapterForModel(rt, saved)
 	}
 	sess := newACPSession(s, rt)
 
@@ -367,4 +387,14 @@ func (s *Server) session(id string) (*acpSession, bool) {
 	defer s.mu.RUnlock()
 	sess, ok := s.sessions[id]
 	return sess, ok
+}
+
+// sessionTitleName builds "<title>-YYYYMMDD-HHMMSS" from a host-supplied
+// title and the session's creation time. No spaces, so it is typeable as
+// `--resume <name>`.
+func sessionTitleName(title string, created time.Time) string {
+	if created.IsZero() {
+		return title
+	}
+	return title + "-" + created.UTC().Format("20060102-150405")
 }

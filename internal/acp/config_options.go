@@ -14,6 +14,8 @@ import (
 // authMethodOpenAIChatGPT/authMethodGitHubCopilot in auth.go.
 const (
 	configIdEffort  coderacp.SessionConfigId = "effort"
+	configIdModel   coderacp.SessionConfigId = "model"
+	configIdMode    coderacp.SessionConfigId = "mode"
 	configIdAdvisor coderacp.SessionConfigId = "advisor"
 )
 
@@ -83,6 +85,39 @@ func sessionConfigOptions(rt *agentruntime.Runtime) []coderacp.SessionConfigOpti
 			Type:         "select",
 		}},
 	}
+	modeCat := coderacp.SessionConfigOptionCategoryMode
+	modeDesc := "Permission mode for this session."
+	options = append([]coderacp.SessionConfigOption{{Select: &coderacp.SessionConfigOptionSelect{
+		Id:           configIdMode,
+		Name:         "Mode",
+		Description:  &modeDesc,
+		Category:     &modeCat,
+		CurrentValue: coderacp.SessionConfigValueId(currentPermissionModeValue(rt)),
+		Options:      coderacp.SessionConfigSelectOptions{Ungrouped: permissionModeSelectOptions()},
+		Type:         "select",
+	}}}, options...)
+	if choices := agentruntime.ModelChoices(rt); len(choices) > 0 && !rt.FileCfg.Router.RoutingEnabled() {
+		modelOptions := make(coderacp.SessionConfigSelectOptionsUngrouped, 0, len(choices))
+		for _, c := range choices {
+			desc := "Provider: " + c.Provider
+			modelOptions = append(modelOptions, coderacp.SessionConfigSelectOption{
+				Name:        c.Model,
+				Value:       coderacp.SessionConfigValueId(c.Model),
+				Description: &desc,
+			})
+		}
+		modelCat := coderacp.SessionConfigOptionCategoryModel
+		modelDesc := "Model for this session, from the configured providers."
+		options = append([]coderacp.SessionConfigOption{{Select: &coderacp.SessionConfigOptionSelect{
+			Id:           configIdModel,
+			Name:         "Model",
+			Description:  &modelDesc,
+			Category:     &modelCat,
+			CurrentValue: coderacp.SessionConfigValueId(rt.ChatOptions.Model),
+			Options:      coderacp.SessionConfigSelectOptions{Ungrouped: &modelOptions},
+			Type:         "select",
+		}}}, options...)
+	}
 	if rt.RouterAdapters != nil {
 		advisorDesc := "Route subagent dispatch and summarization through the configured advisor/implementer model pair."
 		options = append(options, coderacp.SessionConfigOption{Boolean: &coderacp.SessionConfigOptionBoolean{
@@ -134,6 +169,22 @@ func (s *Server) SetSessionConfigOption(_ context.Context, params coderacp.SetSe
 			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown effort value: " + string(params.ValueId.Value)})
 		}
 		if err := agentruntime.RebuildAdapterForEffort(sess.rt, level); err != nil {
+			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
+		}
+	case configIdMode:
+		if params.ValueId == nil {
+			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "mode expects a select value, not a boolean"})
+		}
+		id, ok := permissionModeToSessionMode(string(params.ValueId.Value))
+		if !ok {
+			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unsupported mode: " + string(params.ValueId.Value)})
+		}
+		applyMode(sess.rt, id)
+	case configIdModel:
+		if params.ValueId == nil {
+			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "model expects a select value, not a boolean"})
+		}
+		if err := agentruntime.RebuildAdapterForModel(sess.rt, string(params.ValueId.Value)); err != nil {
 			return coderacp.SetSessionConfigOptionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
 		}
 	case configIdAdvisor:

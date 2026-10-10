@@ -356,6 +356,9 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.RouterAdapters = routerAdapters
 	rt.Model = opts.Model
 	rt.ChatOptions = opts
+	if rt.Session != nil {
+		rt.Session.Provider = opts.Provider
+	}
 	// Mirrors fileCfg.Router.RoutingAuto() only when the pair actually
 	// resolved — persisted mode="auto" with an unresolved pair must report
 	// live routing as off, not claim a toggle that silently does nothing

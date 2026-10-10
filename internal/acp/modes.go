@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"strings"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
@@ -143,4 +144,67 @@ func (s *Server) SetSessionMode(_ context.Context, params coderacp.SetSessionMod
 	}
 	applyMode(sess.rt, params.ModeId)
 	return coderacp.SetSessionModeResponse{}, nil
+}
+
+// permissionModeOptions is the "mode" session config option's value set —
+// the permission-mode vocabulary hosts such as Buzz (--permission-mode) and
+// Claude's own ACP agent speak — each mapped onto the session modes above.
+// dontAsk (reject anything needing approval) has no yottacode equivalent
+// and is deliberately not offered.
+var permissionModeOptions = []struct {
+	value, name, desc string
+	mode              coderacp.SessionModeId
+}{
+	{"default", "Default", "Request permission before making changes", modeAsk},
+	{"auto", "Auto", "Write and modify code with full tool access", modeCode},
+	{"plan", "Plan", "Plan only, no implementation", modeArchitect},
+	{"bypassPermissions", "Bypass permissions", "Every tool auto-runs, no safety floor — DANGEROUS", modeYolo},
+}
+
+// normalizePermissionMode makes "bypass-permissions", "bypassPermissions"
+// and "BYPASS_PERMISSIONS" compare equal: hosts disagree on spelling.
+func normalizePermissionMode(v string) string {
+	return strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(v))
+}
+
+// permissionModeToSessionMode resolves a "mode" config value to a session
+// mode id; false when unsupported.
+func permissionModeToSessionMode(v string) (coderacp.SessionModeId, bool) {
+	n := normalizePermissionMode(v)
+	for _, o := range permissionModeOptions {
+		if normalizePermissionMode(o.value) == n {
+			return o.mode, true
+		}
+	}
+	// Hosts may send the ACP permission-mode spelling even though the
+	// advertised option uses the simpler yottacode "auto" value.
+	if n == "acceptedits" {
+		return modeCode, true
+	}
+	return "", false
+}
+
+// currentPermissionModeValue reports the "mode" option value for rt. Auto
+// is reported as "auto" (the first value that maps to modeCode would be
+// acceptEdits, which is the less precise name).
+func currentPermissionModeValue(rt *agentruntime.Runtime) string {
+	cur := currentModeID(rt)
+	if cur == modeCode {
+		return "auto"
+	}
+	for _, o := range permissionModeOptions {
+		if o.mode == cur {
+			return o.value
+		}
+	}
+	return "default"
+}
+
+func permissionModeSelectOptions() *coderacp.SessionConfigSelectOptionsUngrouped {
+	out := make(coderacp.SessionConfigSelectOptionsUngrouped, 0, len(permissionModeOptions))
+	for _, o := range permissionModeOptions {
+		desc := o.desc
+		out = append(out, coderacp.SessionConfigSelectOption{Name: o.name, Value: coderacp.SessionConfigValueId(o.value), Description: &desc})
+	}
+	return &out
 }
