@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
@@ -74,6 +75,8 @@ type editArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
+var replaceFileIfUnchanged = hashline.ReplaceFileIfUnchanged
+
 func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a editArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
@@ -108,7 +111,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		if !a.ReplaceAll {
 			if start, end, mcount := editTolerantLineMatch(src, a.OldString); mcount == 1 {
 				out := src[:start] + a.NewString + src[end:]
-				if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+				if err := replaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
 					return "", fmt.Errorf("edit_file: write: %w", err)
 				}
 				return t.editResult(ctx, p, out, "edited %s: 1 replacement (matched ignoring trailing whitespace / line endings)")
@@ -135,7 +138,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		out = strings.Replace(src, a.OldString, a.NewString, 1)
 		n = 1
 	}
-	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+	if err := replaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
 		return "", fmt.Errorf("edit_file: write: %w", err)
 	}
 	return t.editResult(ctx, p, out, fmt.Sprintf("edited %%s: %d replacement(s)", n))

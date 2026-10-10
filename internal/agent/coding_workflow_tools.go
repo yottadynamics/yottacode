@@ -11,11 +11,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 	"github.com/yottadynamics/yottacode/internal/permissions"
 	"github.com/yottadynamics/yottacode/internal/shellseg"
 )
+
+const defaultApplyDiffToolTimeout = 30 * time.Second
+
+var applyDiffToolTimeout = defaultApplyDiffToolTimeout
 
 type ApplyDiffTool struct {
 	Cwd       *CwdRef
@@ -188,7 +193,15 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err := patch.Close(); err != nil {
 		return "", fmt.Errorf("apply_diff: close temp patch: %w", err)
 	}
-	if stderr, err, retriedIgnoringWhitespace := applyGitPatch(ctx, cwd, patchPath); err != nil {
+	patchCtx, cancel := context.WithTimeout(ctx, applyDiffToolTimeout)
+	defer cancel()
+	if stderr, err, retriedIgnoringWhitespace := applyGitPatch(patchCtx, cwd, patchPath); err != nil {
+		if errors.Is(patchCtx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("apply_diff: git apply timed out after %s", applyDiffToolTimeout)
+		}
+		if errors.Is(patchCtx.Err(), context.Canceled) {
+			return "", fmt.Errorf("apply_diff: git apply canceled: %w", ctx.Err())
+		}
 		return "", fmt.Errorf("apply_diff: %w; stderr=%q hint=%q", err, boundedPatchDiagnostic(stderr),
 			applyPatchFailureHint(stderr))
 	} else if retriedIgnoringWhitespace {
@@ -343,7 +356,14 @@ func applyGitPatch(ctx context.Context, dir, patchPath string) (string, error, b
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
+		hardenGitCmd(cmd)
+		cmd.WaitDelay = applyDiffToolTimeout
 		if err := cmd.Run(); err != nil {
+			// A canceled or timed-out command must not fall through to the
+			// whitespace retry: cancellation is a terminal request.
+			if ctx.Err() != nil {
+				return stderr.String(), err, false
+			}
 			if firstErr == nil {
 				firstErr = err
 				firstStderr = stderr.String()

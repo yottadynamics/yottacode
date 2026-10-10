@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -114,28 +115,25 @@ func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string
 		return "", fmt.Errorf("edit_anchored: %w", err)
 	}
 	src := string(contents)
-	hadTrailingNewline := strings.HasSuffix(src, "\n")
-	lines := strings.Split(src, "\n")
-	if hadTrailingNewline && len(lines) > 0 {
-		lines = lines[:len(lines)-1]
+	lineTexts, spans := splitLinesWithSpans(contents)
+	lines := make([]string, len(lineTexts))
+	for i, line := range lineTexts {
+		lines[i] = strings.TrimSuffix(line, "\r")
 	}
 	idx := buildAnchoredLineIndex(lines)
 	resolved, err := resolveAnchoredOps(idx, a.Operations)
 	if err != nil {
 		return "", fmt.Errorf("edit_anchored: %w", err)
 	}
-	outLines, err := applyAnchoredOps(lines, resolved)
+	outBytes, err := applyAnchoredByteOps(contents, lines, spans, resolved)
 	if err != nil {
 		return "", fmt.Errorf("edit_anchored: %w", err)
 	}
-	out := strings.Join(outLines, "\n")
-	if hadTrailingNewline {
-		out += "\n"
-	}
+	out := string(outBytes)
 	if out == src {
 		return "", fmt.Errorf("edit_anchored: edit is a no-op")
 	}
-	if err := hashline.ReplaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
+	if err := hashline.ReplaceFileIfUnchanged(p, contents, outBytes); err != nil {
 		return "", fmt.Errorf("edit_anchored: write: %w", err)
 	}
 	msg := fmt.Sprintf("edited %s: %d anchored operation(s)", p, len(resolved))
@@ -238,49 +236,87 @@ func sameInsertPoint(a, b anchoredResolvedOp) bool {
 	return a.InsertAt == b.InsertAt && a.After == b.After
 }
 
-func applyAnchoredOps(lines []string, ops []anchoredResolvedOp) ([]string, error) {
-	out := append([]string(nil), lines...)
+// applyAnchoredByteOps applies resolved operations against the original byte
+// spans. Unlike the line-slice implementation, this keeps every untouched
+// terminator (including mixed line endings and a missing final terminator).
+func applyAnchoredByteOps(src []byte, _ []string, spans []lineSpan, ops []anchoredResolvedOp) ([]byte, error) {
+	out := append([]byte(nil), src...)
 	sort.SliceStable(ops, func(i, j int) bool {
-		ai, aj := ops[i], ops[j]
-		keyI := ai.InsertAt
-		if ai.Kind != "insert_before" && ai.Kind != "insert_after" {
-			keyI = ai.StartLine
+		key := func(op anchoredResolvedOp) int {
+			if op.Kind == "insert_before" || op.Kind == "insert_after" {
+				return op.InsertAt
+			}
+			return op.StartLine
 		}
-		keyJ := aj.InsertAt
-		if aj.Kind != "insert_before" && aj.Kind != "insert_after" {
-			keyJ = aj.StartLine
+		ki, kj := key(ops[i]), key(ops[j])
+		if ki != kj {
+			return ki > kj
 		}
-		if keyI != keyJ {
-			return keyI > keyJ
-		}
-		return ai.Order > aj.Order
+		return ops[i].Order > ops[j].Order
 	})
 	for _, op := range ops {
+		start, end := 0, 0
+		styleAt := 0
 		switch op.Kind {
 		case "replace_range", "delete_range":
-			startIdx := op.StartLine - 1
-			endIdx := op.EndLine
-			replacement := []string{}
-			if op.Kind == "replace_range" {
-				replacement = strings.Split(op.NewText, "\n")
-				if len(replacement) == 1 && replacement[0] == "" {
-					return nil, fmt.Errorf("operation %d/%d: replace_range at lines %d-%d is a no-op; omit it or provide different replacement text", op.Order+1, len(ops), op.StartLine, op.EndLine)
-				}
-			}
-			if op.Kind == "replace_range" && strings.Join(out[startIdx:endIdx], "\n") == op.NewText {
-				return nil, fmt.Errorf("operation %d/%d: replace_range at lines %d-%d is a no-op; omit it or provide different replacement text", op.Order+1, len(ops), op.StartLine, op.EndLine)
-			}
-			out = append(append(out[:startIdx], replacement...), out[endIdx:]...)
+			start = spans[op.StartLine-1].offset
+			last := spans[op.EndLine-1]
+			end = last.offset + last.length
+			styleAt = op.StartLine - 1
 		case "insert_before", "insert_after":
-			insert := strings.Split(op.NewText, "\n")
-			insertAt := op.InsertAt - 1
-			if op.After {
-				insertAt = op.InsertAt
+			styleAt = op.InsertAt - 1
+			if op.Kind == "insert_before" {
+				start = spans[styleAt].offset
+			} else {
+				start = spans[styleAt].offset + spans[styleAt].length
 			}
-			out = append(append(out[:insertAt], insert...), out[insertAt:]...)
+			end = start
 		default:
 			return nil, fmt.Errorf("unsupported operation %q", op.Kind)
 		}
+		replacement := ""
+		if op.Kind == "replace_range" || op.Kind == "insert_before" || op.Kind == "insert_after" {
+			replacement = preserveEditNewlines(op.NewText, lineEndingAt(src, spans, styleAt))
+			if op.Kind == "replace_range" {
+				last := spans[op.EndLine-1]
+				original := src[last.offset : last.offset+last.length]
+				if !strings.HasSuffix(replacement, "\n") {
+					if bytes.HasSuffix(original, []byte("\r\n")) {
+						replacement += "\r\n"
+					} else if bytes.HasSuffix(original, []byte("\n")) {
+						replacement += "\n"
+					}
+				}
+				if strings.TrimSuffix(string(out[start:end]), "\r\n") == replacement || strings.TrimSuffix(string(out[start:end]), "\n") == replacement {
+					return nil, fmt.Errorf("operation %d/%d: replace_range at lines %d-%d is a no-op; omit it or provide different replacement text", op.Order+1, len(ops), op.StartLine, op.EndLine)
+				}
+			}
+		}
+		out = append(out[:start], append([]byte(replacement), out[end:]...)...)
 	}
 	return out, nil
+}
+
+func lineEndingAt(src []byte, spans []lineSpan, line int) string {
+	if line >= 0 && line < len(spans) {
+		b := src[spans[line].offset : spans[line].offset+spans[line].length]
+		if bytes.HasSuffix(b, []byte("\r\n")) {
+			return "\r\n"
+		}
+	}
+	for _, span := range spans {
+		b := src[span.offset : span.offset+span.length]
+		if bytes.HasSuffix(b, []byte("\r\n")) {
+			return "\r\n"
+		}
+		if bytes.HasSuffix(b, []byte("\n")) {
+			return "\n"
+		}
+	}
+	return "\n"
+}
+
+func preserveEditNewlines(text, ending string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	return strings.ReplaceAll(text, "\n", ending)
 }
