@@ -34,6 +34,7 @@ func (m Model) dismissStaticPopup() Model {
 	m.usagePanel = ""
 	m.usageScrollOffset = 0
 	m.inspectOpen = false
+	m.inspectView = nil
 	m.inspectPanel = ""
 	m.inspectScrollOffset = 0
 	m.experimentalOpen = false

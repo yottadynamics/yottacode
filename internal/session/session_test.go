@@ -1456,3 +1456,14 @@ func TestList_ArchivedRowsPopulateStatsFromMessages(t *testing.T) {
 		t.Errorf("archived Subagents = %d, want 0 (not tracked in snapshotPayload)", archived.Subagents)
 	}
 }
+
+// TestSummary_UnwrapsBuzzTurn: Buzz wraps each prompt in a long base prompt
+// plus a <buzz-event>; the gist must be the event's Content, not the wrapper.
+func TestSummary_UnwrapsBuzzTurn(t *testing.T) {
+	wrapped := "<base>\nYou are an agent operating inside Buzz.\n</base>\n<conversation-context>\n[1] hi\n</conversation-context>\n" +
+		"<buzz-event type=\"@mention\">\nEvent ID: abc\nFrom: Petko\nContent: What are the features\nfor v0.6.0 ?\nTags: [[\"h\",\"x\"]]\n</buzz-event>"
+	s := &Session{Messages: []adapter.Message{{Role: adapter.RoleUser, Content: wrapped}}}
+	if got := s.Summary(); got != "What are the features for v0.6.0 ?" {
+		t.Errorf("Summary() = %q", got)
+	}
+}
