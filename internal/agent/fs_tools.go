@@ -123,7 +123,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 	}
 	f, _, err := openRegularFile(p)
 	if err != nil {
-		return "", fmt.Errorf("read_file: %w", err)
+		return "", fmt.Errorf("read_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
 	}
 	defer f.Close()
 

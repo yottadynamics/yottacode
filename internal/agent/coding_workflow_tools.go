@@ -75,6 +75,72 @@ func (t *ApplyDiffTool) PreviewCall(argsJSON string) string {
 	}
 	return "apply_diff\n" + preview
 }
+
+// prepareModelDiff runs the side-effect-free shape checks shared by Execute
+// and PrevalidateArgs: repair, envelope rejection and header parsing. It
+// returns the normalised diff and its target paths.
+func prepareModelDiff(diff string) (string, []string, error) {
+	// Repair a fully JSON-escaped diff BEFORE anything reads it. This must
+	// precede path parsing: ParseDiffPaths and ValidateWritePath have to
+	// see the exact bytes `git apply` will receive. If the repair ran after
+	// validation (as it once did), an escaped diff would be validated as a
+	// single garbage "path" that matches no deny entry and resolves under
+	// cwd, then repaired into a real multi-line patch targeting a denied
+	// file — a deny-list bypass (self-granting a permissions rule) and,
+	// symmetrically, a spurious "no recognizable file headers" rejection of
+	// a diff the repair would have made applyable.
+	diff = normalizeModelPatch(repairFullyEscapedDiff(diff))
+	// Reject common non-diff wrappers before path parsing. These are model
+	// input-shape mistakes, not git-apply problems, so returning a typed error
+	// here gives the model a shorter self-correction loop.
+	if err := validatePatchEnvelope(diff); err != nil {
+		return "", nil, fmt.Errorf("apply_diff: %w", err)
+	}
+	// Parse target paths out of the diff header and run them through
+	// the same write-path validator write_file/edit_file use, so
+	// DefaultDenyPaths (yottacode state, .git internals, etc.) and the
+	// cwd / --allow-paths confinement apply here too. Without this,
+	// `git apply` would happily patch ../../etc/whatever as long as the
+	// diff said so, bypassing the rest of the safety story.
+	paths, pathErr := permissions.ParseDiffPathsStrict(diff)
+	if pathErr != nil {
+		return "", nil, fmt.Errorf("apply_diff: malformed_patch: %w", pathErr)
+	}
+	if len(paths) == 0 {
+		if strings.Contains(diff, "*** Begin Patch") || strings.Contains(diff, "*** Update File:") {
+			return "", nil, fmt.Errorf("apply_diff: apply_patch-style patches are not accepted here — use a unified diff, e.g. \"--- a/PATH\\n+++ b/PATH\\n@@ -12,3 +12,3 @@\\n context\\n-old\\n+new\\n context\\n\" (no \"*** Begin Patch\" / \"*** Update File:\" envelope; hunk headers need line numbers). For a single small change, edit_file is simpler")
+		}
+		// Echo a bounded, quoted snippet of what the parser actually saw
+		// (post-repair — the same bytes ParseDiffPaths read). The failure
+		// is usually an invisible one: a single JSON-escaped line, `@@`
+		// hunks with no `---`/`+++`, or whitespace that ate the header. %q
+		// surfaces newlines/tabs so the shape is legible, and naming the
+		// expected header makes the error self-correcting. Mirrors the
+		// git-apply failure path below, which already echoes patch=%q.
+		got := diff
+		if len(got) > 200 {
+			got = got[:200] + "…"
+		}
+		return "", nil, fmt.Errorf("apply_diff: diff contains no recognizable file headers — "+
+			"expected a `--- a/PATH` / `+++ b/PATH` header pair (or `rename from`/`rename to`); got %q", got)
+	}
+	return diff, paths, nil
+}
+
+// PrevalidateArgs rejects a structurally invalid patch (apply_patch format,
+// missing headers) before the user is asked to approve it, so a patch that
+// can never apply does not cost an approval round trip.
+func (t *ApplyDiffTool) PrevalidateArgs(argsJSON string) error {
+	var a struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || strings.TrimSpace(a.Diff) == "" {
+		return nil // Execute reports these
+	}
+	_, _, err := prepareModelDiff(a.Diff)
+	return err
+}
+
 func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, error) {
 	var a struct {
 		Diff string `json:"diff"`
@@ -88,49 +154,11 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("apply_diff: git binary not found in PATH")
 	}
-	// Repair a fully JSON-escaped diff BEFORE anything reads it. This must
-	// precede path parsing: ParseDiffPaths and ValidateWritePath have to
-	// see the exact bytes `git apply` will receive. If the repair ran after
-	// validation (as it once did), an escaped diff would be validated as a
-	// single garbage "path" that matches no deny entry and resolves under
-	// cwd, then repaired into a real multi-line patch targeting a denied
-	// file — a deny-list bypass (self-granting a permissions rule) and,
-	// symmetrically, a spurious "no recognizable file headers" rejection of
-	// a diff the repair would have made applyable.
-	a.Diff = normalizeModelPatch(repairFullyEscapedDiff(a.Diff))
-	// Reject common non-diff wrappers before path parsing. These are model
-	// input-shape mistakes, not git-apply problems, so returning a typed error
-	// here gives the model a shorter self-correction loop.
-	if err := validatePatchEnvelope(a.Diff); err != nil {
-		return "", fmt.Errorf("apply_diff: %w", err)
-	}
-	// Parse target paths out of the diff header and run them through
-	// the same write-path validator write_file/edit_file use, so
-	// DefaultDenyPaths (yottacode state, .git internals, etc.) and the
-	// cwd / --allow-paths confinement apply here too. Without this,
-	// `git apply` would happily patch ../../etc/whatever as long as the
-	// diff said so, bypassing the rest of the safety story.
-	paths, pathErr := permissions.ParseDiffPathsStrict(a.Diff)
-	if pathErr != nil {
-		return "", fmt.Errorf("apply_diff: malformed_patch: %w", pathErr)
-	}
-	if len(paths) == 0 {
-		if strings.Contains(a.Diff, "*** Begin Patch") || strings.Contains(a.Diff, "*** Update File:") {
-			return "", fmt.Errorf("apply_diff: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
-		}
-		// Echo a bounded, quoted snippet of what the parser actually saw
-		// (post-repair — the same bytes ParseDiffPaths read). The failure
-		// is usually an invisible one: a single JSON-escaped line, `@@`
-		// hunks with no `---`/`+++`, or whitespace that ate the header. %q
-		// surfaces newlines/tabs so the shape is legible, and naming the
-		// expected header makes the error self-correcting. Mirrors the
-		// git-apply failure path below, which already echoes patch=%q.
-		got := a.Diff
-		if len(got) > 200 {
-			got = got[:200] + "…"
-		}
-		return "", fmt.Errorf("apply_diff: diff contains no recognizable file headers — "+
-			"expected a `--- a/PATH` / `+++ b/PATH` header pair (or `rename from`/`rename to`); got %q", got)
+	var paths []string
+	var shapeErr error
+	a.Diff, paths, shapeErr = prepareModelDiff(a.Diff)
+	if shapeErr != nil {
+		return "", shapeErr
 	}
 	for _, rel := range paths {
 		if err := validateUnifiedDiffHunks(a.Diff, rel); err != nil {
@@ -240,7 +268,7 @@ func validatePatchEnvelope(diff string) error {
 		return fmt.Errorf("malformed_patch: remove markdown fences and pass only the unified diff")
 	}
 	if strings.HasPrefix(trimmed, "*** Begin Patch") || strings.HasPrefix(trimmed, "*** Update File:") || strings.HasPrefix(trimmed, "*** End Patch") {
-		return fmt.Errorf("malformed_patch: apply_patch-style patches are not accepted here — use a unified diff with `--- a/PATH` / `+++ b/PATH` headers")
+		return fmt.Errorf("malformed_patch: apply_patch-style patches are not accepted here — use a unified diff, e.g. \"--- a/PATH\\n+++ b/PATH\\n@@ -12,3 +12,3 @@\\n context\\n-old\\n+new\\n context\\n\" (no \"*** Begin Patch\" / \"*** Update File:\" envelope; hunk headers need line numbers). For a single small change, edit_file is simpler")
 	}
 	return nil
 }

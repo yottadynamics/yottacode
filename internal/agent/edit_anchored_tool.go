@@ -89,6 +89,9 @@ type anchoredResolvedOp struct {
 	NewText   string
 	Order     int
 	Summary   string
+	// Relocated names any anchors this op resolved by relocation ("N→M"), so
+	// the result can tell the caller the edit landed at a shifted line.
+	Relocated []string
 }
 
 func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string, error) {
@@ -136,10 +139,28 @@ func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string
 		return "", fmt.Errorf("edit_anchored: write: %w", err)
 	}
 	msg := fmt.Sprintf("edited %s: %d anchored operation(s)", p, len(resolved))
+	var moved []string
+	for _, r := range resolved {
+		moved = append(moved, r.Relocated...)
+	}
+	if len(moved) > 0 {
+		msg += fmt.Sprintf("\nnote: stale anchor(s) relocated by matching their text (original line → current line): %s. Re-read before further edits to this file", strings.Join(moved, ", "))
+	}
 	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, out); note != "" {
 		msg += "\n" + note
 	}
 	return msg, nil
+}
+
+// relocationNotes lists "from→to" for each resolved line that was relocated.
+func relocationNotes(lines ...anchoredLine) []string {
+	var out []string
+	for _, l := range lines {
+		if l.RelocatedFrom != 0 {
+			out = append(out, fmt.Sprintf("%d→%d", l.RelocatedFrom, l.LineNumber))
+		}
+	}
+	return out
 }
 
 func resolveAnchoredOps(idx anchoredLineIndex, ops []anchoredEditRequest) ([]anchoredResolvedOp, error) {
@@ -172,7 +193,7 @@ func resolveAnchoredOps(idx anchoredLineIndex, ops []anchoredEditRequest) ([]anc
 			if op.Op == "delete_range" && strings.TrimSpace(op.NewText) != "" {
 				return nil, fmt.Errorf("operation %d: delete_range does not accept new_text", i+1)
 			}
-			resolved = append(resolved, anchoredResolvedOp{Kind: op.Op, StartLine: startLine.LineNumber, EndLine: endLine.LineNumber, NewText: op.NewText, Order: i})
+			resolved = append(resolved, anchoredResolvedOp{Kind: op.Op, StartLine: startLine.LineNumber, EndLine: endLine.LineNumber, NewText: op.NewText, Order: i, Relocated: relocationNotes(startLine, endLine)})
 		case "insert_before", "insert_after":
 			if op.NewText == "" {
 				return nil, fmt.Errorf("operation %d: %s requires non-empty new_text", i+1, op.Op)
@@ -185,7 +206,7 @@ func resolveAnchoredOps(idx anchoredLineIndex, ops []anchoredEditRequest) ([]anc
 			if err != nil {
 				return nil, fmt.Errorf("operation %d: %w", i+1, err)
 			}
-			resolved = append(resolved, anchoredResolvedOp{Kind: op.Op, InsertAt: line.LineNumber, After: op.Op == "insert_after", NewText: op.NewText, Order: i})
+			resolved = append(resolved, anchoredResolvedOp{Kind: op.Op, InsertAt: line.LineNumber, After: op.Op == "insert_after", NewText: op.NewText, Order: i, Relocated: relocationNotes(line)})
 		default:
 			return nil, fmt.Errorf("operation %d: unsupported op %q", i+1, op.Op)
 		}

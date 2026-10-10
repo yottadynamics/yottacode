@@ -786,6 +786,8 @@ Anchors should be passed as full `line#hash` references, for example `42#a8f13c2
 
 The standard approval modal offers allow once, allow for this session, always allow, deny, and always deny when their derived permission rules are available. For `edit_anchored`, these choices use the same `Edit(...)` permission namespace as `edit_file` and `apply_hashline`, so an existing `Edit(pattern)` rule can allow, ask, or deny all three edit paths consistently. Permission approval never bypasses stale-anchor, overlap, or no-op validation.
 
+Anchor hashes include the line number, so an earlier edit that shifts lines makes later anchors from the same read stale. When an anchor's line number no longer matches, the tool looks within 100 lines for exactly one line whose text hashes to that anchor under its original line number and uses it, reporting `original→current` line numbers in the result; a repeated line never relocates. Relocation matches on text, so if the anchored line itself was rewritten and an identical line exists elsewhere nearby, the edit lands on that line; re-read when unsure. If nothing relocates, the stale-anchor error quotes the current lines around the anchor with fresh `line#hash` tokens so the retry needs no extra read. `apply_hashline` anchor hunks use the same resolution, and empty or zero `offset`/`length`/`hash`/`old` values sent next to an `anchor` are ignored.
+
 Like `apply_hashline`, the target file is checked against a 64 MiB size limit before it is read (`file_too_large` if over).
 
 ## syntax_range
@@ -849,7 +851,11 @@ touched file is run through the same write-path validator
 internals, paths outside cwd, and symlinks are refused before
 `git apply` runs. Before path validation, the tool rejects common
 model-authored wrappers such as markdown fences and `apply_patch`-style
-`*** Begin Patch` blocks with typed malformed-patch errors. After
+`*** Begin Patch` blocks with typed malformed-patch errors; the error includes a
+minimal unified-diff example. These structural checks also run before the
+approval prompt, so a patch that can never apply is bounced to the model
+without asking you to approve it (other tools can opt in via the
+`ArgsPrevalidator` interface). After
 validation, common model-authored defects such as miscounted `@@` hunk
 headers and whitespace drift in context lines are tolerated while
 applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid

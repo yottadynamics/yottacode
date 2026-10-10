@@ -1123,12 +1123,9 @@ func executeToolCallImpl(
 	preview := tool.PreviewCall(argsJSON)
 	var approvalSource string
 
-	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
-	// rules still beat the gate (the model never gets to call a denied
-	// tool, plan mode or not), but the gate beats the tool's own
-	// RequiresApproval policy. Returning the gate's error string as a
-	// tool result lets the model recover by switching to a read-only
-	// or plan-file alternative on the next iteration.
+	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny rules
+	// still beat the gate (the model never gets to call a denied tool, plan mode
+	// or not), but the gate beats the tool's own RequiresApproval policy.
 	if cfg.PlanMode.IsActive() {
 		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
@@ -1144,14 +1141,26 @@ func executeToolCallImpl(
 		verdict, verdictRule = cfg.Permissions.EvaluateWithRuleAt(cfg.Cwd.Get(), tool.Name(), argsJSON)
 	}
 
-	// Permission Deny always wins, even over plan-mode auto-allow. A
-	// user who explicitly denies write_file via permissions.json wants
-	// no writes at all, plan file included.
+	// Permission Deny always wins, even over plan-mode auto-allow. A user who
+	// explicitly denies this tool wants no execution and the normal deny audit
+	// event, regardless of malformed arguments.
 	if verdict == permissions.Deny {
 		_ = send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
 		})
 		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
+	}
+
+	// A call whose arguments can never succeed is bounced before any approval
+	// prompt: the user should not be asked to approve it, and the model
+	// recovers a full approval round trip sooner.
+	if pv, ok := tool.(ArgsPrevalidator); ok {
+		if perr := pv.PrevalidateArgs(argsJSON); perr != nil {
+			msg := "error: " + perr.Error()
+			_ = send(ctx, events, ToolStart{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON})
+			_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
+			return msg, nil, false, "", nil
+		}
 	}
 
 	// Background policy runs before the mode chain so unattended children cannot

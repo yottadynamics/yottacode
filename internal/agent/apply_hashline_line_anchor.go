@@ -49,16 +49,26 @@ func splitLinesWithSpans(src []byte) ([]string, []lineSpan) {
 // parseAnchoredRef/resolveAnchoredRef verbatim, so a malformed, stale, or
 // ambiguous anchor is reported identically to edit_anchored.
 func resolveLineAnchor(src []byte, rawAnchor string) (offset, length int, err error) {
+	offset, length, _, err = resolveLineAnchorDetail(src, rawAnchor)
+	return offset, length, err
+}
+
+// resolveLineAnchorDetail is resolveLineAnchor plus a "from→to" note when a
+// stale anchor was relocated to a shifted line (empty for an exact match).
+func resolveLineAnchorDetail(src []byte, rawAnchor string) (offset, length int, relocated string, err error) {
 	ref, err := parseAnchoredRef(rawAnchor)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
 	}
 	lines, spans := splitLinesWithSpans(src)
 	idx := buildAnchoredLineIndex(lines)
 	line, err := resolveAnchoredRef(idx, ref)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, "", err
+	}
+	if notes := relocationNotes(line); len(notes) > 0 {
+		relocated = notes[0]
 	}
 	span := spans[line.LineNumber-1]
-	return span.offset, span.length, nil
+	return span.offset, span.length, relocated, nil
 }

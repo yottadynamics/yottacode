@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
@@ -91,7 +94,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	}
 	contents, err := os.ReadFile(p)
 	if err != nil {
-		return "", fmt.Errorf("edit_file: %w", err)
+		return "", fmt.Errorf("edit_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
 	}
 	src := string(contents)
 	count := strings.Count(src, a.OldString)
@@ -113,10 +116,15 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 				return "", fmt.Errorf("edit_file: old_string is not present exactly, and a whitespace-insensitive match is ambiguous (%d candidates) in %s — re-read the file and copy the exact text, or add surrounding lines to old_string for a unique match", mcount, p)
 			}
 		}
+		if len(strings.TrimSpace(a.NewString)) >= editAlreadyAppliedMinLen && strings.Contains(src, a.NewString) {
+			// Common retry-after-success loop: the edit already landed, so the
+			// old text is legitimately gone.
+			return "", fmt.Errorf("edit_file: old_string not found in %s, but new_string is already present — this edit was probably already applied. Re-read the file to confirm before retrying", p)
+		}
 		return "", editNotFoundErr(p, src, a.OldString)
 	}
 	if count > 1 && !a.ReplaceAll {
-		return "", fmt.Errorf("edit_file: old_string appears %d times in %s — set replace_all=true to apply, or refine old_string for a unique match", count, p)
+		return "", fmt.Errorf("edit_file: old_string appears %d times in %s (at lines %s) — set replace_all=true to apply, or add surrounding lines to old_string for a unique match", count, p, editMatchLines(src, a.OldString))
 	}
 	var out string
 	var n int
@@ -199,14 +207,68 @@ func editTolerantLineMatch(src, old string) (start, end, count int) {
 	return start, end, 1
 }
 
+// editAlreadyAppliedMinLen is the shortest new_string (ignoring surrounding
+// whitespace) for which "already present" is a meaningful signal; a short
+// string like "}" appears in almost any file.
+const editAlreadyAppliedMinLen = 12
+
+// withMissingPathHint appends cwd context to a file-not-found error. Most
+// not-found failures are a stale path (a removed worktree, a guessed
+// filename) and the model otherwise retries the same path.
+func withMissingPathHint(err error, cwd, rawPath string) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w (path %q is resolved against cwd %s; use glob or list_dir to locate the file)", err, rawPath, cwd)
+	}
+	return err
+}
+
+// editMatchLines returns the 1-based line numbers where old starts in src,
+// capped so a very common string cannot flood the error.
+func editMatchLines(src, old string) string {
+	const maxListed = 8
+	var lines []string
+	total := 0
+	for i := 0; ; {
+		j := strings.Index(src[i:], old)
+		if j < 0 {
+			break
+		}
+		total++
+		if len(lines) < maxListed {
+			lines = append(lines, strconv.Itoa(1+strings.Count(src[:i+j], "\n")))
+		}
+		i += j + len(old)
+	}
+	out := strings.Join(lines, ", ")
+	if total > maxListed {
+		out += fmt.Sprintf(", … (%d more)", total-maxListed)
+	}
+	return out
+}
+
 // editNotFoundErr builds the "old_string not found" error, pointing the
 // model at the closest actual line so it can self-correct on the next turn
 // instead of retrying the same wrong text.
 func editNotFoundErr(path, src, old string) error {
 	if line, num := editClosestLine(src, old); line != "" {
-		return fmt.Errorf("edit_file: old_string not found in %s — the closest line is %d: %q. Re-read the file and copy its exact current text (including whitespace) into old_string", path, num, line)
+		return fmt.Errorf("edit_file: old_string not found in %s — the closest line is %d: %q. Current text there:%s\nCopy the exact current text (including whitespace) into old_string", path, num, line, editNumberedWindow(src, num, 3))
 	}
 	return fmt.Errorf("edit_file: old_string not found in %s — re-read the file with read_file and copy its exact current text into old_string", path)
+}
+
+// editNumberedWindow renders n lines of src starting at 1-based line start as
+// "\n  N\ttext", each truncated, so a not-found error shows what is really there.
+func editNumberedWindow(src string, start, n int) string {
+	srcLines := strings.Split(src, "\n")
+	var b strings.Builder
+	for i := start - 1; i < start-1+n && i < len(srcLines); i++ {
+		l := strings.TrimRight(srcLines[i], "\r")
+		if len(l) > 160 {
+			l = strings.ToValidUTF8(l[:160], "") + "…"
+		}
+		fmt.Fprintf(&b, "\n  %d\t%s", i+1, l)
+	}
+	return b.String()
 }
 
 // editClosestLine returns the source line most similar to the first non-blank
