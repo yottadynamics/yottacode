@@ -277,6 +277,11 @@ func applyAnchoredByteOps(src []byte, _ []string, spans []lineSpan, ops []anchor
 		replacement := ""
 		if op.Kind == "replace_range" || op.Kind == "insert_before" || op.Kind == "insert_after" {
 			replacement = preserveEditNewlines(op.NewText, lineEndingAt(src, spans, styleAt))
+			if (op.Kind == "insert_before" || op.Kind == "insert_after") && !strings.HasSuffix(replacement, "\n") {
+				if ending := lineEndingAt(src, spans, styleAt); ending != "" && (op.Kind == "insert_before" || spans[styleAt].offset+spans[styleAt].length < len(src)) {
+					replacement += ending
+				}
+			}
 			if op.Kind == "replace_range" {
 				last := spans[op.EndLine-1]
 				original := src[last.offset : last.offset+last.length]
