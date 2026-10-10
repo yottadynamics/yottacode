@@ -844,6 +844,7 @@ type Model struct {
 	inspectOpen         bool
 	inspectPanel        string
 	inspectSession      *session.Session
+	inspectView         *inspectViewState
 	inspectScrollOffset int
 	inspectPickerOpen   bool
 	inspectPicker       *inspectPickerState

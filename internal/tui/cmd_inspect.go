@@ -31,14 +31,6 @@ type inspectPickerState struct {
 	live    *session.SessionInfo
 }
 
-// inspectArgsPreviewChars and inspectTextPreviewChars bound how much of a
-// tool call's arguments, and of a user/assistant message, /inspect shows
-// per turn — this is a scan-the-sequence view, not a transcript replay.
-const (
-	inspectArgsPreviewChars = 40
-	inspectTextPreviewChars = 90
-)
-
 // cmdInspect opens a scrollable, read-only turn-by-turn view of a session:
 // what the user asked, what the assistant said, which tools ran with what
 // arguments and outcome, and per-turn token cost — the "what did it
@@ -180,13 +172,19 @@ func (m Model) commitInspectPick() (Model, tea.Cmd) {
 
 func (m Model) openInspectSession(s *session.Session) Model {
 	m.inspectSession = s
-	m.inspectPanel = renderInspectPanel(s)
+	vs := newInspectView(s, 0)
+	vs.window = m.inspectWindowFor(s, vs.turns)
+	m.inspectView = vs
+	m.inspectPanel = renderInspect(vs)
 	m.inspectOpen = true
 	m.inspectScrollOffset = 0
 	return m
 }
 
 func (m Model) updateInspectPanel(msg tea.KeyPressMsg) (Model, tea.Cmd) {
+	if m.inspectView != nil {
+		return m.updateInspectInteractive(msg)
+	}
 	switch msg.Code {
 	case tea.KeyUp:
 		m.inspectScrollOffset = max(0, m.inspectScrollOffset-1)
@@ -255,17 +253,17 @@ func resolveInspectSession(live *session.Session, ref string) (*session.Session,
 	}
 }
 
-// inspectToolCallView is one tool call rendered inside a turn: its name, a
-// truncated argument preview, the outcome once the matching tool result
-// lands ("ok" until then), and — when that outcome isn't "ok" — a truncated
-// preview of the tool result's own content, so a scan of the turn list
-// shows why a call failed instead of just that it did.
+// inspectToolCallView is one tool call within a turn: its name, full
+// arguments, the outcome once the matching tool result lands ("ok" until
+// then), and — when that outcome isn't "ok" — the tool result's own content
+// (minus the repeated-failure guidance boilerplate), so the views can show why
+// a call failed instead of just that it did. Truncation is a render concern.
 type inspectToolCallView struct {
-	name         string
-	args         string
-	status       string
-	errorPreview string
-	latencyMS    *int64
+	name      string
+	args      string
+	status    string
+	errorText string
+	latencyMS *int64
 }
 
 // inspectTurnView is one assistant turn: the user message that preceded it
@@ -273,17 +271,23 @@ type inspectToolCallView struct {
 // calls, per-turn usage, the same low-signal flag /usage's efficiency
 // section uses, and a stopFlag when the provider's own StopReason says the
 // turn didn't end normally (cut off, or blocked by a safety/content
-// filter) — see inspectStopFlag.
+// filter) — see inspectStopFlag. toolSig, errors and search are derived once
+// by buildInspectTurns: the tool summary ("grep×4, read_file"), the failed
+// call count, and the lowercased text "/" matches against.
 type inspectTurnView struct {
-	n           int
-	userPreview string
-	usage       *adapter.Usage
-	assistant   string
-	model       string
-	wallTimeMS  *int64
-	toolCalls   []inspectToolCallView
-	lowSignal   bool
-	stopFlag    string
+	n          int
+	user       string
+	assistant  string
+	usage      *adapter.Usage
+	model      string
+	wallTimeMS *int64
+	toolCalls  []inspectToolCallView
+	lowSignal  bool
+	stopFlag   string
+
+	toolSig string
+	errors  int
+	search  string
 }
 
 // inspectStopFlag maps a provider's raw StopReason to the short label
@@ -331,16 +335,16 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 	for _, msg := range s.Messages {
 		switch msg.Role {
 		case adapter.RoleUser:
-			pendingUser = truncateForRender(msg.Content, inspectTextPreviewChars)
+			pendingUser = msg.Content
 		case adapter.RoleAssistant:
 			t := inspectTurnView{
-				n:           len(turns) + 1,
-				userPreview: pendingUser,
-				usage:       msg.Usage,
-				assistant:   truncateForRender(msg.Content, inspectTextPreviewChars),
-				model:       msg.Model,
-				wallTimeMS:  msg.WallTimeMS,
-				stopFlag:    inspectStopFlag(msg.StopReason),
+				n:          len(turns) + 1,
+				user:       pendingUser,
+				assistant:  msg.Content,
+				usage:      msg.Usage,
+				model:      msg.Model,
+				wallTimeMS: msg.WallTimeMS,
+				stopFlag:   inspectStopFlag(msg.StopReason),
 			}
 			pendingUser = ""
 			if msg.Usage != nil && msg.Usage.InputTokens > lowSignalInputTokens && msg.Usage.OutputTokens < lowSignalOutputTokens {
@@ -350,7 +354,7 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 				callIdx := len(t.toolCalls)
 				t.toolCalls = append(t.toolCalls, inspectToolCallView{
 					name:      call.Name,
-					args:      truncateForRender(call.ArgsJSON, inspectArgsPreviewChars),
+					args:      call.ArgsJSON,
 					status:    call.Status,
 					latencyMS: call.LatencyMS,
 				})
@@ -372,12 +376,20 @@ func buildInspectTurns(s *session.Session) []inspectTurnView {
 					status = "error — guidance fired"
 					content = content[:idx]
 				}
-				turns[at.turn].toolCalls[at.call].errorPreview = truncateForRender(strings.TrimSpace(content), inspectTextPreviewChars)
+				turns[at.turn].toolCalls[at.call].errorText = strings.TrimSpace(content)
 			}
 			if turns[at.turn].toolCalls[at.call].status == "" {
 				turns[at.turn].toolCalls[at.call].status = status
 			}
 		}
+	}
+	// Derived fields are filled in once every tool result has landed, since a
+	// call's status can change after its turn was appended. The views read
+	// these on every keypress, so they must not be recomputed per access.
+	for i := range turns {
+		t := &turns[i]
+		t.toolSig, t.errors, _ = inspectToolSummary(t.toolCalls)
+		t.search = inspectSearchText(*t)
 	}
 	return turns
 }
@@ -419,39 +431,10 @@ func inspectToolSummary(calls []inspectToolCallView) (string, int, string) {
 	return strings.Join(parts, ", "), errorCount, strings.Join(errParts, ", ")
 }
 
-func inspectTurnMetrics(t inspectTurnView) string {
-	parts := []string{}
-	if t.wallTimeMS != nil {
-		parts = append(parts, fmt.Sprintf("wall %s", formatDuration(time.Duration(*t.wallTimeMS)*time.Millisecond)))
-	}
-	if t.model != "" {
-		parts = append(parts, "model "+t.model)
-	}
-	if t.usage != nil {
-		parts = append(parts, fmt.Sprintf("usage %s in · %s out", formatTokens(int(t.usage.InputTokens)), formatTokens(int(t.usage.OutputTokens))))
-		if hit := cacheHitRate(*t.usage); hit >= 0 {
-			parts = append(parts, fmt.Sprintf("cache %.0f%% hit", hit*100))
-		}
-		if t.usage.CostAvailable {
-			parts = append(parts, "cost "+formatUSD(t.usage.CostUSD)+"e")
-		}
-	}
-	tools, errorCount, errorNames := inspectToolSummary(t.toolCalls)
-	if len(t.toolCalls) > 0 {
-		parts = append(parts, fmt.Sprintf("tools %d [%s]", len(t.toolCalls), tools))
-		if errorCount > 0 {
-			parts = append(parts, fmt.Sprintf("errors %d [%s]", errorCount, errorNames))
-		} else {
-			parts = append(parts, "errors 0")
-		}
-	}
-	return strings.Join(parts, " · ")
-}
-
-// right after a turn's tokens summary. Dropped entirely when the usage
-// carries neither (the common case) so plain turns render exactly as
-// before; a turn that both wrote and read cache in the same call shows
-// both ("cache 13K write · 141K read").
+// inspectDetailTokens is the cache/reasoning token clause for a turn's detail
+// view. It is empty when the usage carries neither (the common case); a turn
+// that both wrote and read cache in the same call shows both ("cache 13K
+// write · 141K read").
 func inspectDetailTokens(u *adapter.Usage) string {
 	if u == nil {
 		return ""
@@ -528,47 +511,6 @@ func inspectSessionSummary(s *session.Session, turns []inspectTurnView) string {
 	return strings.Join(parts, " · ")
 }
 
-const inspectPanelFooter = "exports live under /sessions · ↑↓ scroll · PgUp/PgDn · Home/End · Esc close"
-
-func renderInspectPanel(s *session.Session) string {
-	if s == nil {
-		return styleEmpty.Render("session not found")
-	}
-	turns := buildInspectTurns(s)
-	label := s.ID
-	if len(label) > 8 {
-		label = label[:8]
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "inspect  session %s · %s\n\n", label, inspectSessionSummary(s, turns))
-	if len(turns) == 0 {
-		b.WriteString(styleEmpty.Render("no turns in this session yet"))
-		b.WriteByte('\n')
-	}
-	for _, t := range turns {
-		metrics := inspectTurnMetrics(t)
-		if metrics == "" {
-			metrics = "metrics unavailable"
-		}
-		flag := ""
-		if t.stopFlag != "" || t.lowSignal {
-			flags := []string{}
-			if t.stopFlag != "" {
-				flags = append(flags, t.stopFlag)
-			}
-			if t.lowSignal {
-				flags = append(flags, fmt.Sprintf("low output (in >%s, out <%s)", formatTokens(lowSignalInputTokens), formatTokens(lowSignalOutputTokens)))
-			}
-			flag = " · flags [" + strings.Join(flags, ", ") + "]"
-		}
-		fmt.Fprintf(&b, "turn %d  %s%s\n", t.n, metrics, flag)
-		b.WriteByte('\n')
-	}
-	// Footer is added by windowedInspectPanel so its row is included in the
-	// popup's height calculation rather than being clipped after scrolling.
-	return strings.TrimRight(b.String(), "\n")
-}
-
 // inspectScrollReserve reserves one row for windowedInspectPanel's
 // scroll-position hint line, mirroring usageScrollReserve.
 const inspectScrollReserve = 1
@@ -598,7 +540,7 @@ func (m Model) inspectVisualLines() []string {
 }
 
 func (m Model) inspectContentRows() (rows, footer []string) {
-	return m.inspectVisualLines(), []string{inspectPanelFooter}
+	return m.inspectVisualLines(), []string{m.inspectFooter()}
 }
 
 func (m Model) inspectFooterVisible() bool {
@@ -634,9 +576,9 @@ func (m Model) windowedInspectPanel() string {
 	offset := min(max(m.inspectScrollOffset, 0), maxOffset)
 	end := min(total, offset+visible)
 	shown := strings.Join(rows[offset:end], "\n")
-	hint := fmt.Sprintf("── %d-%d/%d · ↑↓ · PgUp/PgDn · Home/End · Esc ──", offset+1, end, total)
+	hint := fmt.Sprintf("── %d-%d/%d%s ──", offset+1, end, total, m.inspectHintKeys())
 	if maxOffset > 0 && offset == maxOffset {
-		return shown + "\n" + styleHint.Render(inspectPanelFooter)
+		return shown + "\n" + styleHint.Render(m.inspectFooter())
 	}
 	return shown + "\n" + styleHint.Render(hint)
 }
