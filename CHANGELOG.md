@@ -6,6 +6,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+- Keep `dispatch` and `integrate` behind their experimental opt-in while integration serialization, dirty-state protection, and branch provenance validation harden the feature.
+
 ### Added
 
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
