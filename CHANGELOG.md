@@ -6,6 +6,17 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+### Fixed
+
+- **Document tools hardening ahead of GA confidence.** `read_document` on
+  `.xlsx` now caps total decompressed size (20x the read cap) instead of only
+  gating the compressed file size, so a zip bomb errors rather than exhausting
+  memory. Every document subprocess (pandoc, weasyprint, pdftotext/pdfinfo,
+  python helpers) now has a 2-minute deadline and reports a clear timeout
+  error instead of hanging until cancelled. New `Documents integration` CI
+  workflow runs real pandoc/weasyprint/poppler create-then-read round trips
+  for docx and pdf.
+
 ### Added
 
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
