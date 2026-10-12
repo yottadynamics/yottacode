@@ -314,7 +314,7 @@ func readManyBodyReserve(rel string, offset int64, anchors bool) int {
 			len(" offset=") + len(strconv.FormatInt(offset, 10)) +
 			len(" length=") + len(strconv.Itoa(maxReadBytes)) +
 			len(" hash=") + hashline.HashHexLength +
-			len(" ends_with_newline=false") + len("\n")
+			len(" ends_with_newline=false complete=false receipt={}") + 256 + len("\n")
 	}
 	return n
 }
@@ -391,7 +391,7 @@ func renderReadManyBody(rel string, w readManyWindow, offset int64, anchors bool
 		return "", err
 	}
 	var out strings.Builder
-	fmt.Fprintf(&out, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t\n", rel, offset, kept, receipt.Hash, spanEndsWithNewline(data[:kept]))
+	fmt.Fprintf(&out, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t complete=%t receipt=%s\n", rel, offset, kept, receipt.Hash, spanEndsWithNewline(data[:kept]), !truncated, inlineEditReceipt(editReceipt{Path: rel, Offset: int(offset), Length: kept, Hash: receipt.Hash, Old: string(data[:kept]), EndsWithNewline: spanEndsWithNewline(data[:kept]), Complete: !truncated}))
 	out.WriteString(lines.String())
 	if truncated {
 		out.WriteString(readManyTruncMarker)

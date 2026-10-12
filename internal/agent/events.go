@@ -157,10 +157,14 @@ type ToolStart struct {
 // ToolResult fires after the tool finishes. ToolCallID matches the originating
 // ToolStart; Errored signals whether it was a tool-level error vs. success.
 type ToolResult struct {
-	ToolCallID string
-	ToolName   string
-	Output     string
-	Errored    bool
+	ToolCallID     string
+	ToolName       string
+	Output         string
+	Errored        bool
+	FailureKind    string
+	Retryable      bool
+	AlreadyApplied bool
+	Mutated        bool
 }
 
 // CwdChanged fires when a tool (today: enter_worktree / exit_worktree)

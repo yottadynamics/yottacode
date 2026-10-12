@@ -148,7 +148,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		if err != nil {
 			return "", fmt.Errorf("read_file: %w", err)
 		}
-		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t\n", a.Path, startByte, len(selectedBytes), receipt.Hash, spanEndsWithNewline(selectedBytes))
+		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t v=1 complete=%t receipt=%s\n", a.Path, startByte, len(selectedBytes), receipt.Hash, spanEndsWithNewline(selectedBytes), !truncated, inlineEditReceipt(editReceipt{Path: a.Path, Offset: startByte, Length: len(selectedBytes), Hash: receipt.Hash, Old: string(selectedBytes), EndsWithNewline: spanEndsWithNewline(selectedBytes), Complete: !truncated}))
 	}
 	for i, line := range anchored {
 		if a.Anchors {
@@ -164,6 +164,24 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		sb.WriteString("…[truncated]")
 	}
 	return sb.String(), nil
+}
+
+const maxInlineEditReceiptBytes = 8 * 1024
+
+func inlineEditReceipt(receipt editReceipt) string {
+	if len(receipt.Old) > maxInlineEditReceiptBytes {
+		receipt.Old = ""
+		receipt.Complete = false
+	}
+	return mustJSONEditReceipt(receipt)
+}
+
+func mustJSONEditReceipt(receipt editReceipt) string {
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 // readLineWindow streams r and returns the lines in

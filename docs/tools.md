@@ -751,17 +751,15 @@ Full overwrite. Creates parent directories as needed.
 Always prompts for approval. The preview shows the path and a 200-char
 content snippet.
 
-## edit_file
-
-Surgical string replacement. Fails when `old_string` matches zero or
-more-than-one place (uniqueness check), unless `replace_all=true`.
+The preferred workflow is `read_file(path, anchors=true)` followed by one batched `apply_hashline` or `edit_anchored` call. Copy the exact `line#hash` anchor or the complete JSON `receipt` from the read result; do not reconstruct a multi-line `old_string` when a receipt is available. `apply_hashline` uses one strict addressing mode per hunk: line anchor or receipt/byte span, never both. Direct edit calls serialize same-file operations through a canonical-path queue; loop-dispatched calls also use the existing mutation claims. `edit_file` remains a compatibility path for exact string replacement, and syntax/LSP operations are preferred for structural or semantic changes.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Must exist |
-| `old_string` | string | — | Must be non-empty and != `new_string` |
+| `old_string` | string | — | Must be non-empty and != `new_string` unless `receipt` is supplied |
 | `new_string` | string | — | The replacement |
 | `replace_all` | bool | `false` | Disable uniqueness check |
+| `receipt` | object | — | Complete receipt from an anchored read; validates the exact byte span and allows `old_string` to be omitted |
 
 Always prompts for approval. The TUI's approval modal renders a colored
 diff (red `−` / green `+`) so you see exactly what's about to change.

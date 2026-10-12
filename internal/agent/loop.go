@@ -1454,10 +1454,15 @@ approved:
 			return "", nil, false, approvalSource, ctx.Err()
 		}
 		msg := fmt.Sprintf("error: %v", err)
-		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
+		kind := EditFailureKind("")
+		if tool.Name() == "edit_file" || tool.Name() == "edit_anchored" || tool.Name() == "apply_hashline" || tool.Name() == "apply_diff" {
+			kind = ClassifyEditFailure(tool.Name(), msg)
+		}
+		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true, FailureKind: string(kind), Retryable: kind == EditFailureStale || kind == EditFailureHashMismatch})
 		return msg, nil, false, approvalSource, nil
 	}
-	if err := send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
+	resultEvent := ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}
+	if err := send(ctx, events, resultEvent); err != nil {
 		// Tool ran to completion but ctx fired before we could
 		// announce its result — propagate cancel so the caller treats
 		// this slot as orphaned (synthetic result). The real `out` is

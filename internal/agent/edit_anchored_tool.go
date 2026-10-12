@@ -96,6 +96,17 @@ type anchoredResolvedOp struct {
 }
 
 func (t *EditAnchoredTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var preview anchoredEditArgs
+	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
+		return "", fmt.Errorf("edit_anchored: invalid args: %w", err)
+	}
+	p := resolvePath(t.Cwd.Get(), preview.Path)
+	return withEditPathLock(p, func() (string, error) {
+		return t.executeUnlocked(ctx, argsJSON)
+	})
+}
+
+func (t *EditAnchoredTool) executeUnlocked(ctx context.Context, argsJSON string) (string, error) {
 	var a anchoredEditArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("edit_anchored: invalid args: %w", err)
