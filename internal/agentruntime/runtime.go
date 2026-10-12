@@ -183,7 +183,7 @@ func (rt *Runtime) Close(ctx context.Context) {
 			tick := time.NewTicker(50 * time.Millisecond)
 			defer tick.Stop()
 			draining := true
-			for draining && rt.SubagentTasks.ActiveCount() > 0 {
+			for draining && rt.SubagentTasks.ActiveTotalCount() > 0 {
 				select {
 				case <-ctx.Done():
 					draining = false
@@ -610,6 +610,18 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		MutationLocks:          mutationLocks,
 	}
 	reg.Register(agentTool)
+	// Background shell jobs ride on the same task registry and completion
+	// callback as background subagents, so they only exist where those do
+	// (interactive TUI and ACP; oneshot has nowhere to deliver a completion).
+	if spec.SupportsBackgroundDispatch {
+		jobs := agent.NewShellJobs(agentTool)
+		if t, ok := reg.Get("run_bash"); ok {
+			if rb, ok := t.(*agent.RunBashTool); ok {
+				rb.Jobs = jobs
+			}
+		}
+		reg.Register(&agent.ProcessTool{Jobs: jobs})
+	}
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 	rt.AgentTool = agentTool
 	reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})

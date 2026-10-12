@@ -287,6 +287,15 @@ func (t *AgentTool) SetBackgroundDoneCallback(fn func(SubagentBackgroundDone)) {
 	t.onBackgroundDone = fn
 }
 
+// canDeliverBackgroundDone reports whether a completion callback is wired, i.e.
+// whether this session can actually surface (and wake the model on) a finished
+// background task. The TUI wires one; ACP and oneshot do not.
+func (t *AgentTool) canDeliverBackgroundDone() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.onBackgroundDone != nil
+}
+
 func (t *AgentTool) Name() string { return agentToolName }
 
 func (t *AgentTool) Description() string {
@@ -1478,6 +1487,19 @@ func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 			continue
 		}
 		if !cfg.ToolAllowed(name) {
+			continue
+		}
+		// Background shell jobs belong to the parent session: their completion
+		// notice is delivered to the parent model and they outlive the child that
+		// would have started them. Children keep a foreground-only run_bash and
+		// get no process tool.
+		if name == processToolName {
+			continue
+		}
+		if rb, ok := tool.(*RunBashTool); ok && rb.Jobs != nil {
+			foreground := *rb
+			foreground.Jobs = nil
+			out.Register(&foreground)
 			continue
 		}
 		out.Register(tool)

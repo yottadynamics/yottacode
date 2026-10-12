@@ -76,7 +76,7 @@ func drainSubagentsOnExit(tasks *subagents.Registry) {
 // injected, so tests can exercise both phases without waiting real seconds.
 func drainSubagents(tasks *subagents.Registry, grace, commitMax, poll time.Duration, out io.Writer) {
 	deadline := time.Now().Add(grace)
-	for tasks.ActiveCount() > 0 && time.Now().Before(deadline) {
+	for tasks.ActiveTotalCount() > 0 && time.Now().Before(deadline) {
 		time.Sleep(poll)
 	}
 	committing := tasks.CommittingCount()
@@ -157,10 +157,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		return err
 	}
 	sessionID = rt.Session.ID
-	defer rt.LSPManager.CloseAll()
-	if rt.CmdSandbox != nil {
-		defer func() { _ = rt.CmdSandbox.Close() }()
-	}
+
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
 	// transcript with a structured summary injected into the system
@@ -205,14 +202,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	// uncatchable — nothing can defer through it — but error-returns and
 	// panics, which previously skipped this entirely, are now covered.
 	subagentTasks := rt.SubagentTasks
-	defer func() {
-		if n := subagentTasks.CancelAll(); n > 0 {
-			drainSubagentsOnExit(subagentTasks)
-		}
-		sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		agent.ReclaimEmptyDispatchWorktrees(sweepCtx, subagentTasks)
-		sweepCancel()
-	}()
+	defer rt.Close(context.Background())
 	// Sweep any empty dispatch worktrees a crashed session leaked — Build
 	// already imported the resumed session's task index (the records it
 	// carries have the worktree + base the reclaim check needs; the
@@ -407,10 +397,7 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	{
 		inbox := model.subagentInbox
 		rt.AgentTool.SetBackgroundDoneCallback(func(ev agent.SubagentBackgroundDone) {
-			select {
-			case inbox <- ev:
-			default:
-			}
+			inbox.enqueue(ev)
 		})
 	}
 	// Startup flags drop the freshly-built model into the requested
@@ -497,16 +484,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	// teardown registered right after subagentTasks was created, so an
 	// error-return or panic from prog.Run can't skip them.
 
-	// Tear down MCP subprocesses before the index/session close so a
-	// slow shutdown can't leak servers past yottacode's lifetime. The
-	// context here is short-bounded; the SDK's CommandTransport.Close
-	// runs its own SIGTERM/SIGKILL ladder.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	mcpManager.Stop(shutdownCtx)
-	shutdownCancel()
-	if idx != nil {
-		_ = idx.Close()
-	}
 	// Persist the subagent task index alongside the session so its task-ids
 	// resolve on a later resume. (The deferred teardown's CancelAll runs after
 	// this save, so a task still running at exit persists as "running" and
