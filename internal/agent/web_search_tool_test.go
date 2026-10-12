@@ -167,6 +167,18 @@ func TestWebSearchTool_EmptyQuery(t *testing.T) {
 	}
 }
 
+func TestWebSearchTool_ChangedMarkupIsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><body><div class='challenge'>captcha</div></body></html>"))
+	}))
+	defer srv.Close()
+	_, err := ddgSearchWithBase(context.Background(), "test", 5, srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "block or consent") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestWebSearchTool_NoResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -176,7 +188,7 @@ func TestWebSearchTool_NoResults(t *testing.T) {
 
 	origSearch := ddgSearchFunc
 	ddgSearchFunc = func(ctx context.Context, query string, maxResults int) ([]ddgResult, error) {
-		return ddgSearchWithBase(ctx, query, maxResults, srv.URL+"/html/")
+		return []ddgResult{}, nil
 	}
 	t.Cleanup(func() { ddgSearchFunc = origSearch })
 

@@ -93,13 +93,14 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
 		return "", fmt.Errorf("apply_hashline: invalid args: %w", err)
 	}
-	p := resolvePath(t.Cwd.Get(), preview.Path)
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, preview.Path)
 	return withEditPathLock(p, func() (string, error) {
-		return t.executeUnlocked(ctx, argsJSON)
+		return t.executeUnlocked(ctx, argsJSON, p, cwd)
 	})
 }
 
-func (t *ApplyHashlineTool) executeUnlocked(ctx context.Context, argsJSON string) (string, error) {
+func (t *ApplyHashlineTool) executeUnlocked(ctx context.Context, argsJSON, resolvedPath, resolvedCwd string) (string, error) {
 	a, err := parseApplyHashlineArgs(argsJSON)
 	if err != nil {
 		return "", fmt.Errorf("apply_hashline: invalid args: %w", err)
@@ -107,7 +108,7 @@ func (t *ApplyHashlineTool) executeUnlocked(ctx context.Context, argsJSON string
 	if a.Path == "" {
 		return "", fmt.Errorf("apply_hashline: path is required")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvedPath
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("apply_hashline: %w", err)
 	}
@@ -118,7 +119,7 @@ func (t *ApplyHashlineTool) executeUnlocked(ctx context.Context, argsJSON string
 	// Hunk resolution needs the current file bytes: a line-anchored hunk's
 	// offset, length, and hash are all derived fresh from oldBytes rather
 	// than supplied by the model, so it can only run after the read.
-	parsed, relocated, err := a.resolveHunks(oldBytes)
+	parsed, relocated, err := a.resolveHunks(oldBytes, resolvedCwd)
 	if err != nil {
 		return "", formatHashlineApplyError(err)
 	}
@@ -244,7 +245,7 @@ func parseApplyHashlineArgs(argsJSON string) (applyHashlineArgs, error) {
 // malformed token) is wrapped as a recoverable hashline.ApplyError so it
 // reaches the model with the same "re-read and retry" guidance a stale byte
 // offset gets.
-func (a applyHashlineArgs) resolveHunks(src []byte) ([]hashline.Hunk, []string, error) {
+func (a applyHashlineArgs) resolveHunks(src []byte, cwd string) ([]hashline.Hunk, []string, error) {
 	raw := a.Hunks
 	if len(raw) == 0 {
 		if a.Receipt != nil && a.LineAnchor == "" && a.Hash == "" {
@@ -268,7 +269,7 @@ func (a applyHashlineArgs) resolveHunks(src []byte) ([]hashline.Hunk, []string, 
 			if err != nil {
 				return nil, nil, fmt.Errorf("hunk %d: %w", i, err)
 			}
-			if receipt.Path != "" && filepath.Clean(receipt.Path) != filepath.Clean(a.Path) {
+			if receipt.Path != "" && filepath.Clean(resolvePath(cwd, receipt.Path)) != filepath.Clean(resolvePath(cwd, a.Path)) {
 				return nil, nil, fmt.Errorf("hunk %d receipt path %q does not match edit path %q", i, receipt.Path, a.Path)
 			}
 			raw[i].Offset, raw[i].Length, raw[i].Hash, raw[i].Old = receipt.Offset, receipt.Length, receipt.Hash, receipt.Old

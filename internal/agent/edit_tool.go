@@ -49,6 +49,23 @@ func (t *EditFileTool) Schema() map[string]any {
 
 func (t *EditFileTool) RequiresApproval(string) bool { return true }
 
+// PrevalidateArgs rejects malformed edit calls before permission evaluation or
+// approval. Missing paths must never produce an approval prompt or a misleading
+// mutation error after the user accepts it.
+func (t *EditFileTool) PrevalidateArgs(argsJSON string) error {
+	var a editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return fmt.Errorf("edit_file: path is required")
+	}
+	if a.OldString == "" && len(a.Receipt) == 0 {
+		return fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
+	}
+	return nil
+}
+
 // PathsToSnapshot reports the target file so /checkpoints can restore
 // the pre-edit contents on rewind.
 func (t *EditFileTool) PathsToSnapshot(cwd, argsJSON string) []string {
@@ -79,7 +96,7 @@ type editArgs struct {
 
 var replaceFileIfUnchanged = hashline.ReplaceFileIfUnchanged
 
-func (t *EditFileTool) applyReceipt(a *editArgs) (editReceipt, error) {
+func (t *EditFileTool) applyReceiptWithCwd(a *editArgs, cwd string) (editReceipt, error) {
 	if len(a.Receipt) == 0 || string(a.Receipt) == "null" {
 		return editReceipt{}, nil
 	}
@@ -87,7 +104,7 @@ func (t *EditFileTool) applyReceipt(a *editArgs) (editReceipt, error) {
 	if err != nil {
 		return editReceipt{}, err
 	}
-	if receipt.Path != "" && resolvePath(t.Cwd.Get(), receipt.Path) != resolvePath(t.Cwd.Get(), a.Path) {
+	if receipt.Path != "" && resolvePath(cwd, receipt.Path) != resolvePath(cwd, a.Path) {
 		return editReceipt{}, fmt.Errorf("receipt path %q does not match edit path %q", receipt.Path, a.Path)
 	}
 	if a.OldString != "" && a.OldString != receipt.Old {
@@ -101,13 +118,14 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
 		return "", fmt.Errorf("edit_file: invalid args: %w", err)
 	}
-	p := resolvePath(t.Cwd.Get(), preview.Path)
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, preview.Path)
 	return withEditPathLock(p, func() (string, error) {
-		return t.executeUnlocked(ctx, argsJSON)
+		return t.executeUnlocked(ctx, argsJSON, p, cwd)
 	})
 }
 
-func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string) (string, error) {
+func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string, resolvedPath, resolvedCwd string) (string, error) {
 	var a editArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("edit_file: invalid args: %w", err)
@@ -115,7 +133,7 @@ func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string) (st
 	if a.OldString == "" && len(a.Receipt) == 0 {
 		return "", fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
 	}
-	receipt, err := t.applyReceipt(&a)
+	receipt, err := t.applyReceiptWithCwd(&a, resolvedCwd)
 	if err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
@@ -128,7 +146,7 @@ func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string) (st
 	if a.OldString == a.NewString {
 		return "", fmt.Errorf("edit_file: old_string and new_string are byte-for-byte identical, so this call cannot make progress and resubmitting it unchanged will fail the same way every time. This is not a stale-file problem — no file was even read yet. Call read_file on the target to see its current exact content, then call edit_file again with a new_string that actually differs from old_string")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvedPath
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}

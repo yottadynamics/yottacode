@@ -80,6 +80,23 @@ a separate model limitation that argument normalization cannot fix; switch to a
 model that supports structured tool calling (e.g. NVIDIA's Nemotron, Mistral,
 Qwen, or DeepSeek on the same endpoint).
 
+## `web_search` fails or returns no results
+
+`web_search` has two backends. OpenAI, xAI, and explicitly enabled Anthropic
+profiles use provider-native search. Ollama, NVIDIA NIM, and generic
+OpenAI-compatible profiles use the local DuckDuckGo HTML fallback.
+
+The fallback requires direct outbound HTTPS access to
+`html.duckduckgo.com`. OpenAI-auth uses hosted Codex web search first and
+keeps this fallback available if the hosted request is rejected. HTTP 403/429 responses usually mean bot protection or
+rate limiting; CAPTCHA/consent messages mean DuckDuckGo returned a challenge
+page; and a no-results parser error means the upstream HTML contract changed.
+These are backend failures, not proof that the query has no results. Retry
+later, verify proxy/DNS/egress access, or use `fetch_url` when you already know
+the target page. For reliable production search, configure a provider-native
+search-capable profile rather than depending on scraped HTML.
+
+
 ## `adapter: empty completion` on NVIDIA NIM
 
 Some NVIDIA NIM models have returned an empty streaming response when optional

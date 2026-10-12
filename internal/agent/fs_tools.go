@@ -110,20 +110,19 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	return res.Content, err
 }
 
-func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, error) {
+func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs, p string) (string, error) {
 	startLine := max(a.Offset, 1)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = defaultReadLines
 	}
 
-	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	f, _, err := openRegularFile(p)
 	if err != nil {
-		return "", fmt.Errorf("read_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
+		return "", fmt.Errorf("read_file: %w", withMissingPathHint(err, filepath.Dir(p), a.Path))
 	}
 	defer f.Close()
 
@@ -321,6 +320,7 @@ func imageMediaType(path string) (string, bool) {
 }
 
 func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (MultimodalResult, error) {
+	cwd := t.Cwd.Get()
 	var a readFileArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: invalid args: %w", err)
@@ -329,14 +329,14 @@ func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (
 		return MultimodalResult{}, fmt.Errorf("read_file: path is required")
 	}
 
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvePath(cwd, a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
 	}
 
 	mediaType, isImage := imageMediaType(p)
 	if !isImage {
-		text, err := t.readText(ctx, a)
+		text, err := t.readText(ctx, a, p)
 		return MultimodalResult{Content: text}, err
 	}
 
@@ -439,19 +439,22 @@ func (t *WriteFileTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if a.Path == "" {
 		return "", fmt.Errorf("write_file: path is required")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
-	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("write_file: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", fmt.Errorf("write_file: mkdir: %w", err)
-	}
-	if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
-		return "", fmt.Errorf("write_file: %w", err)
-	}
-	msg := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p)
-	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, a.Content); note != "" {
-		msg += "\n" + note
-	}
-	return msg, nil
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, a.Path)
+	return withEditPathLock(p, func() (string, error) {
+		if err := ValidateWritePath(p, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return "", fmt.Errorf("write_file: mkdir: %w", err)
+		}
+		if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
+		msg := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p)
+		if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, a.Content); note != "" {
+			msg += "\n" + note
+		}
+		return msg, nil
+	})
 }

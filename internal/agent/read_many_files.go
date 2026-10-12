@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,12 +98,18 @@ func (t *ReadManyFilesTool) PreviewCall(argsJSON string) string {
 }
 
 func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	cwd := t.Cwd.Get()
 	pathsArg, offset, limitArg, anchors, err := parseReadManyFilesArgs(argsJSON)
 	if err != nil {
 		return "", fmt.Errorf("read_many_files: invalid args: %w", err)
 	}
 	if len(pathsArg) == 0 {
 		return "", fmt.Errorf("read_many_files: paths is required")
+	}
+	for i, path := range pathsArg {
+		if path == "" {
+			return "", fmt.Errorf("read_many_files: path %d is empty", i+1)
+		}
 	}
 	if len(pathsArg) > defaultReadManyMaxFiles {
 		return "", fmt.Errorf("read_many_files: too many paths (%d > %d)", len(pathsArg), defaultReadManyMaxFiles)
@@ -116,12 +123,13 @@ func (t *ReadManyFilesTool) Execute(ctx context.Context, argsJSON string) (strin
 	}
 	paths := append([]string(nil), pathsArg...)
 	sort.Strings(paths)
+	paths = slices.Compact(paths)
 
 	// Deny-list every path before touching the filesystem: a denied entry
 	// refuses the whole call, and nothing has been read yet that could leak.
 	resolved := make([]string, len(paths))
 	for i, rel := range paths {
-		p := resolvePath(t.Cwd.Get(), rel)
+		p := resolvePath(cwd, rel)
 		if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 			return "", fmt.Errorf("read_many_files: %w", err)
 		}

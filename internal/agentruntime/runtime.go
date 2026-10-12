@@ -535,7 +535,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient, Footer: prFooter})
 	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
-	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
+	if ad.Profile().Provider == adapter.ProviderOpenAIAuth || !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
+		// Keep the local fallback registered for openai-auth; its adapter
+		// omits this function in native mode and reintroduces it only when
+		// the Codex backend rejects hosted web_search.
 		reg.Register(&agent.WebSearchTool{})
 	}
 
