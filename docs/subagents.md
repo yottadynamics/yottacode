@@ -434,6 +434,12 @@ parent's context never includes this content, but the user can
 inspect it through the `/subagents` picker (Enter on a row) or by
 opening the file directly.
 
+Background shell jobs (`run_bash` with `background`) are listed in the dock
+and picker too. Their combined stdout/stderr is mirrored to
+`shell-<id>.log` in the same directory (capped at 8 MB), so Enter on a
+shell row opens the live output in the pager. The log is deleted when the
+finished job expires from the session's job table (30 minutes after it ends).
+
 ### Format
 
 The transcript is markdown. Each tool call renders as a section:

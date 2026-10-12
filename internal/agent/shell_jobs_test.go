@@ -711,3 +711,47 @@ func TestProcessTool_ImplementsCleanupToolAndStopsJobs(t *testing.T) {
 		t.Fatalf("runtime shutdown left a background job running")
 	}
 }
+
+// A shell job must expose a transcript path so Enter on its dock/picker row
+// opens something instead of failing with "stat : no such file".
+func TestShellJobs_OutputMirroredToTranscriptFile(t *testing.T) {
+	h := newJobsHarness(t)
+	h.jobs.agent.TranscriptDir = filepath.Join(t.TempDir(), "transcripts")
+	job := h.start(t, "echo hello-log", false)
+	waitJob(t, job)
+
+	task, ok := h.tasks.Get(job.id)
+	if !ok || task.TranscriptPath == "" {
+		t.Fatalf("shell task has no TranscriptPath: %+v", task)
+	}
+	body, err := os.ReadFile(task.TranscriptPath)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	for _, want := range []string{"$ echo hello-log", "hello-log"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("transcript missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// Logs expire with the job record: once a finished job ages out of the table
+// its log file is deleted so output does not pile up on disk.
+func TestShellJobs_LogRemovedWhenJobExpires(t *testing.T) {
+	h := newJobsHarness(t)
+	h.jobs.agent.TranscriptDir = t.TempDir()
+	job := h.start(t, "echo bye", false)
+	waitJob(t, job)
+	if _, err := os.Stat(job.logPath); err != nil {
+		t.Fatalf("log should exist while the job is tracked: %v", err)
+	}
+
+	h.jobs.now = func() time.Time { return time.Now().Add(shellJobFinishedTTL + time.Minute) }
+	h.jobs.mu.Lock()
+	h.jobs.pruneLocked()
+	h.jobs.mu.Unlock()
+
+	if _, err := os.Stat(job.logPath); !os.IsNotExist(err) {
+		t.Errorf("log should be removed after expiry, stat err = %v", err)
+	}
+}

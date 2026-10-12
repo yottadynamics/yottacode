@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +29,9 @@ const (
 	shellDoneTailChars = 2000
 	// shellPollMaxBytes bounds the output a single poll/wait/log returns.
 	shellPollMaxBytes = 32 * 1024
+	// shellLogMaxBytes caps the on-disk log a job's output is mirrored to so a
+	// chatty dev server cannot fill the disk; past it the file stops growing.
+	shellLogMaxBytes = 8 * 1024 * 1024
 	// shellKillWait bounds how long Kill and Cleanup wait for a signaled job to
 	// be reaped: the sandbox kill budget (5s) plus its WaitDelay slack.
 	shellKillWait = 7 * time.Second
@@ -82,6 +88,8 @@ type shellJob struct {
 	notifyDropped bool
 	cancel        context.CancelFunc
 	buf           *jobBuffer
+	logFile       *os.File // mirror of buf for the dock/picker pager; nil when unavailable
+	logPath       string
 	done          chan struct{}
 
 	mu       syncutil.Mutex
@@ -140,13 +148,27 @@ func (m *ShellJobs) Start(sb Sandbox, command, cwd string, notify bool) (*shellJ
 	ctx, cancel := context.WithCancel(context.Background())
 	job.cancel = cancel
 
+	// Mirror output to a log file so /subagents and the dock can open the job
+	// like any other task. Best effort: without it the job still works.
+	var out io.Writer = job.buf
+	if f, path := openShellLog(m.agent.TranscriptDir, id, command); f != nil {
+		job.logFile = f
+		job.logPath = path
+		task.TranscriptPath = path
+		out = io.MultiWriter(job.buf, &logCapWriter{w: f, left: shellLogMaxBytes})
+	}
+
 	cmd := sb.Command(ctx, command, cwd)
 	// One writer for both streams: exec gives an identical Stdout/Stderr a
 	// single pipe, so the buffer keeps the real interleaving.
-	cmd.Stdout = job.buf
-	cmd.Stderr = job.buf
+	cmd.Stdout = out
+	cmd.Stderr = out
 	if err := cmd.Start(); err != nil {
 		cancel()
+		job.closeLog()
+		if task.TranscriptPath != "" {
+			_ = os.Remove(task.TranscriptPath)
+		}
 		m.mu.Unlock()
 		return nil, fmt.Errorf("failed to start: %w", err)
 	}
@@ -221,6 +243,7 @@ func (m *ShellJobs) finish(job *shellJob, exit int, status subagents.TaskStatus,
 	job.mu.Unlock()
 
 	result := formatShellDone(job, exit, status, note)
+	job.closeLog()
 	close(job.done)
 	errored := status == subagents.TaskErrored
 	m.agent.Tasks.MarkDone(job.id, status, result, errored, 0)
@@ -237,6 +260,52 @@ func (m *ShellJobs) finish(job *shellJob, exit int, status subagents.TaskStatus,
 			NotifyOnDone: wake,
 		})
 	}
+}
+
+// openShellLog creates the job's log file under dir, or returns nil when there
+// is no transcript directory or it cannot be written.
+func openShellLog(dir, id, command string) (*os.File, string) {
+	if dir == "" {
+		return nil, ""
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, ""
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%s-%s.log", ShellTaskType, id))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, ""
+	}
+	fmt.Fprintf(f, "$ %s\n\n", command)
+	return f, path
+}
+
+func (j *shellJob) closeLog() {
+	if j.logFile != nil {
+		_ = j.logFile.Close()
+	}
+}
+
+// logCapWriter writes up to left bytes then silently discards the rest. It
+// never returns an error so a full or failing log cannot break the job's pipe.
+type logCapWriter struct {
+	mu   syncutil.Mutex
+	w    io.Writer
+	left int
+}
+
+func (c *logCapWriter) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.left > 0 {
+		n := len(p)
+		if n > c.left {
+			n = c.left
+		}
+		_, _ = c.w.Write(p[:n])
+		c.left -= n
+	}
+	return len(p), nil
 }
 
 func formatShellDone(job *shellJob, exit int, status subagents.TaskStatus, note string) string {
@@ -291,6 +360,15 @@ func (m *ShellJobs) lookup(id string) (*shellJob, error) {
 	return nil, fmt.Errorf("unknown session_id %q (jobs end with the session and finished ones expire after %s)", id, shellJobFinishedTTL)
 }
 
+// dropLocked forgets a finished job and deletes its output log, so logs expire
+// with the job instead of accumulating on disk. Caller holds m.mu.
+func (m *ShellJobs) dropLocked(id string, j *shellJob) {
+	delete(m.jobs, id)
+	if j != nil && j.logPath != "" {
+		_ = os.Remove(j.logPath)
+	}
+}
+
 // pruneLocked drops finished jobs past their TTL, then evicts the oldest
 // finished jobs while the table is full. Caller holds m.mu.
 func (m *ShellJobs) pruneLocked() {
@@ -308,7 +386,7 @@ func (m *ShellJobs) pruneLocked() {
 			continue
 		}
 		if now.Sub(at) > shellJobFinishedTTL {
-			delete(m.jobs, id)
+			m.dropLocked(id, j)
 			continue
 		}
 		finished = append(finished, fin{id, at})
@@ -321,7 +399,7 @@ func (m *ShellJobs) pruneLocked() {
 		if len(m.jobs) < shellJobMaxTracked {
 			return
 		}
-		delete(m.jobs, f.id)
+		m.dropLocked(f.id, m.jobs[f.id])
 	}
 }
 
