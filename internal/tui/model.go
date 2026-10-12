@@ -3107,6 +3107,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.embedCurrentSessionAsync()
 		}
 		switch {
+		case msg.pruned:
+			m.lastContextSummary = fmt.Sprintf("auto pruned %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "pruned stale tool output", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
 			snap := snapshotResumeHint(msg.snapshotPath)
@@ -6321,6 +6324,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.Forced {
 			kind = "force-compacted"
 		}
+		if e.Pruned {
+			kind = "pruned"
+		}
 		line := fmt.Sprintf("[context] %s mid-turn ~%s → ~%s tokens", kind, formatTokens(e.Before), formatTokens(e.After))
 		if e.SnapshotPath != "" {
 			line += " · snapshot " + abbrevHome(e.SnapshotPath)
@@ -6337,6 +6343,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.sess.RecordCompaction(e.Before, e.After, true)
 		m.appendLine(renderCompactionNoticeLine(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
+		if e.Warning != nil {
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", "summary skipped", e.Warning.Error())))
+		}
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:

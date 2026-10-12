@@ -1217,7 +1217,9 @@ func (t *AgentTool) runChild(
 			emitActivity(fmt.Sprintf("auto-denied out-of-workspace write to %s (unattended worker is sandboxed; it cannot escape its worktree)", e.Path))
 		case ContextCompacted:
 			if e.Err != nil {
-				emitActivity("context compaction skipped (summary failed) — continuing")
+				emitActivity(fmt.Sprintf("context compaction skipped (%s) — continuing", e.Err))
+			} else if e.Pruned {
+				emitActivity(fmt.Sprintf("pruned stale tool output ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
 			} else {
 				t.Tasks.IncrementCompactionCount(taskID)
 				emitActivity(fmt.Sprintf("compacted context ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))

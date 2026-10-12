@@ -78,6 +78,12 @@ type ContextCompacted struct {
 	SnapshotPath string
 	SnapshotErr  error
 	Forced       bool
+	// Pruned marks a reduction done purely by blanking stale tool output,
+	// with no summary call.
+	Pruned bool
+	// Warning is set when a later stage (summary) failed or could not win and
+	// only the cheaper stages' reduction was applied.
+	Warning error
 }
 
 func (ContextCompacted) event() {}

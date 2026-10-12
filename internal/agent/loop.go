@@ -213,6 +213,14 @@ type CompactionConfig struct {
 	// ContextCompacted event and do not block compaction: provider-limit
 	// recovery must still work on a full or unavailable disk.
 	PreCompact func([]adapter.Message) (string, error)
+
+	// calib learns reported/estimated prompt-size drift (see
+	// compaction_calibrate.go). Lives on the shared config pointer so the
+	// ratio persists across iterations and turns.
+	calib tokenCalibrator
+	// warned dedupes the "cannot reduce context" warning until the request
+	// size drops back under the trigger.
+	warned atomic.Bool
 }
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
@@ -472,7 +480,7 @@ func Turn(
 		// looked well under the window.
 		if cfg.Compaction != nil && cfg.Compaction.Window > 0 {
 			_ = send(ctx, events, ContextUsage{
-				Tokens: contextwindow.EstimateTokens(*history) + toolSchemaTokens(cfg.Registry),
+				Tokens: cfg.Compaction.calib.scale(contextwindow.EstimateTokens(*history) + toolSchemaTokens(cfg.Registry)),
 				Window: cfg.Compaction.Window,
 			})
 		}
@@ -490,7 +498,11 @@ func Turn(
 		var final *adapter.Message
 		var err error
 		for {
-			final, err = streamIteration(ctx, cfg, snapshotHistory(cfg, state.history), events)
+			sent := snapshotHistory(cfg, state.history)
+			final, err = streamIteration(ctx, cfg, sent, events)
+			if err == nil && final != nil && cfg.Compaction != nil {
+				cfg.Compaction.calib.observe(final.Provider+"/"+final.Model, contextwindow.EstimateTokens(sent)+toolSchemaTokens(cfg.Registry), reportedPromptTokens(final.Usage))
+			}
 			// Provider context-limit errors are normally pre-stream HTTP
 			// rejections. Retry only when no assistant content reached the UI;
 			// otherwise a second stream would duplicate already-rendered text.
