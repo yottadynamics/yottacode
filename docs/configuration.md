@@ -645,6 +645,19 @@ call may request in one decomposition (see
 [dispatch.md](dispatch.md#limits--notes)) — that stays fixed
 independently of this session-wide total.
 
+### Dispatch
+
+```toml
+[dispatch]
+max_workers = 4   # subtasks per dispatch call; default and ceiling 8
+```
+
+`max_workers` lowers how many subtasks one `dispatch` call may request.
+It can only reduce the built-in ceiling of 8, never raise it; values
+`<= 0` use the ceiling. The session-wide concurrency cap above still
+applies. `dispatch` itself remains behind the `dispatch` experimental
+flag. Concurrent `integrate` calls are serialized (one at a time).
+
 See [subagents.md](subagents.md) for the agent types, background
 dispatch, and `notify_on_done` wake semantics these bounds guard.
 

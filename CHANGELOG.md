@@ -8,6 +8,12 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+worktree-dispatch-ga-prep
+- **`[dispatch] max_workers` lowers the per-call subtask cap, and `integrate`
+  calls are serialized.** `dispatch` stays experimental. The new setting can
+  only reduce the built-in ceiling of 8. Concurrent `integrate` calls now
+  queue instead of racing in one integration worktree. A test pins that
+  integrate never touches a dirty user checkout.
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
   (default 4) independent sub-questions, runs read-only web researchers in
   parallel, has two verifiers independently re-check every claim, then writes a
