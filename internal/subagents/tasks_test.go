@@ -11,6 +11,17 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 )
 
+func TestRegistryFindByBranch(t *testing.T) {
+	r := NewRegistry()
+	r.Add(&Task{ID: "worker-1", Branch: "worktree-dispatch-one", Status: TaskCompleted})
+	if task, ok := r.FindByBranch("worktree-dispatch-one"); !ok || task.ID != "worker-1" {
+		t.Fatalf("FindByBranch returned (%v, %v), want worker-1, true", task, ok)
+	}
+	if _, ok := r.FindByBranch("missing"); ok {
+		t.Fatal("FindByBranch should reject an unknown branch")
+	}
+}
+
 func TestRegistry_CancelBeforeAttachIsDelivered(t *testing.T) {
 	r := NewRegistry()
 	r.Add(&Task{ID: "race", Status: TaskRunning})

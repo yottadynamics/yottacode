@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"github.com/yottadynamics/yottacode/internal/worktree"
 )
 
@@ -21,6 +22,11 @@ const IntegrateToolName = "integrate"
 // key is scoped by integration branch so concurrent conflicted integrations in
 // one repo cannot overwrite each other's cleanup state.
 const integrateCleanupConfigPrefix = "yottacode.dispatchcleanup"
+
+// integrateMu serializes repository worktree and merge operations. Git stores
+// worktree metadata and merge state at repository scope, so concurrent integrate
+// calls—even for different integration branches—can corrupt one another.
+var integrateMu syncutil.Mutex
 
 // IntegrateTool merges dispatch task branches into a single integration
 // branch — the one branch a PR is opened from. It runs in a dedicated
@@ -37,6 +43,11 @@ type IntegrateTool struct {
 	// (integrate and dispatch ship together). When false, Execute returns
 	// a recoverable error string.
 	Enabled bool
+
+	// Tasks is the session registry used to validate that integration inputs
+	// came from successful dispatch workers. It may be nil for low-level callers
+	// and tests that deliberately exercise generic branch merging.
+	Tasks *subagents.Registry
 }
 
 func (t *IntegrateTool) Name() string { return IntegrateToolName }
@@ -93,6 +104,12 @@ func parseIntegrateArgs(argsJSON string) integrateArgs {
 }
 
 func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	// Git worktree registration, merge state, and pending cleanup config are
+	// repository-global. Hold the lock for the complete operation so a second
+	// integrate call cannot observe or mutate half-finished state.
+	integrateMu.Lock()
+	defer integrateMu.Unlock()
+
 	if !t.Enabled {
 		return "error: `integrate` is part of the experimental `dispatch` feature and is not enabled in this session. Enable it with `--experimental dispatch`, `YOTTACODE_EXPERIMENTAL=dispatch`, or `[experimental] dispatch = true` in config.toml.", nil
 	}
@@ -137,6 +154,12 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		if branch == "" {
 			return "error: integrate branch list contains an empty branch name; pass only committed local branch names", nil
 		}
+		if t.Tasks != nil {
+			task, ok := t.Tasks.FindByBranch(branch)
+			if !ok || task.Status != subagents.TaskCompleted || task.Errored || task.Base == "" {
+				return fmt.Sprintf("error: branch %q is not a successful dispatch worker branch in this session; pass only branches reported as committed", branch), nil
+			}
+		}
 		if !validBranchName(ctx, repoRoot, branch) {
 			return fmt.Sprintf("error: invalid branch %q; pass a local branch name, not a revision expression", branch), nil
 		}
@@ -149,7 +172,18 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 		return msg, nil
 	}
 
-	// Refuse to proceed if a previous merge is still unresolved in the
+	// An integration worktree is tool-owned. Refuse to merge into staged,
+	// modified, or untracked user state; otherwise unrelated edits could be
+	// silently folded into the generated PR branch. A merge in progress is
+	// handled separately below because its index is intentionally dirty.
+	if _, e := gitOutput(ctx, integDir, "rev-parse", "-q", "--verify", "MERGE_HEAD"); e != nil {
+		if status, statusErr := gitOutput(ctx, integDir, "status", "--porcelain"); statusErr != nil {
+			return fmt.Sprintf("error: could not inspect integration worktree %s: %v", integDir, statusErr), nil
+		} else if strings.TrimSpace(status) != "" {
+			return fmt.Sprintf("error: integration worktree %s has uncommitted or untracked changes; clean it before integrating", integDir), nil
+		}
+	}
+
 	// integration worktree — the caller must finish it first.
 	if _, e := gitOutput(ctx, integDir, "rev-parse", "-q", "--verify", "MERGE_HEAD"); e == nil {
 		conflicts := gitConflictedFiles(ctx, integDir)

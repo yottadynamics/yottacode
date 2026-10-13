@@ -453,7 +453,27 @@ func (r *Registry) Get(id string) (*Task, bool) {
 	return &cp, true
 }
 
-// FindByPrefix is a typing-friendly accessor for /subagents stop: it
+// FindByBranch returns the unique task that owns branch. It is used by
+// integration to validate that a branch came from this session's dispatcher.
+func (r *Registry) FindByBranch(branch string) (*Task, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var match *Task
+	for _, t := range r.tasks {
+		if t.Branch != branch {
+			continue
+		}
+		if match != nil {
+			return nil, false
+		}
+		cp := *t
+		cp.Activities = append([]string(nil), t.Activities...)
+		cp.Files = append([]string(nil), t.Files...)
+		match = &cp
+	}
+	return match, match != nil
+}
+
 // returns the task whose ID starts with the given prefix. Returns
 // (nil, false) when there's no match OR multiple matches (caller
 // renders the disambiguation message). Matches Get's snapshot

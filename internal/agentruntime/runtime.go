@@ -646,7 +646,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
 		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,
 	})
-	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled})
+	reg.Register(&agent.IntegrateTool{Cwd: cwdRef, Enabled: dispatchEnabled, Tasks: subagentTasks})
 
 	skillTool := &agent.SkillTool{All: skillsRes.Skills}
 	defaultOn := map[string]bool{}
