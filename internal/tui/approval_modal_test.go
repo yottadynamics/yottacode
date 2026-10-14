@@ -12,6 +12,20 @@ import (
 // On a very wide terminal the approval modal stays compact instead of
 // stretching across the whole screen. Asserted via the rendered top-border
 // line width.
+func TestRenderApprovalModal_TinyWidthUsesFallbackCap(t *testing.T) {
+	for _, width := range []int{1, 2, 3, 4} {
+		m := newTestModel(t)
+		m.width = width
+		m.height = 20
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"echo hi"}`
+		if got := stripANSI(renderApprovalModal(m)); got != "[Y] allow  [N] reject" {
+			t.Fatalf("width %d fallback = %q", width, got)
+		}
+	}
+}
+
 func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 240
@@ -204,6 +218,27 @@ func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
 	}
 }
 
+func TestRenderApprovalModal_VeryShortHeightKeepsDecisionVisible(t *testing.T) {
+	for _, height := range []int{3, 4} {
+		m := newTestModel(t)
+		m.width = 80
+		m.height = height
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"echo approval"}`
+		got := stripANSI(renderApprovalModal(m))
+		if !strings.Contains(got, "[Y]") || !strings.Contains(got, "[N]") {
+			t.Fatalf("height %d lost decision controls: %q", height, got)
+		}
+		if lines := strings.Count(got, "\n") + 1; lines > height {
+			t.Fatalf("height %d rendered %d rows", height, lines)
+		}
+		if height <= 4 && !strings.Contains(got, "allow") {
+			t.Fatalf("height %d should retain the compact action labels: %q", height, got)
+		}
+	}
+}
+
 func TestRenderApprovalModal_LongPreviewFitsViewportHeight(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
@@ -365,7 +400,7 @@ func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
 			}
 		}
-		plain := ansi.Strip(out)
+		plain := strings.ReplaceAll(ansi.Strip(out), "\u00a0", " ")
 		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
 			if n := strings.Count(plain, rule); n != 1 {
 				t.Errorf("width %d: rule %q appears whole %d times, want exactly 1 shared rule summary", width, rule, n)
@@ -409,5 +444,15 @@ func TestTildeifyHomeInTextBoundaries(t *testing.T) {
 		if got := tildeifyHomeInText(in); got != want {
 			t.Errorf("tildeifyHomeInText(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestApprovalHotkeyRows_SeparatesPersistentChoices(t *testing.T) {
+	rows := approvalHotkeyRows(true, "Bash(go *)", true, "Bash(go *)")
+	if len(rows) < 4 || rows[2].hotkey != "" || rows[2].desc != "" {
+		t.Fatalf("expected a blank separator row after [N], got %+v", rows)
+	}
+	if got := approvalHotkeyRows(false, "", false, ""); len(got) != 2 {
+		t.Errorf("no persistent choices should add no separator, got %d rows", len(got))
 	}
 }
