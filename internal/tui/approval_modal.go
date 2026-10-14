@@ -66,7 +66,7 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 		// No bordered card can fit in this viewport. Keep the safety decision
 		// available as a plain, unambiguous fallback instead of overflowing the
 		// terminal or hiding the controls below the frame.
-		return styleApprovalHotkey.Render("[Y]") + " allow  " + styleApprovalHotkey.Render("[N]") + " reject"
+		return styleApprovalHotkey.Render("[Y]") + " allow once  " + styleApprovalHotkey.Render("[N]") + " reject"
 	}
 	previewLines := approvalPreviewLinesFor(m.approvalTool, body, capW)
 	if target := approvalModalTargetInnerWidth(capW); len(previewLines) > 0 && ansi.StringWidth(previewLines[0]) < target {
@@ -102,7 +102,11 @@ func renderApprovalModal(m Model, hits ...*pickerHits) string {
 	if m.approvalTool != "" {
 		header += "  " + styleApprovalTool.Render(m.approvalTool)
 	}
-	bodyLines := []string{header}
+	sectionLabel := "Review"
+	if m.approvalTool == "run_bash" {
+		sectionLabel = "Command"
+	}
+	bodyLines := []string{header, labeledBoxIndent + styleApprovalChoiceDim.Render(sectionLabel)}
 	if !compact {
 		bodyLines = append(bodyLines, "")
 	}
@@ -321,8 +325,8 @@ const approvalRulesLabel = "rules: "
 
 func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, denyRule string) []approvalHotkeyRow {
 	rows := []approvalHotkeyRow{
-		{hotkey: styleApprovalHotkey.Render("[Y]"), desc: styleApprovalChoice.Render("yes — allow this call once")},
-		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("no — reject this call")},
+		{hotkey: styleApprovalHotkey.Render("[Y]"), desc: styleApprovalChoice.Render("allow once")},
+		{hotkey: styleApprovalHotkey.Render("[N]"), desc: styleApprovalChoice.Render("reject")},
 	}
 	if allowAlways || denyAlways {
 		// Separate the one-off choices from the persistent ones.
@@ -345,20 +349,24 @@ func approvalHotkeyRows(allowAlways bool, derivedRule string, denyAlways bool, d
 				hang: len(approvalRulesLabel),
 			})
 			rows = append(rows,
-				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoice.Render("session — allow the rules above for this session")},
-				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoice.Render("always — save the rules above")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoice.Render("session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoice.Render("always")},
 			)
 		} else {
 			rows = append(rows,
-				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoice.Render("session — allow " + derivedRule + " for this session")},
-				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoice.Render("always — adds " + derivedRule)},
+				approvalHotkeyRow{desc: styleApprovalChoiceDim.Render("rule: ") + styleApprovalChoice.Render(derivedRule)},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[S]"), desc: styleApprovalChoice.Render("session")},
+				approvalHotkeyRow{hotkey: styleApprovalHotkey.Render("[A]"), desc: styleApprovalChoice.Render("always")},
 			)
 		}
 	}
 	if denyAlways {
+		if !allowAlways {
+			rows = append(rows, approvalHotkeyRow{desc: styleApprovalChoiceDim.Render("rule: ") + styleApprovalChoice.Render(denyRule)})
+		}
 		rows = append(rows, approvalHotkeyRow{
 			hotkey: styleApprovalHotkey.Render("[D]"),
-			desc:   styleApprovalChoice.Render("never — adds " + denyRule),
+			desc:   styleApprovalChoice.Render("never"),
 		})
 	}
 	return rows
@@ -399,7 +407,7 @@ func approvalPreviewBudget(termHeight, hotkeyLineCount int) int {
 	}
 	// The approval box has two border rows plus the header, the two spacers,
 	// the preview, and hotkeys. Content previews retain meaningful separators.
-	budget := termHeight - 2 - hotkeyLineCount - 4
+	budget := termHeight - 2 - hotkeyLineCount - 5
 
 	if budget < 1 {
 		return 1

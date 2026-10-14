@@ -8,6 +8,8 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **Approval command layout is clearer.** Approval cards now label the operation as `Command` for shell calls, show compact primary actions (`[Y] allow once`, `[N] reject`), and keep persistent permission choices (`[S]`, `[A]`, `[D]`) scannable without repeating long policy explanations.
+
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
   (default 4) independent sub-questions, runs read-only web researchers in
   parallel, has two verifiers independently re-check every claim, then writes a

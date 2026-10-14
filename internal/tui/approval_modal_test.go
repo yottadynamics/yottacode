@@ -20,7 +20,7 @@ func TestRenderApprovalModal_TinyWidthUsesFallbackCap(t *testing.T) {
 		m.awaitingApproval = true
 		m.approvalTool = "run_bash"
 		m.approvalArgs = `{"command":"echo hi"}`
-		if got := stripANSI(renderApprovalModal(m)); got != "[Y] allow  [N] reject" {
+		if got := stripANSI(renderApprovalModal(m)); got != "[Y] allow once  [N] reject" {
 			t.Fatalf("width %d fallback = %q", width, got)
 		}
 	}
@@ -86,11 +86,11 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	m.approvalDerivedRule = "Bash(echo *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[Y]  yes") || !strings.Contains(got, "[N]  no") {
-		t.Errorf("hotkeys should be brackets-first: %q", got)
+	if !strings.Contains(got, "[Y]  allow once") || !strings.Contains(got, "[N]  reject") {
+		t.Errorf("hotkeys should clearly describe the primary decision: %q", got)
 	}
-	if !strings.Contains(got, "[A]  always — adds Bash(echo *)") {
-		t.Errorf("always-allow hint missing: %q", got)
+	if !strings.Contains(got, "[A]  always") {
+		t.Errorf("always-allow action missing: %q", got)
 	}
 	if strings.Contains(got, "permissions.local.json") {
 		t.Errorf("permissions.local.json detail should move to the toast: %q", got)
@@ -233,7 +233,7 @@ func TestRenderApprovalModal_VeryShortHeightKeepsDecisionVisible(t *testing.T) {
 		if lines := strings.Count(got, "\n") + 1; lines > height {
 			t.Fatalf("height %d rendered %d rows", height, lines)
 		}
-		if height <= 4 && !strings.Contains(got, "allow") {
+		if height <= 4 && !strings.Contains(got, "allow once") {
 			t.Fatalf("height %d should retain the compact action labels: %q", height, got)
 		}
 	}
@@ -362,7 +362,7 @@ func TestRenderApprovalModal_ShowsNeverHint(t *testing.T) {
 	m.approvalDerivedDenyRule = "Bash(curl *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[D]  never — adds Bash(curl *)") {
+	if !strings.Contains(got, "[D]  never") {
 		t.Errorf("never/block hint missing: %q", got)
 	}
 	if strings.Contains(got, "[A] always") {
@@ -406,8 +406,8 @@ func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 				t.Errorf("width %d: rule %q appears whole %d times, want exactly 1 shared rule summary", width, rule, n)
 			}
 		}
-		if !strings.Contains(plain, "session — allow the rules above") || !strings.Contains(plain, "always — save the rules above") {
-			t.Errorf("width %d: scope actions should refer to the shared rule summary: %q", width, plain)
+		if !strings.Contains(plain, "session") || !strings.Contains(plain, "always") {
+			t.Errorf("width %d: scope actions should remain visible: %q", width, plain)
 		}
 	}
 }
