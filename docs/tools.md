@@ -113,6 +113,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
 | [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
 | [`exit_plan_mode`](#exit_plan_mode) | required | Only callable in `/plan` mode; presents the plan for user approval |
+| [`ask_user_question`](#ask_user_question) | none | Ask 1-4 structured multiple-choice questions and get back a machine-checkable answer |
 | [`Agent`](#agent) | none | Dispatch a typed subagent that runs in its own context window; see [subagents.md](subagents.md) |
 | [`dispatch`](#dispatch) | none | Experimental behind `dispatch`; fan multiple independent subtasks out to concurrent subagents |
 | [`integrate`](#integrate) | none | Experimental behind `dispatch`; merge dispatch worker branches into one PR-ready integration branch |
@@ -2240,6 +2241,75 @@ tools auto-allow as usual; writes to the plan file auto-allow too (no per-edit
 prompt — the plan file is the model's only legitimate mutation surface during
 planning). See [tui-slash-commands.md#plan-mode](tui-slash-commands.md#plan-mode)
 for the full plan-mode flow.
+
+## ask_user_question
+
+Ask the user 1-4 multiple-choice questions and get a structured answer back,
+instead of ending the turn with a prose question the model can't branch on.
+Mirrors Claude Code's `AskUserQuestion`.
+
+Each question has:
+
+- `header` — short label (max 12 chars), unique within the call; shown as a tab.
+- `question` — the full question text (max 200 chars).
+- `options` — 2-4 choices, each with a `label` (max 60) and an optional
+  one-line `description` (max 160).
+- `multi_select` — optional; lets the user pick more than one option.
+
+Give every question a recommendation: mark exactly one option `recommended:true`
+(listed first) and use each option's `description` for its trade-off. The
+interactive picker labels it `★ recommended`, pre-selects it, and
+non-interactive runs auto-pick it. Zero or several
+recommended options count as "no default". Text over the length limits is
+rejected, not truncated.
+
+A free-text **Other** choice is always added after your options. With
+`multi_select`, Other can be combined with listed options.
+
+The result is JSON: `{"answers": {"<header>": <answer>}, "order": [...]}`.
+An answer is a label, a list of labels, free text, or
+`{"options": [...], "other": "..."}` for multi-select plus Other. A note turns the answer into
+`{"answer": <answer>, "note": "..."}`; a skipped question is
+`{"skipped": true}` (plus `"note"` if given). If the user cancels, the result is
+`{"cancelled":true}`.
+
+| Param | Type | Notes |
+|---|---|---|
+| `questions` | array (1-4) | required |
+| `questions[].options[].recommended` | bool | at most one per question |
+
+### In the TUI
+
+The picker is a progress strip (`✓ Auth · ○ Notify · → Review`; only the active
+tab is green, and a pre-selected recommendation shows `○` until you visit it) over a
+fixed-size frame, so switching tabs never moves the window. Options are
+numbered with a radio (`◉`/`○`) or checkbox (`☑`/`☐`) marker, the recommended
+one carries `★ recommended`, and each description sits on its own line below.
+The final **Review** tab recaps the answers and submits once every question is
+answered. Agreeing with every recommendation is Enter on each question, then
+Enter on Review.
+
+| Key | Action |
+|---|---|
+| ↑/↓ | Move between options |
+| 1-9 | Pick that option (single-choice: also move on; multi-select: toggle) |
+| n | Attach a note to the answer (Enter saves, Esc abandons the edit; an empty note clears it) |
+| s | Skip the question and move on; skipped questions count as answered |
+| Enter | Select the option and move to the next question (single-choice); move on (multi-select); submit on Review |
+| Space | Select or toggle the highlighted option |
+| ←/→ | Switch question |
+| Esc | Press twice to cancel all questions (the first press arms it; any other key disarms). While typing in Other or a note: cancel the edit only |
+| (typing) | On the `✎ Type your own answer…` row, any printable key starts the answer |
+
+### Where it works
+
+| Context | Behavior |
+|---|---|
+| Interactive TUI | Shows the picker. Never needs approval, so `--yolo`/auto mode can't skip it. |
+| `/plan` mode | Blocked until the plan file has content: investigate and draft first, then ask what is still ambiguous. |
+| `yottacode run` | Auto-answers from `recommended:true` when every question has exactly one; otherwise fails with an actionable stderr message. |
+| ACP | Always fails closed: `session/request_permission` can't express multi-select or free text. |
+| Subagents, dispatch workers | Not available (no human to answer). |
 
 ## Agent
 

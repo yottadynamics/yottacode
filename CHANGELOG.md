@@ -19,6 +19,19 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ### Added
 
+- **`ask_user_question` tool.** The agent can now ask you 1-4 multiple-choice
+  questions in a picker instead of ending its turn with a prose question.
+  Each question offers 2-4 options (one can be pre-selected as the
+  recommended default) plus a free-text "Other"; multi-select questions are
+  supported. It never needs approval, so yolo/auto mode can't skip it. In
+  `/plan` mode it unlocks once the plan file has content. Subagents and
+  dispatch workers can't use it; `yottacode run` auto-answers from the
+  recommended defaults (or fails with a clear message if there are none);
+  ACP fails closed. The picker marks the recommended option `★ recommended`,
+  numbers options for `1`-`9` quick pick, lets you attach a note (`n`) or skip
+  a question (`s`), keeps a fixed size across tabs, and asks for a second Esc
+  before discarding all answers. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
+
 - **Approval command layout is clearer.** Approval cards now label the operation as `Command` for shell calls, show compact primary actions (`[Y] allow once`, `[N] reject`), and keep persistent permission choices (`[S]`, `[A]`, `[D]`) scannable without repeating long policy explanations.
 
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
