@@ -32,11 +32,11 @@ func TestApprovalModal_BrowserInspectOffersSessionAlwaysNever(t *testing.T) {
 	}
 	grid := ansi.Strip(approvalHotkeyGrid(m.approvalAllowAlwaysOK, m.approvalDerivedRule, m.approvalDenyAlwaysOK, m.approvalDerivedDenyRule))
 	for _, want := range []string{
-		"[Y]", "yes — allow this call once",
-		"[N]", "no — reject this call",
-		"[S]", "session — allow Browser(inspect) for this session",
-		"[A]", "always — adds Browser(inspect)",
-		"[D]", "never — adds Browser(inspect)",
+		"[Y]", "allow once",
+		"[N]", "reject",
+		"[S]", "session",
+		"[A]", "always",
+		"[D]", "never",
 	} {
 		if !strings.Contains(grid, want) {
 			t.Errorf("modal missing %q; got:\n%s", want, grid)
@@ -89,7 +89,7 @@ func TestApprovalModal_BrowserUploadOffersOnlyNever(t *testing.T) {
 	if strings.Contains(grid, "[S]") || strings.Contains(grid, "[A]") {
 		t.Errorf("upload modal must not advertise [S]/[A]; got:\n%s", grid)
 	}
-	if !strings.Contains(grid, "never — adds Browser(upload)") {
+	if !strings.Contains(grid, "never") {
 		t.Errorf("upload modal should still offer [D]; got:\n%s", grid)
 	}
 

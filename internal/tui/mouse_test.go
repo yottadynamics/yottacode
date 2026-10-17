@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
 func TestView_DisablesMouseBeforeConversationStarts(t *testing.T) {
@@ -89,11 +90,27 @@ func TestMouseWheel_ScrollsTranscriptWhilePopupOpen(t *testing.T) {
 	}
 }
 
+func TestMouseWheel_ScrollsMemoryBrowseWindow(t *testing.T) {
+	m := newMemoryTestModel(t)
+	m.memoryPicker = &memoryPickerState{mode: memoryBrowseMode, entries: make([]memory.MemoryEntry, 12)}
+	m.memoryPickerOpen = true
+	setBrowseVisible(&m, 3)
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.memoryPicker.entryCursor != 3 || m.memoryPicker.browseOffset != 1 {
+		t.Fatalf("wheel-down cursor/window = %d/%d, want 3/1", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.memoryPicker.entryCursor != 0 || m.memoryPicker.browseOffset != 0 {
+		t.Fatalf("wheel-up cursor/window = %d/%d, want 0/0", m.memoryPicker.entryCursor, m.memoryPicker.browseOffset)
+	}
+}
+
 func TestMouseWheel_NoopBeforeFirstMessage(t *testing.T) {
 	m := newTestModel(t)
 	if m.enteredConversation {
 		t.Fatal("test setup: fresh model should still be on the launch hero")
 	}
+
 	m, _ = applyMsg(m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if m.transcriptSelecting {
 		t.Error("wheel scroll on the hero should not start a selection")

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -114,5 +115,30 @@ func TestResolvePagerCommand_YottacodePagerWinsOverPager(t *testing.T) {
 	argv := resolvePagerCommand("/tmp/x.md", false)
 	if argv[0] != "bat" {
 		t.Errorf("argv[0] = %q, want bat (YOTTACODE_PAGER overrides PAGER)", argv[0])
+	}
+}
+
+// A task with no transcript (e.g. rehydrated from a prior session) must not
+// surface a raw "stat : no such file" error or try to launch a pager.
+func TestOpenTranscriptInPager_EmptyPathIsFriendlyNoop(t *testing.T) {
+	m := newTestModel(t)
+	got, cmd := m.openTranscriptInPager("", "abcd1234", false)
+	if cmd != nil {
+		t.Errorf("expected no pager command for an empty path")
+	}
+	out := scrollbackText(got)
+	if !strings.Contains(out, "no transcript") || strings.Contains(out, "stat") {
+		t.Errorf("want a friendly no-transcript line, got:\n%s", out)
+	}
+}
+
+func TestOpenTranscriptInPager_MissingFileIsFriendly(t *testing.T) {
+	m := newTestModel(t)
+	got, cmd := m.openTranscriptInPager(filepath.Join(t.TempDir(), "gone.log"), "abcd1234", false)
+	if cmd != nil {
+		t.Errorf("expected no pager command for a missing file")
+	}
+	if out := scrollbackText(got); !strings.Contains(out, "no longer available") {
+		t.Errorf("want friendly missing-file line, got:\n%s", out)
 	}
 }

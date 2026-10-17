@@ -142,6 +142,12 @@ type Task struct {
 	// neither starts with a drained budget nor re-banners/re-wakes on old
 	// background results.
 	Historical bool
+	// NonAgent marks a task that is not a model run (a background shell job).
+	// It is listed, stopped and bannered like any task, but excluded from the
+	// subagent concurrency caps (TryReserve*, ActiveCount) so a long-lived dev
+	// server cannot starve Agent/dispatch admission. ActiveTotalCount still
+	// counts it, for "is anything still running" questions such as shutdown.
+	NonAgent bool
 	// cancelRequested closes the reservation-to-run race: a stop arriving after
 	// admission but before the runner attaches its context is remembered and
 	// fired immediately by AttachCancel.
@@ -310,7 +316,7 @@ func (r *Registry) TryReserve(t *Task, max int, countForegroundOnly bool) bool {
 	defer r.mu.Unlock()
 	n := 0
 	for _, e := range r.tasks {
-		if e.Status != TaskRunning {
+		if e.Status != TaskRunning || e.NonAgent {
 			continue
 		}
 		if countForegroundOnly && e.Background {
@@ -344,7 +350,7 @@ func (r *Registry) TryReserveBatch(tasks []*Task, max int, countForegroundOnly b
 	defer r.mu.Unlock()
 	n := 0
 	for _, e := range r.tasks {
-		if e.Status != TaskRunning {
+		if e.Status != TaskRunning || e.NonAgent {
 			continue
 		}
 		if countForegroundOnly && e.Background {
@@ -493,10 +499,26 @@ func (r *Registry) List() []Task {
 	return out
 }
 
-// ActiveCount returns the number of tasks currently in TaskRunning.
-// Used by the TUI to render a status-bar indicator and to enforce
-// the background concurrency cap.
+// ActiveCount returns the number of agent tasks (not background shell jobs)
+// currently in TaskRunning. Used to enforce the foreground/background
+// concurrency caps; see ActiveTotalCount for "is anything still running".
 func (r *Registry) ActiveCount() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.Status == TaskRunning && !t.NonAgent {
+			n++
+		}
+	}
+	return n
+}
+
+// ActiveTotalCount is ActiveCount including non-agent tasks (background shell
+// jobs). Cap checks use ActiveCount; anything asking "is something still
+// running that I must not abandon" — the spinner, quit drain, runtime close —
+// uses this one.
+func (r *Registry) ActiveTotalCount() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	n := 0

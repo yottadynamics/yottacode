@@ -198,3 +198,38 @@ func dotifyCwd(p, cwd string) string {
 	}
 	return p
 }
+
+// tildeifyHomeInText rewrites every $HOME-prefixed path inside free text (a
+// command line, a preview) with a leading ~. Display only. A match must start
+// at a path boundary and end at a separator or non-path character, so
+// "/mnt"+home or home+"-old" are left alone.
+func tildeifyHomeInText(s string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return s
+	}
+	isPathChar := func(b byte) bool {
+		return b == '/' || b == '.' || b == '_' || b == '-' || b == '~' ||
+			(b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+	}
+	var out strings.Builder
+	for i := 0; i < len(s); {
+		j := strings.Index(s[i:], home)
+		if j < 0 {
+			out.WriteString(s[i:])
+			break
+		}
+		j += i
+		end := j + len(home)
+		okStart := j == 0 || !isPathChar(s[j-1])
+		okEnd := end == len(s) || s[end] == '/' || !isPathChar(s[end])
+		out.WriteString(s[i:j])
+		if okStart && okEnd {
+			out.WriteString("~")
+		} else {
+			out.WriteString(home)
+		}
+		i = end
+	}
+	return out.String()
+}

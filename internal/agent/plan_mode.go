@@ -340,6 +340,12 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 			"error: ask_user_question is unavailable until you've investigated and written a real plan to %s — draft the plan first, then ask about whatever is still genuinely ambiguous before exit_plan_mode",
 			planFileOrPlaceholder(planFile),
 		), true
+	case DeepResearchToolName:
+		// Needs no approval (the report write is its own, prompt-free
+		// contract) but it writes a file into the workspace, so the
+		// RequiresApproval-based read-only classification below would
+		// wrongly let it through.
+		return planModeBlockMessage(name, planFile), true
 	default:
 		if !tool.RequiresApproval(argsJSON) {
 			return "", false

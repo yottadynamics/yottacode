@@ -13,6 +13,9 @@ type anchoredLine struct {
 	LineNumber int
 	Hash       string
 	Content    string
+	// RelocatedFrom is the anchor's original line number when resolution had to
+	// relocate a stale anchor to this line; zero for an exact match.
+	RelocatedFrom int
 }
 
 type anchoredRef struct {
@@ -110,14 +113,77 @@ func isAnchorHashShape(s string) bool {
 	return true
 }
 
+// anchorRelocateWindow bounds how far from its original line number a stale
+// anchor may be relocated. Edits earlier in a file shift later lines by a small
+// amount; a match far away is more likely a coincidental duplicate than the
+// line the caller saw.
+const anchorRelocateWindow = 100
+
+// anchorStaleContextRadius is how many lines either side of a stale anchor's
+// line are echoed (with fresh anchors) in the stale error, so the caller can
+// retry without another read_file.
+const anchorStaleContextRadius = 2
+
+const anchorStaleContextMaxLine = 160
+
+// relocateAnchor finds the line a stale anchor originally pointed at after
+// lines shifted. The hash is salted with the line number, so the same text at
+// a new position has a different hash; instead each nearby line's content is
+// re-hashed under the anchor's ORIGINAL line number. It succeeds only on
+// exactly one match within anchorRelocateWindow, so a repeated line never
+// relocates.
+func relocateAnchor(idx anchoredLineIndex, ref anchoredRef) (anchoredLine, bool) {
+	var found anchoredLine
+	n := 0
+	for ln := ref.LineNumber - anchorRelocateWindow; ln <= ref.LineNumber+anchorRelocateWindow; ln++ {
+		line, ok := idx.ByLine[ln]
+		if !ok {
+			continue
+		}
+		if anchorHashForLine(ref.LineNumber, line.Content) == ref.Hash {
+			found = line
+			found.RelocatedFrom = ref.LineNumber
+			n++
+			if n > 1 {
+				return anchoredLine{}, false
+			}
+		}
+	}
+	return found, n == 1
+}
+
+// staleAnchorContext renders the current lines around lineNum as
+// "N#hash<TAB>text" so a stale-anchor error carries usable fresh anchors.
+func staleAnchorContext(idx anchoredLineIndex, lineNum int) string {
+	var b strings.Builder
+	for ln := lineNum - anchorStaleContextRadius; ln <= lineNum+anchorStaleContextRadius; ln++ {
+		line, ok := idx.ByLine[ln]
+		if !ok {
+			continue
+		}
+		text := line.Content
+		if len(text) > anchorStaleContextMaxLine {
+			text = text[:anchorStaleContextMaxLine] + "…"
+		}
+		fmt.Fprintf(&b, "\n  %d#%s\t%s", line.LineNumber, line.Hash, text)
+	}
+	return b.String()
+}
+
 func resolveAnchoredRef(idx anchoredLineIndex, ref anchoredRef) (anchoredLine, error) {
 	if ref.LineNumber > 0 {
 		line, ok := idx.ByLine[ref.LineNumber]
 		if !ok {
+			if moved, found := relocateAnchor(idx, ref); found {
+				return moved, nil
+			}
 			return anchoredLine{}, fmt.Errorf("stale anchor %s — current file has no line %d", ref.Raw, ref.LineNumber)
 		}
 		if line.Hash != ref.Hash {
-			return anchoredLine{}, fmt.Errorf("stale anchor %s — current line %d has %d#%s", ref.Raw, ref.LineNumber, line.LineNumber, line.Hash)
+			if moved, found := relocateAnchor(idx, ref); found {
+				return moved, nil
+			}
+			return anchoredLine{}, fmt.Errorf("stale anchor %s — current line %d has %d#%s; the file changed since your read. Current lines near %d (fresh anchors):%s", ref.Raw, ref.LineNumber, line.LineNumber, line.Hash, ref.LineNumber, staleAnchorContext(idx, ref.LineNumber))
 		}
 		return line, nil
 	}

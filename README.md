@@ -40,6 +40,12 @@ Install on Linux or macOS:
 curl -fsSL https://yottacode.ai/cli/install.sh | bash
 ```
 
+Or with Homebrew:
+
+```bash
+brew install yottadynamics/yottacode/yottacode
+```
+
 Run setup once:
 
 ```bash

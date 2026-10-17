@@ -1421,7 +1421,7 @@ func TestModel_ApprovalNeededShowsModalAndBlocksInput(t *testing.T) {
 		t.Errorf("approval header should show the tool name: %q", v)
 	}
 	// Brackets-first hotkey style.
-	if !strings.Contains(v, "[Y]  yes") || !strings.Contains(v, "[N]  no") {
+	if !strings.Contains(v, "[Y]  allow once") || !strings.Contains(v, "[N]  reject") {
 		t.Errorf("approval modal should expose [Y]/[N] hotkeys: %q", v)
 	}
 }

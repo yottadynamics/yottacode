@@ -112,7 +112,15 @@ func cmdSubagents(m Model, args []string) (Model, tea.Cmd) {
 // configurable behavior later.
 func (m Model) openTranscriptInPager(path, idShort string, running bool) (Model, tea.Cmd) {
 	_ = running // see comment above — reserved for future use
+	if path == "" {
+		m.appendLine(styleSubagentMeta.Render("task " + idShort + " has no transcript to open"))
+		return m, nil
+	}
 	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			m.appendLine(styleSubagentMeta.Render("transcript for task " + idShort + " is no longer available"))
+			return m, nil
+		}
 		m.appendLine(styleError.Render(fmt.Sprintf("cannot open transcript: %v", err)))
 		return m, nil
 	}

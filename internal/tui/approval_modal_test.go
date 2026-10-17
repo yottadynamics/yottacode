@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -11,6 +12,20 @@ import (
 // On a very wide terminal the approval modal stays compact instead of
 // stretching across the whole screen. Asserted via the rendered top-border
 // line width.
+func TestRenderApprovalModal_TinyWidthUsesFallbackCap(t *testing.T) {
+	for _, width := range []int{1, 2, 3, 4} {
+		m := newTestModel(t)
+		m.width = width
+		m.height = 20
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"echo hi"}`
+		if got := stripANSI(renderApprovalModal(m)); got != "[Y] allow once  [N] reject" {
+			t.Fatalf("width %d fallback = %q", width, got)
+		}
+	}
+}
+
 func TestRenderApprovalModal_CapsAt96OnWideTerminal(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 240
@@ -71,11 +86,11 @@ func TestRenderApprovalModal_BracketsFirstNoInlinePermissionsDetail(t *testing.T
 	m.approvalDerivedRule = "Bash(echo *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[Y]  yes") || !strings.Contains(got, "[N]  no") {
-		t.Errorf("hotkeys should be brackets-first: %q", got)
+	if !strings.Contains(got, "[Y]  allow once") || !strings.Contains(got, "[N]  reject") {
+		t.Errorf("hotkeys should clearly describe the primary decision: %q", got)
 	}
-	if !strings.Contains(got, "[A]  always — adds Bash(echo *)") {
-		t.Errorf("always-allow hint missing: %q", got)
+	if !strings.Contains(got, "[A]  always") {
+		t.Errorf("always-allow action missing: %q", got)
 	}
 	if strings.Contains(got, "permissions.local.json") {
 		t.Errorf("permissions.local.json detail should move to the toast: %q", got)
@@ -203,6 +218,27 @@ func TestRenderApprovalModal_NarrowTerminalDoesNotOverflow(t *testing.T) {
 	}
 }
 
+func TestRenderApprovalModal_VeryShortHeightKeepsDecisionVisible(t *testing.T) {
+	for _, height := range []int{3, 4} {
+		m := newTestModel(t)
+		m.width = 80
+		m.height = height
+		m.awaitingApproval = true
+		m.approvalTool = "run_bash"
+		m.approvalArgs = `{"command":"echo approval"}`
+		got := stripANSI(renderApprovalModal(m))
+		if !strings.Contains(got, "[Y]") || !strings.Contains(got, "[N]") {
+			t.Fatalf("height %d lost decision controls: %q", height, got)
+		}
+		if lines := strings.Count(got, "\n") + 1; lines > height {
+			t.Fatalf("height %d rendered %d rows", height, lines)
+		}
+		if height <= 4 && !strings.Contains(got, "allow once") {
+			t.Fatalf("height %d should retain the compact action labels: %q", height, got)
+		}
+	}
+}
+
 func TestRenderApprovalModal_LongPreviewFitsViewportHeight(t *testing.T) {
 	m := newTestModel(t)
 	m.width = 80
@@ -326,7 +362,7 @@ func TestRenderApprovalModal_ShowsNeverHint(t *testing.T) {
 	m.approvalDerivedDenyRule = "Bash(curl *)"
 
 	got := stripANSI(renderApprovalModal(m))
-	if !strings.Contains(got, "[D]  never — adds Bash(curl *)") {
+	if !strings.Contains(got, "[D]  never") {
 		t.Errorf("never/block hint missing: %q", got)
 	}
 	if strings.Contains(got, "[A] always") {
@@ -345,8 +381,8 @@ func TestApprovalDenyToast_ContainsRule(t *testing.T) {
 	}
 }
 
-// A chained command derives several comma-joined rules; the [S]/[A] rows must
-// still fit the terminal at narrow widths instead of widening the box.
+// A chained command derives several comma-joined rules. The rule list is
+// shown once, while [S]/[A] describe the two scopes that can apply it.
 func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 	for _, width := range []int{50, 60, 80, 120} {
 		m := newTestModel(t)
@@ -364,12 +400,59 @@ func TestRenderApprovalModal_MultiRuleRowsDoNotOverflow(t *testing.T) {
 				t.Errorf("width %d: line %d is %d wide: %q", width, i, w, line)
 			}
 		}
-		// Each rule stays whole on a line of its own (twice: [S] and [A]).
-		plain := ansi.Strip(out)
+		plain := strings.ReplaceAll(ansi.Strip(out), "\u00a0", " ")
 		for _, rule := range strings.Split(m.approvalDerivedRule, ", ") {
-			if n := strings.Count(plain, rule); n != 2 {
-				t.Errorf("width %d: rule %q appears whole %d times, want 2 (one per [S]/[A] row)", width, rule, n)
+			if n := strings.Count(plain, rule); n != 1 {
+				t.Errorf("width %d: rule %q appears whole %d times, want exactly 1 shared rule summary", width, rule, n)
 			}
 		}
+		if !strings.Contains(plain, "session") || !strings.Contains(plain, "always") {
+			t.Errorf("width %d: scope actions should remain visible: %q", width, plain)
+		}
+	}
+}
+
+func TestApprovalBodyShortensHome(t *testing.T) {
+	m := newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	m.approvalTool = "git"
+	m.approvalPreview = "$ git -C " + home + "/src/x status --short"
+	got := stripANSI(approvalBodyFor(m))
+	if strings.Contains(got, home) || !strings.Contains(got, "-C ~/src/x") {
+		t.Fatalf("home not shortened: %q", got)
+	}
+}
+
+func TestTildeifyHomeInTextBoundaries(t *testing.T) {
+	_ = newTestModel(t)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home dir")
+	}
+	cases := map[string]string{
+		"cd " + home + "/x && ls":    "cd ~/x && ls",
+		"cd '" + home + "'":          "cd '~'",
+		"ls " + home:                 "ls ~",
+		"ls /mnt" + home + "/x":      "ls /mnt" + home + "/x",
+		"ls " + home + "-old/x":      "ls " + home + "-old/x",
+		"a " + home + "/x b " + home: "a ~/x b ~",
+	}
+	for in, want := range cases {
+		if got := tildeifyHomeInText(in); got != want {
+			t.Errorf("tildeifyHomeInText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestApprovalHotkeyRows_SeparatesPersistentChoices(t *testing.T) {
+	rows := approvalHotkeyRows(true, "Bash(go *)", true, "Bash(go *)")
+	if len(rows) < 4 || rows[2].hotkey != "" || rows[2].desc != "" {
+		t.Fatalf("expected a blank separator row after [N], got %+v", rows)
+	}
+	if got := approvalHotkeyRows(false, "", false, ""); len(got) != 2 {
+		t.Errorf("no persistent choices should add no separator, got %d rows", len(got))
 	}
 }
