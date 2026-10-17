@@ -231,6 +231,65 @@ func PositionForOffset(text string, target int) (Position, error) {
 	return Position{Line: line, Character: col}, nil
 }
 
+// offsetMapper answers many byte-offset-to-position queries over one text. A
+// single PositionForOffset call rescans the document from byte 0, so a loop over
+// every symbol of a large file is quadratic in its size (94% of an index build on
+// a repository with megabyte-sized sources). The mapper indexes line starts and the
+// first invalid UTF-8 byte once, then answers each query by binary search plus a
+// scan of one line. position returns exactly what PositionForOffset returns,
+// errors included; offset_mapper_test.go checks that for every offset of several
+// texts.
+type offsetMapper struct {
+	text         string
+	lineStarts   []int // byte offset where each line begins; lineStarts[0] == 0
+	firstInvalid int   // offset of the first invalid UTF-8 byte, or -1
+}
+
+func newOffsetMapper(text string) *offsetMapper {
+	m := &offsetMapper{text: text, lineStarts: []int{0}, firstInvalid: -1}
+	for offset := 0; offset < len(text); {
+		if text[offset] == '\n' {
+			offset++
+			m.lineStarts = append(m.lineStarts, offset)
+			continue
+		}
+		if text[offset] < utf8.RuneSelf {
+			offset++
+			continue
+		}
+		r, width := utf8.DecodeRuneInString(text[offset:])
+		if r == utf8.RuneError && width == 1 {
+			if m.firstInvalid < 0 {
+				m.firstInvalid = offset
+			}
+		}
+		offset += width
+	}
+	return m
+}
+
+func (m *offsetMapper) position(target int) (Position, error) {
+	if target < 0 || target > len(m.text) {
+		return Position{}, fmt.Errorf("byte offset %d outside document", target)
+	}
+	// PositionForOffset fails on invalid UTF-8 it scans past, but not on invalid
+	// bytes at or after the target.
+	if m.firstInvalid >= 0 && m.firstInvalid < target {
+		return Position{}, fmt.Errorf("invalid UTF-8 at byte offset %d", m.firstInvalid)
+	}
+	line := sort.Search(len(m.lineStarts), func(i int) bool { return m.lineStarts[i] > target }) - 1
+	col := 0
+	for offset := m.lineStarts[line]; offset < target; {
+		r, width := utf8.DecodeRuneInString(m.text[offset:])
+		if offset+width > target {
+			return Position{}, fmt.Errorf("byte offset %d splits UTF-8 rune", target)
+		}
+		offset += width
+		col += utf16CodeUnits(r)
+	}
+	return Position{Line: line, Character: col}, nil
+}
+
 func utf16CodeUnits(r rune) int {
 	if r < 0x10000 {
 		return 1

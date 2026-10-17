@@ -2,7 +2,6 @@ package codemap
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"testing"
 )
@@ -49,59 +48,6 @@ func TestLikelyDocsForMatchesByBaseNameAndDir(t *testing.T) {
 	if len(docs) != 1 || docs[0].RelPath != "docs/widget.md" {
 		t.Fatalf("LikelyDocsFor = %+v, want docs/widget.md", docs)
 	}
-}
-
-func TestSuggestedContextRanksChangedFileFirstAndCombinesReasons(t *testing.T) {
-	root := t.TempDir()
-	write(t, root, "go.mod", "module example.com/test\n")
-	write(t, root, "internal/app/app.go", "package app\n\nimport \"example.com/test/internal/lib\"\n\nfunc Run() {}\n")
-	write(t, root, "internal/app/app_test.go", "package app\n\nimport \"testing\"\n\nfunc TestRun(t *testing.T) {}\n")
-	write(t, root, "internal/lib/lib.go", "package lib\n\nfunc Use() {}\n")
-	write(t, root, "docs/app.md", "# App\nDocs for the app package.\n")
-
-	idx, err := Build(context.Background(), BuildOptions{Root: root})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	items := SuggestedContext(idx, []string{"internal/app/app.go"}, 10)
-	if len(items) == 0 {
-		t.Fatal("expected suggested items")
-	}
-	if items[0].Node.RelPath != "internal/app/app.go" {
-		t.Fatalf("first item = %+v, want the changed file ranked first", items[0])
-	}
-	byPath := map[string]SuggestedItem{}
-	for _, it := range items {
-		byPath[it.Node.RelPath] = it
-	}
-	if _, ok := byPath["internal/lib/lib.go"]; !ok {
-		t.Fatalf("expected direct dependency in suggested context: %+v", items)
-	}
-	testItem, ok := byPath["internal/app/app_test.go"]
-	if !ok || !containsReason(testItem.Reasons, ReasonTestFor) {
-		t.Fatalf("expected test-for reason on app_test.go: %+v", items)
-	}
-	docItem, ok := byPath["docs/app.md"]
-	if !ok || !containsReason(docItem.Reasons, ReasonDocsFor) {
-		t.Fatalf("expected docs-for reason on docs/app.md: %+v", items)
-	}
-}
-
-func TestSuggestedContextEmptyWithoutChangedFiles(t *testing.T) {
-	root := t.TempDir()
-	write(t, root, "a.go", "package main\nfunc A() {}\n")
-	idx, err := Build(context.Background(), BuildOptions{Root: root})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if got := SuggestedContext(idx, nil, 10); got != nil {
-		t.Fatalf("SuggestedContext with no changed files = %+v, want nil", got)
-	}
-}
-
-func containsReason(reasons []Reason, want Reason) bool {
-	return slices.Contains(reasons, want)
 }
 
 func TestBuildIndexesMarkdownFilesAsPlainNodes(t *testing.T) {

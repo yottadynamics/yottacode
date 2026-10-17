@@ -1,44 +1,10 @@
 package codemap
 
 import (
-	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
-	"sort"
 	"strings"
 )
-
-// Reason explains why a node was suggested as relevant context around a
-// change. Multiple reasons can apply to the same node; callers combine them.
-type Reason string
-
-const (
-	ReasonChanged    Reason = "changed"
-	ReasonImports    Reason = "imports target"
-	ReasonImportedBy Reason = "imported by target"
-	ReasonTestFor    Reason = "test for target"
-	ReasonDocsFor    Reason = "docs for target"
-)
-
-// reasonScore weights each reason for SuggestedContext ranking. Changed is
-// deliberately far above the others (whose scores can sum when a node
-// matches more than one) so an edited file always sorts first regardless of
-// how many other reasons a neighbor accumulates.
-func reasonScore(r Reason) int {
-	switch r {
-	case ReasonChanged:
-		return 1000
-	case ReasonTestFor:
-		return 70
-	case ReasonImports, ReasonImportedBy:
-		return 50
-	case ReasonDocsFor:
-		return 40
-	default:
-		return 0
-	}
-}
 
 // IsTestFor reports whether candidateRel looks like a test file for
 // targetRel, using conservative per-language filename conventions. Matching
@@ -126,18 +92,10 @@ func LikelyDocsFor(idx *CodeIndex, targetRel string, max int) []Node {
 		patterns = append(patterns, regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(t)+`\b`))
 	}
 	var out []Node
-	for _, n := range idx.Nodes() {
-		if n.Kind != NodeFile || n.Language != "markdown" {
-			continue
-		}
-		content, err := os.ReadFile(n.Path)
-		if err != nil {
-			continue
-		}
-		text := string(content)
+	for _, doc := range idx.docCorpus() {
 		matched := false
 		for _, p := range patterns {
-			if p.MatchString(text) {
+			if p.MatchString(doc.text) {
 				matched = true
 				break
 			}
@@ -145,83 +103,10 @@ func LikelyDocsFor(idx *CodeIndex, targetRel string, max int) []Node {
 		if !matched {
 			continue
 		}
-		out = append(out, n)
+		out = append(out, doc.node)
 		if len(out) >= max {
 			break
 		}
-	}
-	return out
-}
-
-// SuggestedItem is one ranked candidate for prompt context around a change.
-type SuggestedItem struct {
-	Node    Node
-	Reasons []Reason
-	Score   int
-}
-
-// SuggestedContext ranks files worth attaching before asking the agent about
-// a set of changed files: the changed files themselves, their direct import
-// neighbors, their likely tests, and docs that mention them.
-func SuggestedContext(idx *CodeIndex, changedRelPaths []string, max int) []SuggestedItem {
-	if idx == nil || len(changedRelPaths) == 0 {
-		return nil
-	}
-	if max <= 0 {
-		max = 8
-	}
-	items := map[NodeID]*SuggestedItem{}
-	addReason := func(n Node, r Reason) {
-		if n.ID == "" {
-			return
-		}
-		it, ok := items[n.ID]
-		if !ok {
-			it = &SuggestedItem{Node: n}
-			items[n.ID] = it
-		}
-		if slices.Contains(it.Reasons, r) {
-			return
-		}
-		it.Reasons = append(it.Reasons, r)
-		it.Score += reasonScore(r)
-	}
-
-	for _, rel := range changedRelPaths {
-		targetID := idx.firstFileMatch(rel)
-		if targetID == "" {
-			continue
-		}
-		target := idx.nodes[targetID]
-		addReason(target, ReasonChanged)
-		for _, dep := range idx.Dependencies(target.RelPath, 8) {
-			addReason(dep, ReasonImports)
-		}
-		for _, dep := range idx.Dependents(target.RelPath, 8) {
-			addReason(dep, ReasonImportedBy)
-		}
-		for _, sibling := range idx.filesInDir(parentRel(target.RelPath)) {
-			if IsTestFor(sibling.RelPath, target.RelPath) {
-				addReason(sibling, ReasonTestFor)
-			}
-		}
-		for _, doc := range LikelyDocsFor(idx, target.RelPath, 3) {
-			addReason(doc, ReasonDocsFor)
-		}
-	}
-
-	out := make([]SuggestedItem, 0, len(items))
-	for _, it := range items {
-		out = append(out, *it)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Score != out[j].Score {
-			return out[i].Score > out[j].Score
-		}
-		return out[i].Node.RelPath < out[j].Node.RelPath
-	})
-	if len(out) > max {
-		out = out[:max]
 	}
 	return out
 }

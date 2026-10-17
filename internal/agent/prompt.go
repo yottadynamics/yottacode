@@ -113,18 +113,14 @@ Memory hygiene:
 
 Self-improvement: treat every session and every completed task as an opportunity to strengthen the knowledge base. At task boundaries, actively check whether the user taught you something durable, an approach succeeded or failed in a way worth recording, a decision or rationale emerged, or you discovered a constraint, gotcha, subsystem behavior, or pattern that future-you would benefit from knowing. If so, save it before the session context is lost.`
 
-// CodeMapPromptAddendum steers the model toward the indexed navigation tools.
-// Kept separate from DefaultSystemPrompt because those tools are registered only
-// when the experimental Code Map feature is enabled.
-const CodeMapPromptAddendum = `## Code Map navigation (enabled this session)
+// CodeMapPromptAddendum steers the model toward the code_impact tool. Kept
+// separate from DefaultSystemPrompt because that tool is registered only when
+// the experimental Code Map feature is enabled.
+const CodeMapPromptAddendum = `## Code Map (enabled this session)
 
-Use the indexed Code Map tools to navigate efficiently:
-  - Prefer code_map or code_structure_projection for repository orientation instead of starting with a full filesystem survey.
-  - Use code_symbols and the graph tools (code_dependencies, code_dependents, code_impact, code_cycles, code_map_diagram) for focused symbol and relationship lookups.
-  - Use syntax_range when you need parser-backed source ranges.
-  - Fall back to list_project_structure when the Code Map tools are unavailable or their index is insufficient for the task.
+Before editing a file other code may depend on, call code_impact to find its dependents, likely tests, and import cycles. Use the lsp_* tools for symbol-level references and list_project_structure for repository layout.
 
-The Code Map index is an approximate navigation aid. Verify relevant indexed results against the source with read_file or read_many_files before making edits.`
+code_impact reads the import graph and works without a language server. Sections tagged [heuristic] are name-matched guesses, not proof, and a header reading PARTIAL means the index is incomplete, so a missing dependent proves nothing. Verify indexed results against the source before relying on them.`
 
 // DispatchPromptAddendum gives the model explicit steering toward dispatch and
 // integrate for parallel implementation. Kept separate from

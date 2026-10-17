@@ -323,7 +323,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		BaseSystemPrompt:       rt.RawSystemPrompt,
 		EmbedClient:            rt.EmbedClient,
 		LSPManager:             rt.LSPManager,
-		CodeMapProvider:        rt.CodeMapProvider,
 		FileCfg:                fileCfg,
 		RouterAdapters:         rt.RouterAdapters,
 		RouterMode:             fileCfg.Router.Mode,

@@ -745,7 +745,11 @@ func (c *Client) CallHierarchy(ctx context.Context, path string, pos Position) (
 	if err != nil || len(raw) == 0 || string(raw) == "null" {
 		return nil, err
 	}
-	var prepared []lspCallHierarchyItem
+	// Keep each prepared item as the raw JSON the server sent. The spec requires
+	// the client to hand the item back unchanged to incomingCalls/outgoingCalls,
+	// and servers rely on fields a typed copy would drop: gopls locates the symbol
+	// from the item's range, and some servers resolve it from opaque data.
+	var prepared []json.RawMessage
 	if err := json.Unmarshal(raw, &prepared); err != nil {
 		return nil, fmt.Errorf("parse prepareCallHierarchy response: %w", err)
 	}

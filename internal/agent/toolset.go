@@ -50,7 +50,7 @@ type CoreToolDeps struct {
 	// index to read-only agent tools.
 	CodeMapProvider codemap.Provider
 
-	// EnableCodeMap registers the experimental read-only code-map tools.
+	// EnableCodeMap registers the experimental read-only code_impact tool.
 	EnableCodeMap bool
 
 	// AllowPDFIngestion gates read_document's PDF format specifically —
@@ -170,14 +170,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 	reg.Register(&GrepTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})
 	reg.Register(&PRReadinessContextTool{Cwd: cwd})
 	if deps.EnableCodeMap {
-		reg.Register(&CodeMapTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeSymbolsTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeStructureProjectionTool{Provider: deps.CodeMapProvider, Cwd: cwd, WriteOpts: wo})
-		reg.Register(&CodeDependenciesTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeDependentsTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider, LSP: lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}})
-		reg.Register(&CodeCyclesTool{Provider: deps.CodeMapProvider})
-		reg.Register(&CodeMapDiagramTool{Provider: deps.CodeMapProvider, Cwd: cwd, WriteOpts: wo})
+		reg.Register(&CodeImpactTool{Provider: deps.CodeMapProvider, DenyReadPaths: deps.DenyReads, LSP: lspToolBase{Cwd: cwd, DenyReadPaths: deps.DenyReads, NewClient: deps.LSPClientFactory, Servers: deps.LSPServers, Disabled: disabledLSPSet(deps.LSPDisabled), Manager: deps.LSPManager}})
 	}
 	if deps.EnableSyntaxRanges {
 		reg.Register(&SyntaxRangeTool{Cwd: cwd, DenyReadPaths: deps.DenyReads})

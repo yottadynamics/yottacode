@@ -75,17 +75,18 @@ func (s pythonSyntaxSource) Symbols(ctx context.Context, path string) ([]Symbol,
 	if err != nil {
 		return nil, err
 	}
+	positions := newOffsetMapper(text)
 	var out []Symbol
 	for _, f := range frames {
 		if !pySymbolKinds[f.kind] || f.name == "" {
 			continue
 		}
-		loc, err := PositionForOffset(text, f.nameOffset)
+		loc, err := positions.position(f.nameOffset)
 		if err != nil {
 			continue
 		}
-		start, err1 := PositionForOffset(text, f.startOffset)
-		end, err2 := PositionForOffset(text, f.endOffset)
+		start, err1 := positions.position(f.startOffset)
+		end, err2 := positions.position(f.endOffset)
 		if err1 != nil || err2 != nil {
 			continue
 		}

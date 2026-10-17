@@ -120,7 +120,7 @@ func TestAgentTool_ForegroundApprovalUnderGate_NoDeadlock(t *testing.T) {
 // function correctly classifies canonical read-only and mutating tools.
 func TestIsReadOnlyTool_Classification(t *testing.T) {
 	// Read-only tools must return true.
-	for _, name := range []string{"read_file", "read_document", "search_document", "grep", "glob", "lsp_diagnostics", "lsp_impact", "code_map", "code_symbols", "code_impact", "syntax_range", "git_branch_status", "git_diff_stat", "git_branch_diff", "list_git_changed_files"} {
+	for _, name := range []string{"read_file", "read_document", "search_document", "grep", "glob", "lsp_diagnostics", "lsp_impact", "code_impact", "syntax_range", "git_branch_status", "git_diff_stat", "git_branch_diff", "list_git_changed_files"} {
 		if !IsReadOnlyTool(name) {
 			t.Errorf("IsReadOnlyTool(%q) = false, want true", name)
 		}
@@ -442,11 +442,11 @@ func TestAgentTool_ResearchBuiltinGetsRegisteredSemanticTools(t *testing.T) {
 		t.Fatal("Explore builtin missing")
 	}
 	tool, parent := newTestAgentTool(t, []subagents.AgentConfig{*cfg}, nil, false)
-	for _, name := range []string{"lsp_symbols", "lsp_references", "code_symbols", "code_impact", "lsp_apply_workspace_edit"} {
+	for _, name := range []string{"lsp_symbols", "lsp_references", "code_impact", "lsp_apply_workspace_edit"} {
 		parent.Register(&mockTool{name: name})
 	}
 	child := tool.buildChildRegistry(cfg)
-	for _, name := range []string{"lsp_symbols", "lsp_references", "code_symbols", "code_impact"} {
+	for _, name := range []string{"lsp_symbols", "lsp_references", "code_impact"} {
 		if _, ok := child.Get(name); !ok {
 			t.Errorf("child registry missing allowed semantic tool %q", name)
 		}

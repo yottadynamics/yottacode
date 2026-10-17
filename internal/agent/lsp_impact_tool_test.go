@@ -62,7 +62,7 @@ func TestLSPImpactWorksWithoutCodeMapProvider(t *testing.T) {
 
 func TestLSPImpactNilCodeMapIndexReportsConcreteReason(t *testing.T) {
 	var b strings.Builder
-	writeImpactCodeMap(context.Background(), &b, codemap.StaticProvider{}, "main.go", 10)
+	writeImpactCodeMap(context.Background(), &b, codemap.StaticProvider{}, nil, "main.go", 10)
 	if strings.Contains(b.String(), "<nil>") {
 		t.Fatalf("nil index output should not expose <nil>: %q", b.String())
 	}

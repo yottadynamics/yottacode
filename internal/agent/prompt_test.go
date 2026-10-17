@@ -145,22 +145,19 @@ func TestDefaultSystemPrompt_KeepsActionDirectives(t *testing.T) {
 
 func TestCodeMapPromptAddendum_KeepsCoreDirectives(t *testing.T) {
 	for _, want := range []string{
-		"code_map or code_structure_projection",
-		"code_symbols",
-		"graph tools",
-		"syntax_range",
-		"Fall back to list_project_structure",
-		"unavailable or their index is insufficient",
-		"approximate navigation aid",
-		"Verify relevant indexed results against the source",
-		"before making edits",
+		"call code_impact",
+		"lsp_* tools",
+		"list_project_structure",
+		"[heuristic]",
+		"PARTIAL",
+		"Verify indexed results against the source",
 	} {
 		if !strings.Contains(CodeMapPromptAddendum, want) {
 			t.Errorf("CodeMapPromptAddendum is missing required directive %q", want)
 		}
 	}
 
-	if strings.Contains(DefaultSystemPrompt, "## Code Map navigation") {
+	if strings.Contains(DefaultSystemPrompt, "## Code Map (enabled") {
 		t.Error("Code Map steering must remain separate from DefaultSystemPrompt")
 	}
 }

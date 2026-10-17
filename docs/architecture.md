@@ -294,6 +294,20 @@ The bridge is intentionally local and conservative:
 See [lsp.md](lsp.md) for setup, supported languages, commands, troubleshooting,
 and production-status notes.
 
+## Code Map (experimental)
+
+Behind `--experimental code_map`, the runtime builds a `codemap.CachedProvider`
+over the working directory and registers one read-only tool, `code_impact`
+(`internal/agent/codemap_tools.go`), plus a short system-prompt section. The
+provider lazily builds an in-memory import graph (Go, TypeScript/JavaScript,
+Python, Rust), invalidates it from an `fsnotify` watch, and rebuilds it whole
+on the next query. Queries run against an immutable snapshot and render a
+provenance-tagged, byte-budgeted report. The graph uses the offline parser layer for symbols;
+LSP is used only for the optional live call-hierarchy supplement and is never required. TUI, oneshot, and ACP
+sessions share the wiring because they share `agentruntime.Builder`; subagents
+inherit the tool through their allowlists. See [code-map.md](code-map.md) for
+the data flow, components, bounds, and trust model.
+
 ## Subagents
 
 The `Agent` tool (`internal/agent/agent_tool.go`) is the parent's

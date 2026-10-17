@@ -77,7 +77,7 @@ func TestLoadBuiltins_ResearchRolesPreferSemanticTools(t *testing.T) {
 		if !ok {
 			t.Fatalf("builtin %q not loaded", role)
 		}
-		for _, tool := range []string{"lsp_status", "lsp_symbols", "lsp_references", "lsp_implementation", "lsp_impact", "code_map", "code_symbols", "code_impact"} {
+		for _, tool := range []string{"lsp_status", "lsp_symbols", "lsp_references", "lsp_implementation", "lsp_impact", "code_impact"} {
 			if !cfg.ToolAllowed(tool) {
 				t.Errorf("%s does not allow semantic tool %q", role, tool)
 			}

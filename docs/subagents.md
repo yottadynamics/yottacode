@@ -19,7 +19,7 @@ Nine agent types ship with the binary:
 | Name | Tools | Purpose |
 | --- | --- | --- |
 | `general-purpose` | inherited parent tools, excluding delegation and plan-boundary tools | Answer open-ended questions. It cannot delegate further; write access depends on the inherited runtime policy. |
-| `Explore` | read-only file/git tools + LSP; Code Map when enabled | Fast semantic/indexed code navigation with targeted text search as fallback. |
+| `Explore` | read-only file/git tools + LSP; Code Map (`code_impact`, see [code-map.md](code-map.md)) when enabled | Fast semantic/indexed code navigation with targeted text search as fallback. |
 | `Plan` | Explore's tools + `todo_write` | Investigate semantically, then produce a written implementation plan ending with a `### Critical Files for Implementation` trailer. |
 | `verification` | Explore's tools + `run_bash` | Adversarially verify a change: run builds / tests / probes, try to break it, end with a `VERDICT: PASS\|FAIL\|PARTIAL` line. Runs foreground by default in standalone `Agent` calls because it needs `run_bash`; use foreground when command execution is required. |
 | `implement` | read + full write set + `run_tests` + `run_bash` | Build one well-scoped component end-to-end, staying inside its owned files. Write-capable; in a sandboxed background `dispatch` worker it runs in an isolated worktree with owned-file enforcement and may run shell/tests inside the worker sandbox; host-executing workers deny those commands. |

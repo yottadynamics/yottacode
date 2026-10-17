@@ -49,23 +49,6 @@ func (s *countingSource) Symbols(context.Context, string) ([]lsp.Symbol, string,
 	return nil, "counting", nil
 }
 
-func TestMermaidDiagramFocusesImportEdges(t *testing.T) {
-	root := t.TempDir()
-	rootID := NodeID("dir:.")
-	a := NodeID("file:a.go")
-	b := NodeID("file:b.go")
-	nodes := map[NodeID]Node{
-		rootID: {ID: rootID, Kind: NodeDirectory, RelPath: "."},
-		a:      {ID: a, Parent: rootID, Kind: NodeFile, Name: "a.go", RelPath: "a.go"},
-		b:      {ID: b, Parent: rootID, Kind: NodeFile, Name: "b.go", RelPath: "b.go"},
-	}
-	idx := NewIndex(root, rootID, nodes, map[NodeID][]NodeID{rootID: {a, b}}, []Edge{{From: a, To: b, Kind: EdgeImports}})
-	diagram := MermaidDiagram(idx, "a.go", 10)
-	if !strings.Contains(diagram, "```mermaid") || !strings.Contains(diagram, "a.go") || !strings.Contains(diagram, "-->") {
-		t.Fatalf("unexpected diagram: %q", diagram)
-	}
-}
-
 func TestBuildFallbackIndex(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "go.mod", "module example.com/test\n")
@@ -127,6 +110,45 @@ func TestBuildCapsScannedFiles(t *testing.T) {
 	}
 	if files != 1 {
 		t.Fatalf("indexed files = %d, want 1", files)
+	}
+	info := idx.Info()
+	if !info.Capped || info.MaxFiles != 1 || info.Files != 1 {
+		t.Fatalf("Info() = %+v, want Capped with MaxFiles=1 Files=1", info)
+	}
+	if !strings.Contains(info.String(), "PARTIAL") {
+		t.Fatalf("Info().String() = %q, want a PARTIAL notice", info.String())
+	}
+}
+
+func TestBuildUnderCapIsNotPartial(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", "package main\nfunc A() {}\n")
+	idx, err := Build(context.Background(), BuildOptions{Root: root, MaxFiles: 5})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if info := idx.Info(); info.Capped || strings.Contains(info.String(), "PARTIAL") {
+		t.Fatalf("Info() = %+v (%q), want not partial", info, info.String())
+	}
+}
+
+func TestInfoVersionIsDeterministicAndTracksContent(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", "package main\nfunc A() {}\n")
+	build := func() IndexInfo {
+		idx, err := Build(context.Background(), BuildOptions{Root: root})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return idx.Info()
+	}
+	first, second := build(), build()
+	if first.Version == "" || first.Version != second.Version {
+		t.Fatalf("version not stable across identical builds: %q vs %q", first.Version, second.Version)
+	}
+	write(t, root, "b.go", "package main\nfunc B() {}\n")
+	if third := build(); third.Version == first.Version {
+		t.Fatalf("version %q did not change after adding a file", third.Version)
 	}
 }
 

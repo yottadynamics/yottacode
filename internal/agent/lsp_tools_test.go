@@ -21,6 +21,7 @@ type fakeLSPClient struct {
 	diagnostics []lspci.Diagnostic
 	actions     []lspci.CodeAction
 	calls       []lspci.CallHierarchyItem
+	callQueries []lspci.Position // positions CallHierarchy was asked about, in order
 	renameErr   error
 }
 
@@ -90,7 +91,8 @@ func (f *fakeLSPClient) RenamePreview(_ context.Context, path string, _ lspci.Po
 func (f *fakeLSPClient) FormatPreview(_ context.Context, path string) (lspci.WorkspaceEdit, error) {
 	return lspci.WorkspaceEdit{Edits: []lspci.TextEdit{{Path: path, Range: lspci.TextRange{Start: lspci.Position{Line: 0, Character: 0}, End: lspci.Position{Line: 0, Character: 0}}, NewText: "// formatted\n"}}}, nil
 }
-func (f *fakeLSPClient) CallHierarchy(context.Context, string, lspci.Position) ([]lspci.CallHierarchyItem, error) {
+func (f *fakeLSPClient) CallHierarchy(_ context.Context, _ string, pos lspci.Position) ([]lspci.CallHierarchyItem, error) {
+	f.callQueries = append(f.callQueries, pos)
 	if f.calls != nil {
 		return f.calls, nil
 	}

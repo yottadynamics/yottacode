@@ -97,14 +97,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`lsp_apply_workspace_edit`](#lsp_apply_workspace_edit) | yes | Apply a previously previewed WorkspaceEdit after validation and approval |
 | [`lsp_call_hierarchy`](#lsp_call_hierarchy) | none | Show incoming/outgoing calls for a source position |
 | [`lsp_impact`](#lsp_impact) | none | Composite impact report for a source position: hover, definitions, references, calls, diagnostics, and Code Map imports |
-| [`code_map`](#code_map) | none | Return a bounded directory/file/symbol structure map from the experimental code index |
-| [`code_symbols`](#code_symbols) | none | Return indexed symbols for a file or query from the experimental code index |
-| [`code_structure_projection`](#code_structure_projection) | conditional | Generate a compact code-structure projection for agent context; requires approval only when `to_file` is set |
-| [`code_dependencies`](#code_dependencies) | none | Return direct import dependencies for an indexed file/path query |
-| [`code_dependents`](#code_dependents) | none | Return direct import dependents for an indexed file/path query |
-| [`code_impact`](#code_impact) | none | Return dependencies, dependents, transitive dependents, likely tests/docs, and cycles as a blast-radius summary |
-| [`code_cycles`](#code_cycles) | none | Return import cycles, optionally narrowed to one indexed file/path query |
-| [`code_map_diagram`](#code_map_diagram) | conditional | Return a Mermaid import dependency diagram, optionally focused around one file; requires approval only when `to_file` is set |
+| [`code_impact`](#code_impact) | none | Blast radius of a file from the import graph: dependents, dependencies, likely tests/docs, cycles; sections labeled by provenance |
 | [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
 | [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c`; foreground with a timeout, or a background job |
@@ -1904,90 +1897,50 @@ LSP sections still run.
 
 No approval.
 
-## code_map
-
-Read-only. Experimental behind `code_map`.
-
-Returns a bounded repository structure map from yottacode's code index:
-directories, files, symbols, and cheap counts such as LOC and exported/private
-symbols. Pass `query` to filter by path, symbol name, kind, or container. Output
-is capped by `max_results` so agents can orient themselves without reading files
-first.
-
-## code_symbols
-
-Read-only. Experimental behind `code_map`.
-
-Returns indexed symbols either for one `path` or for a `query`. This is the
-symbol-only companion to `code_map`; use it when names and locations are enough
-and opening whole files would waste context.
-
-## code_structure_projection
-
-Read-only unless `to_file` is set. Experimental behind `code_map`.
-
-Generates a compact, token-efficient projection of the indexed structure: root
-counts, important files, and their symbols. It is designed for agent context
-projection, not for dependency or impact analysis; see `code_dependencies`,
-`code_dependents`, and `code_impact` for those. Set `to_file` to write the
-full, untruncated projection to disk instead of the `max_results`-capped
-inline result — this is a write like any other (approval-gated, checkpoint-
-tracked), sized for exporting a projection too large for one turn's context
-window rather than for routine use.
-
-## code_dependencies
-
-Read-only. Experimental behind `code_map`.
-
-Returns direct outgoing import dependencies for an indexed file/path query,
-proximity-ranked (same directory as the target first). Go, TypeScript/
-JavaScript, Python, and Rust in-workspace imports are resolved; unresolved
-standard-library, third-party, or ambiguous imports are omitted rather than
-invented. See `docs/code-map.md` for exact per-language resolution scope.
-
-## code_dependents
-
-Read-only. Experimental behind `code_map`.
-
-Returns direct incoming import dependents for an indexed file/path query. This is
-the reverse edge of `code_dependencies` and is the safest first blast-radius
-query for Go changes.
-
 ## code_impact
 
-Read-only. Experimental behind `code_map`.
+Read-only. Experimental behind `code_map`. The only Code Map agent tool.
 
-Returns a conservative, proximity-ranked impact summary: files the queried
-file imports, files that import the queried file, transitive dependents up to
-`depth`, likely tests, likely docs/config, and import cycles involving the
-target. `depth` defaults to all transitive dependents; pass a positive
-integer to cap traversal. Pass `format: "summary"` for a compact,
-counts-plus-top-names projection sized for planning-turn context instead of
-the full sectioned report. Pass `include_calls: true` to best-effort
-supplement the report with live LSP call-hierarchy callers/callees for the
-target file's exported symbols — this only works when a language server is
-available for that file's language, is slower than the static graph query
-(it makes live LSP round-trips), and is never persisted into the cached
-index.
+Answers "what is affected if I change this file" from the repository import
+graph. It works without a language server. Arguments:
 
-## code_cycles
+| Argument | Meaning |
+|---|---|
+| `path` (required) | File path or path fragment. An exact path wins, then a unique match on a directory boundary (`a/main.go`), then a unique substring. A fragment naming several files returns the candidates instead of analyzing one. |
+| `mode` | `impact` (default), `tests`, `dependents`, `dependencies`, or `cycles`. |
+| `scope` | How tests are chosen: `package` (default) or `file`. See below. |
+| `depth` | Import hops of transitive dependents to follow; default 3, `-1` for all. |
+| `budget` | Approximate output tokens; default 1500, max 4000. |
+| `include_calls` | Best-effort live LSP call-hierarchy callers/callees for the target's exported symbols; 3 second timeout, degrades to a note when no server is available. |
 
-Read-only. Experimental behind `code_map`.
+`impact` returns direct dependents, transitive dependents, direct
+dependencies, the test directories to run, likely docs/config, and import
+cycles; `tests` returns just the test directories.
 
-Returns detected import cycles, optionally narrowed to cycles involving `path`.
-Cycles are only reported from resolvable in-workspace import edges (Go,
-TypeScript/JavaScript, Python, Rust — see `docs/code-map.md`).
+Test selection works at directory granularity. `scope=package` (default) lists
+the target's directory plus every directory that imports it, directly or
+transitively, that contains test files. On this repository that reproduced
+`go list`'s affected test packages exactly (100% recall, about a quarter of all
+test packages). `scope=file` keeps only the directories of the target's
+file-level dependents: it runs fewer tests but recalled about half of the
+affected ones, because it drops packages that import the target's package
+without using the changed file. Use `package` to decide what to run. Every
+section is tagged with how it was derived: `[import]` for resolved import edges
+(Go, TypeScript/JavaScript, Python, Rust; unresolved standard-library and
+third-party imports are omitted, not invented), `[heuristic]` for test/doc
+pairing by name, and `[lsp]` for the live supplement. Heuristic sections are
+guesses, not proof.
 
-## code_map_diagram
+The header line states the index size and a content version. When the file cap or the build time budget
+stopped the index early it says `PARTIAL`, and an absent dependent then proves
+nothing. Generated files are excluded and counted there. When output exceeds `budget`, each section keeps its true count and
+reports how many items were omitted. Files on the read deny list are never
+listed, and asking about one is refused.
 
-Read-only unless `to_file` is set. Experimental behind `code_map`.
+For symbol-level references use the `lsp_*` tools; for repository layout use
+`list_project_structure`.
 
-Returns a bounded Mermaid `graph TD` diagram from the import graph. Pass `path`
-to focus the diagram around one file's direct incoming/outgoing import edges;
-omit it for a bounded workspace diagram. This is intended for copy-pasting into
-issues, docs, or PR descriptions. Set `to_file` to write the full,
-untruncated diagram to disk instead — a write like any other (approval-gated,
-checkpoint-tracked).
+Full behavior, architecture, and limits: [code-map.md](code-map.md).
 
 ## pr_readiness_context
 

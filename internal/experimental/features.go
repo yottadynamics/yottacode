@@ -50,9 +50,9 @@ const (
 	// safety posture settles — see docs/security-and-allow-lists.md.
 	Browser Feature = "browser"
 
-	// CodeMap enables the read-only repository structure map. It starts as an
-	// outline-first graph index shared by the TUI and agent tools while the
-	// dependency/impact-query UX settles.
+	// CodeMap enables the read-only code_impact agent tool, backed by an
+	// import-graph index of the workspace. It stays experimental until an eval
+	// shows the graph answers beat grep and LSP alone.
 	CodeMap Feature = "code_map"
 
 	// Dispatch is still experimental: it enables the dispatch + integrate tools
@@ -130,7 +130,7 @@ func Description(f Feature) string {
 	case Browser:
 		return "browser_* tools. Navigate, screenshot, inspect, and interact with a real headless Chrome/Chromium instance over CDP via chromedp, using a fresh isolated profile per session (no cookies/history/saved logins from your real browser)."
 	case CodeMap:
-		return "Repository code map. Builds a read-only structure index for the /map TUI overlay and code-map agent tools, using LSP when available and approximate fallback symbols otherwise."
+		return "Repository code map. Builds a read-only import-graph index behind the code_impact agent tool (dependents, dependencies, likely tests, cycles), using the offline parser layer for symbols; LSP is used only for live call-hierarchy callers."
 	case Dispatch:
 		return "Dispatch + integrate tools. Fan a batch of subtasks out to concurrent subagents (write-capable ones in isolated git worktrees, partitioned by file ownership), then merge committed branches into one integration branch for a PR."
 	case DocumentGeneration:

@@ -83,7 +83,6 @@ func init() {
 		// open the edit/browse/reindex picker. Manual memory search is not a
 		// TUI slash surface; the agent keeps the memory_search tool.
 		{Name: "memory", Help: "open the memory picker", Run: cmdMemory},
-		{Name: "map", Args: "[query]", Help: "open the code map: directory → file → symbol structure", Run: cmdMap, PreservesTurn: true},
 		{Name: "video", Args: "[path|prompt <goal>]", Help: "guide recording cleanup or prompt-driven marketing videos", Run: cmdVideo},
 		{Name: "summarize", Help: "compress session history into a structured summary", Run: cmdSummarize},
 		{Name: "skills", Help: "skills menu; install/show/update/uninstall/check", Run: cmdSkills, PreservesTurn: true},
@@ -281,12 +280,12 @@ func renderHelpPanel(m Model) string {
 	b.WriteString("\n")
 
 	renderHelpCommonSection(&b, width, popupW)
-	renderHelpGroup(&b, "Workflow", allSlash[0:20], wrapWidth)
-	renderHelpGroup(&b, "Git", allSlash[20:28], wrapWidth)
-	renderHelpGroup(&b, "Integrations", allSlash[28:29], wrapWidth)
-	renderHelpGroup(&b, "Utilities", allSlash[29:41], wrapWidth)
-	renderHelpGroup(&b, "Mode", allSlash[41:42], wrapWidth)
-	renderHelpGroup(&b, "Meta", allSlash[42:], wrapWidth)
+	renderHelpGroup(&b, "Workflow", allSlash[0:19], wrapWidth)
+	renderHelpGroup(&b, "Git", allSlash[19:27], wrapWidth)
+	renderHelpGroup(&b, "Integrations", allSlash[27:28], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[28:40], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[40:41], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[41:], wrapWidth)
 	if len(m.customSlash) > 0 {
 		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}

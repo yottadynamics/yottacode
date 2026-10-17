@@ -7,320 +7,310 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+	"unicode/utf16"
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-const defaultCodeMapMax = 120
+const (
+	// codeImpactQueryCap bounds how many files each graph query collects before
+	// the output budget trims what is rendered. A section that hits it is
+	// reported as "N+" rather than as an exact count.
+	codeImpactQueryCap = 500
 
-// codeMapExportMax is the effective "unbounded" cap used when a code-map
-// tool writes its output to a file instead of returning it inline — large
-// enough that no real repo's diagram or projection hits it, so a to_file
-// export is genuinely complete rather than truncated.
-const codeMapExportMax = 1_000_000
+	codeImpactDefaultDepth  = 3
+	codeImpactDefaultBudget = 1500 // approximate tokens
+	codeImpactMaxBudget     = 4000
+	approxBytesPerToken     = 4
 
-// writeCodeMapExport validates and writes a to_file export the same way
-// WriteFileTool does (see fs_tools.go): resolve against cwd, run it through
-// the normal write-path validator, create parent dirs, then write. label
-// names the tool in error messages and the success confirmation.
-func writeCodeMapExport(cwd *CwdRef, writeOpts WritePathOptions, toFile, content, label string) (string, error) {
-	p := resolvePath(cwd.Get(), toFile)
-	if err := ValidateWritePath(p, writeOpts); err != nil {
-		return "", fmt.Errorf("%s: %w", label, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", fmt.Errorf("%s: mkdir: %w", label, err)
-	}
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		return "", fmt.Errorf("%s: %w", label, err)
-	}
-	return fmt.Sprintf("%s written to %s (%d bytes)\n", label, p, len(content)), nil
-}
+	// codeImpactLSPTimeout bounds the optional live LSP supplement so a slow or
+	// wedged language server cannot stall a call whose static answer is ready.
+	codeImpactLSPTimeout = 3 * time.Second
 
-func codeMapToFileArg(argsJSON string) string {
-	var a struct {
-		ToFile string `json:"to_file"`
-	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return strings.TrimSpace(a.ToFile)
-}
+	// codeImpactMaxCallSymbols bounds how many of the target's exported symbols
+	// are sent to the language server, each a separate round trip.
+	codeImpactMaxCallSymbols = 25
+)
 
-// CodeMapTool renders a bounded repository outline from the shared code index.
-type CodeMapTool struct{ Provider codemap.Provider }
-
-func (t *CodeMapTool) Name() string { return "code_map" }
-func (t *CodeMapTool) Description() string {
-	return "Return a bounded repository structure map (directories, files, symbols) from yottacode's code index. Use this for cheap codebase orientation before reading files."
-}
-func (t *CodeMapTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"query":       map[string]any{"type": "string", "description": "Optional filter for paths, symbols, kinds, or containers"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on returned nodes (default 120, max 500)"},
-	}}
-}
-func (t *CodeMapTool) RequiresApproval(string) bool { return false }
-func (t *CodeMapTool) ParallelSafe(string) bool     { return true }
-func (t *CodeMapTool) PreviewCall(argsJSON string) string {
-	var a struct{ Query string }
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	if strings.TrimSpace(a.Query) != "" {
-		return fmt.Sprintf("code_map(%q)", a.Query)
-	}
-	return "code_map()"
-}
-func (t *CodeMapTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	idx, query, max, err := codeMapArgs(ctx, t.Provider, argsJSON)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(query) != "" {
-		return codemap.FormatNodes(idx.Filter(query, max), max), nil
-	}
-	return codemap.FormatTree(idx, max), nil
-}
-
-// CodeSymbolsTool returns symbols for one file or query from the code index.
-type CodeSymbolsTool struct{ Provider codemap.Provider }
-
-func (t *CodeSymbolsTool) Name() string { return "code_symbols" }
-func (t *CodeSymbolsTool) Description() string {
-	return "Return indexed symbols for a source file or search query. Read-only and capped; use before opening files when symbol names are enough."
-}
-func (t *CodeSymbolsTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":        map[string]any{"type": "string", "description": "Optional source file path"},
-		"query":       map[string]any{"type": "string", "description": "Optional symbol/path search query"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on returned symbols (default 120, max 500)"},
-	}}
-}
-func (t *CodeSymbolsTool) RequiresApproval(string) bool { return false }
-func (t *CodeSymbolsTool) ParallelSafe(string) bool     { return true }
-func (t *CodeSymbolsTool) PreviewCall(argsJSON string) string {
-	var a struct{ Path, Query string }
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	if a.Path != "" {
-		return fmt.Sprintf("code_symbols(%s)", a.Path)
-	}
-	return fmt.Sprintf("code_symbols(%q)", a.Query)
-}
-func (t *CodeSymbolsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Path       string `json:"path"`
-		Query      string `json:"query"`
-		MaxResults int    `json:"max_results"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("code_symbols: invalid args: %w", err)
-	}
-	idx, err := codeMapIndex(ctx, t.Provider)
-	if err != nil {
-		return "", fmt.Errorf("code_symbols: %w", err)
-	}
-	max := normalizedCodeMapMax(a.MaxResults)
-	if strings.TrimSpace(a.Path) != "" {
-		return codemap.FormatNodes(idx.SymbolsForFile(a.Path), max), nil
-	}
-	matches := idx.Filter(a.Query, max)
-	syms := make([]codemap.Node, 0, len(matches))
-	for _, n := range matches {
-		if n.Kind == codemap.NodeSymbol {
-			syms = append(syms, n)
-		}
-	}
-	return codemap.FormatNodes(syms, max), nil
-}
-
-// CodeStructureProjectionTool returns a compact context projection for
-// agents. Set to_file to write the full, unbounded projection to disk
-// instead — a bounded-for-context-window / unbounded-on-disk export surface.
-type CodeStructureProjectionTool struct {
-	Provider  codemap.Provider
-	Cwd       *CwdRef
-	WriteOpts WritePathOptions
-}
-
-func (t *CodeStructureProjectionTool) Name() string { return "code_structure_projection" }
-func (t *CodeStructureProjectionTool) Description() string {
-	return "Generate a compact, token-efficient structure projection from the code index: package/file tree, key symbols, and counts. Set to_file to write the full projection to disk instead of returning it inline."
-}
-func (t *CodeStructureProjectionTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"max_results": map[string]any{"type": "integer", "description": "Cap on files included (default 120, max 500)"},
-		"to_file":     map[string]any{"type": "string", "description": "Optional path to write the full, untruncated projection instead of returning it inline"},
-	}}
-}
-func (t *CodeStructureProjectionTool) RequiresApproval(argsJSON string) bool {
-	return codeMapToFileArg(argsJSON) != ""
-}
-func (t *CodeStructureProjectionTool) ParallelSafe(argsJSON string) bool {
-	return codeMapToFileArg(argsJSON) == ""
-}
-func (t *CodeStructureProjectionTool) PreviewCall(argsJSON string) string {
-	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
-		return fmt.Sprintf("code_structure_projection(to_file=%s)", toFile)
-	}
-	return "code_structure_projection()"
-}
-func (t *CodeStructureProjectionTool) PathsToSnapshot(cwd, argsJSON string) []string {
-	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
-		return []string{resolvePath(cwd, toFile)}
-	}
-	return nil
-}
-func (t *CodeStructureProjectionTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	idx, _, max, err := codeMapArgs(ctx, t.Provider, argsJSON)
-	if err != nil {
-		return "", err
-	}
-	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
-		return writeCodeMapExport(t.Cwd, t.WriteOpts, toFile, codemap.Projection(idx, codeMapExportMax), "code_structure_projection")
-	}
-	return codemap.Projection(idx, max), nil
-}
-
-type CodeDependenciesTool struct{ Provider codemap.Provider }
-
-func (t *CodeDependenciesTool) Name() string { return "code_dependencies" }
-func (t *CodeDependenciesTool) Description() string {
-	return "Return outgoing import dependencies for an indexed file/path query from the experimental code map."
-}
-func (t *CodeDependenciesTool) Schema() map[string]any       { return codeDependencySchema() }
-func (t *CodeDependenciesTool) RequiresApproval(string) bool { return false }
-func (t *CodeDependenciesTool) ParallelSafe(string) bool     { return true }
-func (t *CodeDependenciesTool) PreviewCall(argsJSON string) string {
-	path, _ := previewCodeDependencyArgs(argsJSON)
-	return fmt.Sprintf("code_dependencies(%s)", path)
-}
-func (t *CodeDependenciesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	idx, path, max, err := executeCodeDependencyArgs(ctx, t.Provider, argsJSON, "code_dependencies")
-	if err != nil {
-		return "", err
-	}
-	return codemap.FormatDependencies("dependencies\t"+path, idx.Dependencies(path, max), max), nil
-}
-
-type CodeDependentsTool struct{ Provider codemap.Provider }
-
-func (t *CodeDependentsTool) Name() string { return "code_dependents" }
-func (t *CodeDependentsTool) Description() string {
-	return "Return incoming import dependents for an indexed file/path query from the experimental code map."
-}
-func (t *CodeDependentsTool) Schema() map[string]any       { return codeDependencySchema() }
-func (t *CodeDependentsTool) RequiresApproval(string) bool { return false }
-func (t *CodeDependentsTool) ParallelSafe(string) bool     { return true }
-func (t *CodeDependentsTool) PreviewCall(argsJSON string) string {
-	path, _ := previewCodeDependencyArgs(argsJSON)
-	return fmt.Sprintf("code_dependents(%s)", path)
-}
-func (t *CodeDependentsTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	idx, path, max, err := executeCodeDependencyArgs(ctx, t.Provider, argsJSON, "code_dependents")
-	if err != nil {
-		return "", err
-	}
-	return codemap.FormatDependencies("dependents\t"+path, idx.Dependents(path, max), max), nil
-}
-
-// CodeImpactTool answers file-level blast-radius queries over the static
-// import graph. LSP is optional: when include_calls is set and a language
-// server is available for the target file, it best-effort supplements the
-// report with live call-hierarchy callers/callees — a symbol-position-scoped,
-// slower signal that stays out of the cached static graph on purpose.
+// CodeImpactTool answers file-level blast-radius questions over the static
+// import graph: who depends on a file, what it depends on, which tests and docs
+// are likely affected, and which import cycles it sits in. It is the single
+// Code Map agent tool; symbol lookup and structure belong to the lsp_* tools and
+// list_project_structure.
+//
+// Every section is labeled with how it was derived (import edge, name
+// heuristic, or live LSP) and the header states when the index is partial.
+// LSP is optional: with include_calls it best-effort supplements the report
+// with call-hierarchy callers/callees, a symbol-scoped, slower signal that
+// stays out of the cached static graph on purpose.
 type CodeImpactTool struct {
-	Provider codemap.Provider
-	LSP      lspToolBase
+	Provider      codemap.Provider
+	LSP           lspToolBase
+	DenyReadPaths []string
 }
 
 func (t *CodeImpactTool) Name() string { return "code_impact" }
 func (t *CodeImpactTool) Description() string {
-	return "Return a conservative blast-radius summary for an indexed file/path query: direct dependencies, direct dependents, transitive dependents, likely tests, likely docs/config, and import cycles. Optionally supplements with live LSP callers/callees via include_calls."
+	return "Blast radius of changing a file, from the repository import graph (works without a language server). " +
+		"mode=impact (default) lists direct and transitive dependents, direct dependencies, the test directories to run, likely docs/config, and import cycles; " +
+		"mode=tests returns just the tests to run; mode=dependents / dependencies / cycles return just that list. " +
+		"Tests default to scope=package: every directory that imports the target's directory, transitively, that holds tests (conservative; use this to choose what to run). scope=file is narrower and misses tests that reach the change through other files of the package. " +
+		"Each section is labeled [import] (resolved import edges) or [heuristic] (name-matched guesses, not proof). " +
+		"The header states when the index is partial, in which case absence of a dependent proves nothing. " +
+		"Use before editing a shared file to find what to re-test; use lsp_* tools for symbol-level references."
 }
-func (t *CodeImpactTool) Schema() map[string]any       { return codeImpactSchema() }
+func (t *CodeImpactTool) Schema() map[string]any {
+	return map[string]any{"type": "object", "properties": map[string]any{
+		"path":          map[string]any{"type": "string", "description": "File path or path fragment to analyze"},
+		"mode":          map[string]any{"type": "string", "enum": []string{"impact", "tests", "dependents", "dependencies", "cycles"}, "description": "What to return (default impact)"},
+		"scope":         map[string]any{"type": "string", "enum": []string{"package", "file"}, "description": "How tests are selected: package (default, conservative directory-level closure) or file (narrow; only test files among the target's file-level dependents)"},
+		"depth":         map[string]any{"type": "integer", "description": fmt.Sprintf("How many import hops of transitive dependents to follow; -1 means all (default %d)", codeImpactDefaultDepth)},
+		"budget":        map[string]any{"type": "integer", "description": fmt.Sprintf("Approximate output size in tokens (default %d, max %d); items beyond it are omitted with a count", codeImpactDefaultBudget, codeImpactMaxBudget)},
+		"include_calls": map[string]any{"type": "boolean", "description": "Best-effort supplement with live LSP call-hierarchy callers/callees for the target file's exported symbols when a language server is available (default false; slower than the static graph query)"},
+	}, "required": []string{"path"}}
+}
 func (t *CodeImpactTool) RequiresApproval(string) bool { return false }
 func (t *CodeImpactTool) ParallelSafe(string) bool     { return true }
 func (t *CodeImpactTool) PreviewCall(argsJSON string) string {
-	path, _ := previewCodeDependencyArgs(argsJSON)
-	return fmt.Sprintf("code_impact(%s)", path)
+	var a struct {
+		Path string `json:"path"`
+		Mode string `json:"mode"`
+	}
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if m := strings.TrimSpace(a.Mode); m != "" && m != "impact" {
+		return fmt.Sprintf("code_impact(%s, %s)", a.Path, m)
+	}
+	return fmt.Sprintf("code_impact(%s)", a.Path)
 }
+
+type codeImpactArgs struct {
+	Path         string `json:"path"`
+	Mode         string `json:"mode"`
+	Scope        string `json:"scope"`
+	Depth        *int   `json:"depth"`
+	Budget       int    `json:"budget"`
+	IncludeCalls bool   `json:"include_calls"`
+}
+
 func (t *CodeImpactTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	idx, path, max, depth, err := executeCodeImpactArgs(ctx, t.Provider, argsJSON, "code_impact")
+	var a codeImpactArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("code_impact: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return "", fmt.Errorf("code_impact: path is required")
+	}
+	mode := strings.ToLower(strings.TrimSpace(a.Mode))
+	switch mode {
+	case "":
+		mode = "impact"
+	case "impact", "tests", "dependents", "dependencies", "cycles":
+	default:
+		return "", fmt.Errorf("code_impact: unknown mode %q (want impact, tests, dependents, dependencies, or cycles)", a.Mode)
+	}
+	scope := strings.ToLower(strings.TrimSpace(a.Scope))
+	switch scope {
+	case "":
+		scope = "package"
+	case "package", "file":
+	default:
+		return "", fmt.Errorf("code_impact: unknown scope %q (want package or file)", a.Scope)
+	}
+	depth := codeImpactDefaultDepth
+	if a.Depth != nil && *a.Depth != 0 {
+		depth = *a.Depth
+	}
+	if depth < 0 {
+		depth = codemap.MaxDepthAll
+	}
+
+	idx, err := codeMapIndex(ctx, t.Provider)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("code_impact: %w", err)
 	}
-	result := idx.Impact(path, depth, max)
-	var out string
-	if codeImpactFormat(argsJSON) == "summary" {
-		out = codemap.FormatImpactSummary(result, 3)
-	} else {
-		out = codemap.FormatImpact(result, max)
+	all := idx.FindFiles(a.Path)
+	// Denied files are invisible: they neither count toward ambiguity nor appear
+	// in the candidate list, so the tool cannot be used to learn their names.
+	matches := t.allowed(idx, all)
+	switch {
+	case len(all) == 0:
+		return fmt.Sprintf("code_impact %s %s\nindex: %s\nno indexed file matches %q (the index only covers supported source and markdown files)\n", mode, a.Path, idx.Info(), a.Path), nil
+	case len(matches) == 0:
+		return "", fmt.Errorf("code_impact: %s is on the read deny list", a.Path)
+	case len(matches) > 1:
+		return ambiguousPathResult(mode, a.Path, idx.Info(), matches), nil
 	}
-	if codeImpactIncludeCalls(argsJSON) && result.Target.ID != "" {
-		out += t.callGraphSupplement(ctx, idx, result.Target, max)
+	target := matches[0]
+
+	report := codemap.Report{Mode: mode, Target: target.RelPath, Info: idx.Info(), Sections: t.sections(idx, target, mode, scope, depth)}
+	if a.IncludeCalls {
+		lspCtx, cancel := context.WithTimeout(ctx, codeImpactLSPTimeout)
+		defer cancel()
+		report.Sections = append(report.Sections, codemap.ReportSection{
+			Title: "calls", Provenance: codemap.ProvLSP, Raw: t.callGraphSupplement(lspCtx, idx, target, codeImpactQueryCap),
+		})
 	}
-	return out, nil
+	return report.Render(codeImpactBudgetBytes(a.Budget)), nil
 }
 
-func codeImpactFormat(argsJSON string) string {
-	var a struct {
-		Format string `json:"format"`
+// sections runs one mode's graph queries and labels each result by provenance.
+func (t *CodeImpactTool) sections(idx *codemap.CodeIndex, target codemap.Node, mode, scope string, depth int) []codemap.ReportSection {
+	var out []codemap.ReportSection
+	files := func(title string, prov codemap.Provenance, nodes []codemap.Node) {
+		out = append(out, codemap.ReportSection{
+			Title: title, Provenance: prov, Nodes: t.allowed(idx, nodes), AtLeast: len(nodes) >= codeImpactQueryCap,
+		})
 	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return strings.ToLower(strings.TrimSpace(a.Format))
+	cycles := func(cs [][]codemap.Node) {
+		out = append(out, codemap.ReportSection{
+			Title: "cycles", Provenance: codemap.ProvImport, Cycles: t.allowedCycles(idx, cs), AtLeast: len(cs) >= codeImpactQueryCap,
+		})
+	}
+	tests := func(res codemap.ImpactResult) {
+		keep := func(n codemap.Node) bool { return !t.denied(idx, n) }
+		title := "test directories to run (package level)"
+		var dirs []codemap.TestDir
+		if scope == "file" {
+			title = "test directories to run (file level, narrow)"
+			dirs = idx.TestDirsFromImpact(target, res, keep)
+		} else {
+			dirs = idx.TestDirsToRun(target, keep, codeImpactQueryCap)
+		}
+		lines := make([]string, 0, len(dirs))
+		for _, d := range dirs {
+			lines = append(lines, fmt.Sprintf("%s/ (%d test files)", strings.TrimSuffix(d.Dir, "/"), d.Files))
+		}
+		out = append(out, codemap.ReportSection{
+			Title: title, Provenance: codemap.ProvImport, Raw: lines, AtLeast: len(dirs) >= codeImpactQueryCap,
+		})
+	}
+	switch mode {
+	case "tests":
+		var res codemap.ImpactResult
+		if scope == "file" {
+			res = idx.Impact(target.RelPath, codemap.MaxDepthAll, codeImpactQueryCap)
+		}
+		tests(res)
+	case "dependents":
+		files("dependents", codemap.ProvImport, idx.Dependents(target.RelPath, codeImpactQueryCap))
+	case "dependencies":
+		files("dependencies", codemap.ProvImport, idx.Dependencies(target.RelPath, codeImpactQueryCap))
+	case "cycles":
+		cycles(idx.Cycles(target.RelPath, codeImpactQueryCap))
+	default:
+		res := idx.Impact(target.RelPath, depth, codeImpactQueryCap)
+		files("direct dependents", codemap.ProvImport, res.DirectDependents)
+		files(fmt.Sprintf("indirect dependents (depth %s)", depthText(depth)), codemap.ProvImport, withoutNodes(res.TransitiveDependents, res.DirectDependents))
+		files("direct dependencies", codemap.ProvImport, res.DirectDependencies)
+		tests(res)
+		files("likely docs/config", codemap.ProvHeuristic, res.LikelyDocs)
+		cycles(res.Cycles)
+	}
+	return out
 }
 
-func codeImpactIncludeCalls(argsJSON string) bool {
-	var a struct {
-		IncludeCalls bool `json:"include_calls"`
+func depthText(depth int) string {
+	if depth == codemap.MaxDepthAll {
+		return "all"
 	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return a.IncludeCalls
+	return fmt.Sprint(depth)
 }
 
-// callGraphSupplement best-effort appends live LSP call-hierarchy callers and
-// callees for the target file's exported symbols. It never fails the tool
-// call — an unavailable or unsupported language server just gets reported in
-// the section body, mirroring lsp_impact's writeImpactUnavailable style.
-func (t *CodeImpactTool) callGraphSupplement(ctx context.Context, idx *codemap.CodeIndex, target codemap.Node, limit int) string {
-	var b strings.Builder
-	b.WriteString("callers (LSP)\n")
-	calleesHeader := "callees (LSP)\n"
-	if target.ID == "" || idx == nil {
-		b.WriteString("  (none)\n")
-		return b.String() + calleesHeader + "  (none)\n"
+func codeImpactBudgetBytes(tokens int) int {
+	if tokens <= 0 {
+		tokens = codeImpactDefaultBudget
+	}
+	if tokens > codeImpactMaxBudget {
+		tokens = codeImpactMaxBudget
+	}
+	return tokens * approxBytesPerToken
+}
+
+func (t *CodeImpactTool) denied(idx *codemap.CodeIndex, n codemap.Node) bool {
+	if len(t.DenyReadPaths) == 0 {
+		return false
+	}
+	return ValidateReadPath(filepath.Join(idx.RootPath(), filepath.FromSlash(n.RelPath)), t.DenyReadPaths) != nil
+}
+
+// allowed drops files on the read deny list so their names are not leaked
+// through the graph.
+func (t *CodeImpactTool) allowed(idx *codemap.CodeIndex, nodes []codemap.Node) []codemap.Node {
+	if len(t.DenyReadPaths) == 0 {
+		return nodes
+	}
+	out := make([]codemap.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if !t.denied(idx, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// allowedCycles drops any cycle that passes through a denied file.
+func (t *CodeImpactTool) allowedCycles(idx *codemap.CodeIndex, cycles [][]codemap.Node) [][]codemap.Node {
+	if len(t.DenyReadPaths) == 0 {
+		return cycles
+	}
+	out := make([][]codemap.Node, 0, len(cycles))
+	for _, c := range cycles {
+		if len(t.allowed(idx, c)) == len(c) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// callGraphSupplement best-effort collects live LSP call-hierarchy callers and
+// callees for the target file's exported symbols as report lines. It never
+// fails the tool call — an unavailable or unsupported language server is
+// reported in the lines themselves, mirroring lsp_impact's
+// writeImpactUnavailable style.
+func (t *CodeImpactTool) callGraphSupplement(ctx context.Context, idx *codemap.CodeIndex, target codemap.Node, limit int) []string {
+	unavailable := func(msg string) []string {
+		return []string{"callers: " + msg, "callees: " + msg}
 	}
 	absPath := filepath.Join(idx.RootPath(), filepath.FromSlash(target.RelPath))
 	lang, ok := lspci.ResolveFile(absPath)
 	if !ok {
-		msg := "  " + unsupportedFileResult(absPath)
-		return b.String() + msg + calleesHeader + msg
+		return unavailable(strings.TrimSpace(unsupportedFileResult(absPath)))
 	}
 	if t.LSP.Disabled[lang.ID] {
-		msg := fmt.Sprintf("  unavailable: LSP language %s is disabled by config\n", lang.ID)
-		return b.String() + msg + calleesHeader + msg
+		return unavailable(fmt.Sprintf("unavailable: LSP language %s is disabled by config", lang.ID))
 	}
 	lang = lspci.ApplyOverrides(lang, t.LSP.Servers)
 	if !lspci.ServerAvailable(lang) && t.LSP.NewClient == nil {
-		msg := "  " + unavailableServerResult(lang)
-		return b.String() + msg + calleesHeader + msg
+		return unavailable(strings.TrimSpace(unavailableServerResult(lang)))
 	}
 	client, err := t.LSP.openClient(ctx, lang, lspci.WorkspaceRoot(absPath, lang, idx.RootPath()))
 	if err != nil {
-		msg := "  " + missingServerResult(lang, err)
-		return b.String() + msg + calleesHeader + msg
+		return unavailable(strings.TrimSpace(missingServerResult(lang, err)))
 	}
 	defer client.Close()
 
 	var callers, callees []lspci.CallHierarchyItem
+	queried, total := 0, 0
+	source := fileLines(absPath)
 	for _, sym := range idx.SymbolsForFile(target.RelPath) {
 		if !sym.Symbol.Exported {
 			continue
 		}
-		pos := lspci.Position{Line: sym.Symbol.Range.Start.Line, Character: sym.Symbol.Range.Start.Character}
-		items, err := client.CallHierarchy(ctx, absPath, pos)
+		total++
+		if queried >= codeImpactMaxCallSymbols {
+			continue
+		}
+		queried++
+		items, err := client.CallHierarchy(ctx, absPath, symbolNamePosition(source, sym))
 		if err != nil {
 			continue
 		}
 		for _, item := range items {
+			if len(t.DenyReadPaths) > 0 && ValidateReadPath(item.Location.Path, t.DenyReadPaths) != nil {
+				continue
+			}
 			if item.Direction == "outgoing" {
 				callees = append(callees, item)
 			} else {
@@ -328,201 +318,28 @@ func (t *CodeImpactTool) callGraphSupplement(ctx context.Context, idx *codemap.C
 			}
 		}
 	}
-	writeCallItems(&b, callers, limit)
-	b.WriteString(calleesHeader)
-	writeCallItems(&b, callees, limit)
-	return b.String()
-}
-
-func writeCallItems(b *strings.Builder, items []lspci.CallHierarchyItem, limit int) {
-	if len(items) == 0 {
-		b.WriteString("  (none)\n")
-		return
-	}
-	for i, item := range items {
-		if i >= limit {
-			fmt.Fprintf(b, "  …[truncated at %d results]\n", limit)
-			break
+	var lines []string
+	add := func(label string, items []lspci.CallHierarchyItem) {
+		for i, item := range items {
+			if i >= limit {
+				break
+			}
+			loc := item.Location
+			if rel, err := filepath.Rel(idx.RootPath(), loc.Path); err == nil && !strings.HasPrefix(rel, "..") {
+				loc.Path = filepath.ToSlash(rel)
+			}
+			lines = append(lines, fmt.Sprintf("%s %s\t%s\t%s", label, displayLocation(loc), item.Kind, item.Name))
 		}
-		fmt.Fprintf(b, "  %s\t%s\t%s\n", displayLocation(item.Location), item.Kind, item.Name)
 	}
-}
-
-type CodeCyclesTool struct{ Provider codemap.Provider }
-
-func (t *CodeCyclesTool) Name() string { return "code_cycles" }
-func (t *CodeCyclesTool) Description() string {
-	return "Return import cycles from the experimental code map, optionally narrowed to cycles involving one file/path query."
-}
-func (t *CodeCyclesTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":        map[string]any{"type": "string", "description": "Optional file path or path fragment to narrow cycles"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on returned cycles (default 120, max 500)"},
-	}}
-}
-func (t *CodeCyclesTool) RequiresApproval(string) bool { return false }
-func (t *CodeCyclesTool) ParallelSafe(string) bool     { return true }
-func (t *CodeCyclesTool) PreviewCall(argsJSON string) string {
-	path, _ := previewCodeDependencyArgs(argsJSON)
-	return fmt.Sprintf("code_cycles(%s)", path)
-}
-func (t *CodeCyclesTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Path       string `json:"path"`
-		MaxResults int    `json:"max_results"`
+	add("caller", callers)
+	add("callee", callees)
+	if len(lines) == 0 {
+		lines = []string{"(no callers or callees reported)"}
 	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("code_cycles: invalid args: %w", err)
+	if total > queried {
+		lines = append(lines, fmt.Sprintf("(call hierarchy asked for the first %d of %d exported symbols)", queried, total))
 	}
-	idx, err := codeMapIndex(ctx, t.Provider)
-	if err != nil {
-		return "", fmt.Errorf("code_cycles: %w", err)
-	}
-	max := normalizedCodeMapMax(a.MaxResults)
-	return codemap.FormatCycles(idx.Cycles(a.Path, max), max), nil
-}
-
-// CodeMapDiagramTool returns a Mermaid dependency diagram. Set to_file to
-// write the full, unbounded diagram to disk instead — a bounded-for-context-
-// window / unbounded-on-disk export surface.
-type CodeMapDiagramTool struct {
-	Provider  codemap.Provider
-	Cwd       *CwdRef
-	WriteOpts WritePathOptions
-}
-
-func (t *CodeMapDiagramTool) Name() string { return "code_map_diagram" }
-func (t *CodeMapDiagramTool) Description() string {
-	return "Return a Mermaid dependency diagram from the experimental code map import graph, optionally focused around one file/path. Set to_file to write the full diagram to disk instead of returning it inline."
-}
-func (t *CodeMapDiagramTool) Schema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":        map[string]any{"type": "string", "description": "Optional file path or path fragment to focus the diagram"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on rendered edges (default 120, max 500)"},
-		"to_file":     map[string]any{"type": "string", "description": "Optional path to write the full, untruncated diagram instead of returning it inline. Requires path — an unfocused export would be a full-repo hairball graph, which this tool deliberately never produces"},
-	}}
-}
-func (t *CodeMapDiagramTool) RequiresApproval(argsJSON string) bool {
-	return codeMapToFileArg(argsJSON) != ""
-}
-func (t *CodeMapDiagramTool) ParallelSafe(argsJSON string) bool {
-	return codeMapToFileArg(argsJSON) == ""
-}
-func (t *CodeMapDiagramTool) PreviewCall(argsJSON string) string {
-	path, _ := previewCodeDependencyArgs(argsJSON)
-	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
-		return fmt.Sprintf("code_map_diagram(%s, to_file=%s)", path, toFile)
-	}
-	return fmt.Sprintf("code_map_diagram(%s)", path)
-}
-func (t *CodeMapDiagramTool) PathsToSnapshot(cwd, argsJSON string) []string {
-	if toFile := codeMapToFileArg(argsJSON); toFile != "" {
-		return []string{resolvePath(cwd, toFile)}
-	}
-	return nil
-}
-func (t *CodeMapDiagramTool) Execute(ctx context.Context, argsJSON string) (string, error) {
-	var a struct {
-		Path       string `json:"path"`
-		MaxResults int    `json:"max_results"`
-		ToFile     string `json:"to_file"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return "", fmt.Errorf("code_map_diagram: invalid args: %w", err)
-	}
-	idx, err := codeMapIndex(ctx, t.Provider)
-	if err != nil {
-		return "", fmt.Errorf("code_map_diagram: %w", err)
-	}
-	if toFile := strings.TrimSpace(a.ToFile); toFile != "" {
-		if strings.TrimSpace(a.Path) == "" {
-			return "", fmt.Errorf("code_map_diagram: to_file requires path — an unfocused export would be the full import graph (a full-repo hairball diagram, which this tool never produces); pass path to focus the export around one file")
-		}
-		return writeCodeMapExport(t.Cwd, t.WriteOpts, toFile, codemap.MermaidDiagram(idx, a.Path, codeMapExportMax), "code_map_diagram")
-	}
-	return codemap.MermaidDiagram(idx, a.Path, normalizedCodeMapMax(a.MaxResults)), nil
-}
-
-func codeDependencySchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":        map[string]any{"type": "string", "description": "File path or path fragment to query"},
-		"max_results": map[string]any{"type": "integer", "description": "Cap on returned files (default 120, max 500)"},
-	}, "required": []string{"path"}}
-}
-
-func codeImpactSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"path":          map[string]any{"type": "string", "description": "File path or path fragment to query"},
-		"depth":         map[string]any{"type": "integer", "description": "Transitive dependent depth; -1 means all (default -1)"},
-		"max_results":   map[string]any{"type": "integer", "description": "Cap on returned files/cycles (default 120, max 500)"},
-		"format":        map[string]any{"type": "string", "description": "'full' (default) for the sectioned report, or 'summary' for a compact counts-plus-top-names projection sized for planning-turn context"},
-		"include_calls": map[string]any{"type": "boolean", "description": "Best-effort supplement with live LSP call-hierarchy callers/callees for the target file's exported symbols when a language server is available (default false; slower than the static graph query)"},
-	}, "required": []string{"path"}}
-}
-
-func previewCodeDependencyArgs(argsJSON string) (string, int) {
-	var a struct {
-		Path       string `json:"path"`
-		MaxResults int    `json:"max_results"`
-	}
-	_ = json.Unmarshal([]byte(argsJSON), &a)
-	return a.Path, a.MaxResults
-}
-
-func executeCodeDependencyArgs(ctx context.Context, provider codemap.Provider, argsJSON, name string) (*codemap.CodeIndex, string, int, error) {
-	var a struct {
-		Path       string `json:"path"`
-		MaxResults int    `json:"max_results"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return nil, "", 0, fmt.Errorf("%s: invalid args: %w", name, err)
-	}
-	if strings.TrimSpace(a.Path) == "" {
-		return nil, "", 0, fmt.Errorf("%s: path is required", name)
-	}
-	idx, err := codeMapIndex(ctx, provider)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("%s: %w", name, err)
-	}
-	return idx, a.Path, normalizedCodeMapMax(a.MaxResults), nil
-}
-
-func executeCodeImpactArgs(ctx context.Context, provider codemap.Provider, argsJSON, name string) (*codemap.CodeIndex, string, int, int, error) {
-	var a struct {
-		Path       string `json:"path"`
-		Depth      int    `json:"depth"`
-		MaxResults int    `json:"max_results"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return nil, "", 0, 0, fmt.Errorf("%s: invalid args: %w", name, err)
-	}
-	if strings.TrimSpace(a.Path) == "" {
-		return nil, "", 0, 0, fmt.Errorf("%s: path is required", name)
-	}
-	depth := a.Depth
-	if depth == 0 {
-		depth = codemap.MaxDepthAll
-	}
-	idx, err := codeMapIndex(ctx, provider)
-	if err != nil {
-		return nil, "", 0, 0, fmt.Errorf("%s: %w", name, err)
-	}
-	return idx, a.Path, normalizedCodeMapMax(a.MaxResults), depth, nil
-}
-
-func codeMapArgs(ctx context.Context, provider codemap.Provider, argsJSON string) (*codemap.CodeIndex, string, int, error) {
-	var a struct {
-		Query      string `json:"query"`
-		MaxResults int    `json:"max_results"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return nil, "", 0, fmt.Errorf("code_map: invalid args: %w", err)
-	}
-	idx, err := codeMapIndex(ctx, provider)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("code_map: %w", err)
-	}
-	return idx, a.Query, normalizedCodeMapMax(a.MaxResults), nil
+	return lines
 }
 
 func codeMapIndex(ctx context.Context, provider codemap.Provider) (*codemap.CodeIndex, error) {
@@ -539,12 +356,91 @@ func codeMapIndex(ctx context.Context, provider codemap.Provider) (*codemap.Code
 	return idx, nil
 }
 
-func normalizedCodeMapMax(n int) int {
-	if n <= 0 {
-		return defaultCodeMapMax
+// ambiguousPathResult answers a fragment that names several files with the
+// candidates instead of analyzing an arbitrary one of them.
+func ambiguousPathResult(mode, query string, info codemap.IndexInfo, matches []codemap.Node) string {
+	const shown = 10
+	var b strings.Builder
+	fmt.Fprintf(&b, "code_impact %s %s\nindex: %s\n", mode, query, info)
+	fmt.Fprintf(&b, "%q matches %d files; pass a more specific path:\n", query, len(matches))
+	for i, m := range matches {
+		if i == shown {
+			fmt.Fprintf(&b, "  …and %d more\n", len(matches)-shown)
+			break
+		}
+		fmt.Fprintf(&b, "  %s\n", m.RelPath)
 	}
-	if n > 500 {
-		return 500
+	return b.String()
+}
+
+// withoutNodes returns nodes minus any that also appear in drop. The index's
+// transitive walk includes the direct dependents; the report lists them once.
+func withoutNodes(nodes, drop []codemap.Node) []codemap.Node {
+	skip := make(map[codemap.NodeID]bool, len(drop))
+	for _, n := range drop {
+		skip[n.ID] = true
 	}
-	return n
+	out := make([]codemap.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if !skip[n.ID] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func fileLines(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return strings.Split(string(data), "\n")
+}
+
+// symbolNamePosition returns where a symbol's name starts, which is where call
+// hierarchy must be asked. The index records a symbol's range from the start of
+// its declaration (the `func` or `def` keyword), and a language server answers
+// nothing for a position that is not on the identifier. The name is found on the
+// declaration's first line; among several occurrences (a method named like its
+// receiver type) the one followed by a call or type-parameter list wins. When the
+// name cannot be located the declaration start is returned unchanged. The column
+// is counted in UTF-16 code units, as LSP requires.
+func symbolNamePosition(lines []string, sym codemap.Node) lspci.Position {
+	start := lspci.Position{Line: sym.Symbol.Range.Start.Line, Character: sym.Symbol.Range.Start.Character}
+	if start.Line < 0 || start.Line >= len(lines) || sym.Name == "" {
+		return start
+	}
+	line := lines[start.Line]
+	first, preferred := -1, -1
+	for from := 0; from < len(line); {
+		i := strings.Index(line[from:], sym.Name)
+		if i < 0 {
+			break
+		}
+		i += from
+		end := i + len(sym.Name)
+		from = end
+		if i > 0 && isIdentByte(line[i-1]) || end < len(line) && isIdentByte(line[end]) {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		if end < len(line) && (line[end] == '(' || line[end] == '[') {
+			preferred = i
+			break
+		}
+	}
+	col := preferred
+	if col < 0 {
+		col = first
+	}
+	if col < 0 {
+		return start
+	}
+	return lspci.Position{Line: start.Line, Character: len(utf16.Encode([]rune(line[:col])))}
+}
+
+func isIdentByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= 0x80
 }

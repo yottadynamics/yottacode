@@ -84,8 +84,8 @@ func TestBuild_CodeMapPromptMatchesToolGate(t *testing.T) {
 		if strings.Contains(rt.RawSystemPrompt, agent.CodeMapPromptAddendum) {
 			t.Error("RawSystemPrompt includes CodeMapPromptAddendum while Code Map is disabled")
 		}
-		if _, ok := rt.Registry.Get("code_map"); ok {
-			t.Error("code_map tool is registered while Code Map is disabled")
+		if _, ok := rt.Registry.Get("code_impact"); ok {
+			t.Error("code_impact tool is registered while Code Map is disabled")
 		}
 	})
 
@@ -98,8 +98,8 @@ func TestBuild_CodeMapPromptMatchesToolGate(t *testing.T) {
 		if rt.RawSystemPrompt != want {
 			t.Fatalf("RawSystemPrompt did not append CodeMapPromptAddendum before composition\ngot:  %q\nwant: %q", rt.RawSystemPrompt, want)
 		}
-		if _, ok := rt.Registry.Get("code_map"); !ok {
-			t.Error("code_map tool is not registered while Code Map is enabled")
+		if _, ok := rt.Registry.Get("code_impact"); !ok {
+			t.Error("code_impact tool is not registered while Code Map is enabled")
 		}
 	})
 
@@ -307,8 +307,8 @@ func TestBuild_CodeMapWatchIntegration(t *testing.T) {
 	if rt.CodeMapProvider == nil {
 		t.Fatal("Runtime.CodeMapProvider is nil with code_map enabled")
 	}
-	if _, ok := rt.Registry.Get("code_map"); !ok {
-		t.Error("expected code_map tool to be registered")
+	if _, ok := rt.Registry.Get("code_impact"); !ok {
+		t.Error("expected code_impact tool to be registered")
 	}
 	idx, err := rt.CodeMapProvider.Index(context.Background())
 	if err != nil {

@@ -33,7 +33,7 @@ func (goSyntaxSource) Symbols(ctx context.Context, path string) ([]Symbol, error
 	if err != nil && file == nil {
 		return nil, err
 	}
-	text := string(src)
+	positions := newOffsetMapper(string(src))
 	var out []Symbol
 	for _, decl := range file.Decls {
 		if err := ctx.Err(); err != nil {
@@ -41,9 +41,9 @@ func (goSyntaxSource) Symbols(ctx context.Context, path string) ([]Symbol, error
 		}
 		switch d := decl.(type) {
 		case *ast.FuncDecl:
-			out = append(out, goFuncSymbol(path, text, fset, d))
+			out = append(out, goFuncSymbol(path, positions, fset, d))
 		case *ast.GenDecl:
-			out = append(out, goGenSymbols(path, text, fset, d)...)
+			out = append(out, goGenSymbols(path, positions, fset, d)...)
 		}
 	}
 	return out, nil
@@ -146,17 +146,17 @@ func (goSyntaxSource) RangesFromSource(ctx context.Context, path string, src []b
 	return ranges, warnings, nil
 }
 
-func goFuncSymbol(path, text string, fset *token.FileSet, d *ast.FuncDecl) Symbol {
+func goFuncSymbol(path string, positions *offsetMapper, fset *token.FileSet, d *ast.FuncDecl) Symbol {
 	kind := "function"
 	container := "parser"
 	if d.Recv != nil && len(d.Recv.List) > 0 {
 		kind = "method"
 		container = goReceiverName(d.Recv.List[0].Type)
 	}
-	return Symbol{Name: d.Name.Name, Kind: kind, Container: container, Location: goLocation(path, text, fset, d.Name.Pos()), Range: goRange(text, fset, d.Pos(), d.End())}
+	return Symbol{Name: d.Name.Name, Kind: kind, Container: container, Location: goLocationAt(path, positions, fset, d.Name.Pos()), Range: goRangeAt(positions, fset, d.Pos(), d.End())}
 }
 
-func goGenSymbols(path, text string, fset *token.FileSet, d *ast.GenDecl) []Symbol {
+func goGenSymbols(path string, positions *offsetMapper, fset *token.FileSet, d *ast.GenDecl) []Symbol {
 	kind := goDeclKind(d.Tok)
 	if kind == "" {
 		return nil
@@ -165,10 +165,10 @@ func goGenSymbols(path, text string, fset *token.FileSet, d *ast.GenDecl) []Symb
 	for _, spec := range d.Specs {
 		switch s := spec.(type) {
 		case *ast.TypeSpec:
-			out = append(out, Symbol{Name: s.Name.Name, Kind: kind, Container: "parser", Location: goLocation(path, text, fset, s.Name.Pos()), Range: goRange(text, fset, s.Pos(), s.End())})
+			out = append(out, Symbol{Name: s.Name.Name, Kind: kind, Container: "parser", Location: goLocationAt(path, positions, fset, s.Name.Pos()), Range: goRangeAt(positions, fset, s.Pos(), s.End())})
 		case *ast.ValueSpec:
 			for _, name := range s.Names {
-				out = append(out, Symbol{Name: name.Name, Kind: kind, Container: "parser", Location: goLocation(path, text, fset, name.Pos()), Range: goRange(text, fset, s.Pos(), s.End())})
+				out = append(out, Symbol{Name: name.Name, Kind: kind, Container: "parser", Location: goLocationAt(path, positions, fset, name.Pos()), Range: goRangeAt(positions, fset, s.Pos(), s.End())})
 			}
 		}
 	}
@@ -395,6 +395,35 @@ func goRange(text string, fset *token.FileSet, start, end token.Pos) TextRange {
 		ep = sp
 	}
 	return TextRange{Start: sp, End: ep}
+}
+
+// goLocationAt and goRangeAt are goLocation and goRange over a prebuilt offsetMapper,
+// for loops that convert many positions in one file.
+func goLocationAt(path string, positions *offsetMapper, fset *token.FileSet, pos token.Pos) Location {
+	p, err := positionAt(positions, fset, pos)
+	if err != nil {
+		return Location{Path: path}
+	}
+	return Location{Path: path, Line: p.Line, Character: p.Character}
+}
+
+func goRangeAt(positions *offsetMapper, fset *token.FileSet, start, end token.Pos) TextRange {
+	sp, err := positionAt(positions, fset, start)
+	if err != nil {
+		sp = Position{}
+	}
+	ep, err := positionAt(positions, fset, end)
+	if err != nil {
+		ep = sp
+	}
+	return TextRange{Start: sp, End: ep}
+}
+
+func positionAt(positions *offsetMapper, fset *token.FileSet, pos token.Pos) (Position, error) {
+	if !pos.IsValid() {
+		return Position{}, nil
+	}
+	return positions.position(fset.Position(pos).Offset)
 }
 
 func positionForToken(text string, fset *token.FileSet, pos token.Pos) (Position, error) {

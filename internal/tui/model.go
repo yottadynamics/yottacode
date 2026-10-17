@@ -29,7 +29,6 @@ import (
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
-	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/cost"
@@ -117,7 +116,6 @@ type Config struct {
 	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
 	EmbedClient       *memory.EmbedClient
 	LSPManager        *lsp.Manager
-	CodeMapProvider   codemap.Provider
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
 	// (context watermarks, retrieval). The TUI reads these at session
@@ -258,7 +256,6 @@ type Model struct {
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
 	lspManager       *lsp.Manager
-	codeMapProvider  codemap.Provider
 
 	// routerAdapters/routerMode hold live task-routing state for /router.
 	// Routing only changes isolated contexts (summarization/subagents), not the
@@ -913,12 +910,6 @@ type Model struct {
 	recallPickerOpen bool
 	recallPicker     *recallPickerState
 
-	// Code map overlay (/map). Shows the experimental repository structure index
-	// as a bounded directory/file/symbol tree. The map is transient navigation
-	// context, not conversation history.
-	codeMapPickerOpen bool
-	codeMapPicker     *codeMapPickerState
-
 	// Embed setup overlay — opened from /memory "Enable semantic search".
 	embedSetupOpen    bool
 	embedSetupCursor  int
@@ -1309,7 +1300,6 @@ func New(parent context.Context, c Config) Model {
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
 		lspManager:             c.LSPManager,
-		codeMapProvider:        c.CodeMapProvider,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,
 		router:                 c.RouterAdapters,
@@ -1746,9 +1736,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.recallPickerOpen {
 			return m.updateRecallPicker(msg)
-		}
-		if m.codeMapPickerOpen {
-			return m.updateCodeMapPicker(msg)
 		}
 		if m.sessionsPickerOpen {
 			return m.updateSessionsPicker(msg)
@@ -2653,7 +2640,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		// Picker overlays with a focused free-text field (Add Provider,
 		// Add MCP server, sessions rename/export/resume, skills install,
-		// the /map and skills-catalog filter boxes) need first crack at
+		// the skills-catalog filter boxes) need first crack at
 		// a paste, same as they do for KeyPressMsg above — otherwise it
 		// falls through to the main textarea, which is hidden underneath.
 		// v2 delivers bracketed pastes as their own message type rather
@@ -2671,9 +2658,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.skillsMenuOpen && m.skillsMenu != nil {
 			return updateSkillsMenuPaste(m, msg)
-		}
-		if m.codeMapPickerOpen && m.codeMapPicker != nil {
-			return updateCodeMapPickerPaste(m, msg)
 		}
 		if m.skillsPickerOpen && m.skillsPicker != nil {
 			return updateSkillsPickerPaste(m, msg)
@@ -2722,8 +2706,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		capturedTerminalBackground = msg
 		return m, nil
 
-	case codeMapLoadedMsg:
-		return m.handleCodeMapLoaded(msg)
 	case agentEventMsg:
 		// Belt-and-suspenders alongside startTurnWithDisplay: an
 		// agentEventMsg can only exist because a turn is (or was)
@@ -3178,7 +3160,7 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 func (m Model) anyOverlayOpen() bool {
 	return m.cheatsheetOpen || m.loopListOpen || m.usageOpen || m.inspectOpen || m.experimentalOpen || m.helpOpen || m.contextReportOpen ||
 		m.permissionsOpen || m.modelPickerOpen || m.providerPickerOpen ||
-		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.codeMapPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
+		m.embedSetupOpen || m.memoryPickerOpen || m.recallPickerOpen || m.sessionsPickerOpen || m.inspectPickerOpen ||
 		m.plansPickerOpen || m.checkpointsPickerOpen || m.subagentsPickerOpen ||
 		m.routerPickerOpen || m.themePickerOpen || m.effortPickerOpen || m.skillsMenuOpen ||
 		m.skillsPickerOpen || m.mcpPickerOpen || m.sandboxPickerOpen || m.worktreeExitConfirmOpen
@@ -3361,8 +3343,6 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		return popupBox(renderMemoryPicker(m.memoryPicker, m.popupWidth())), true
 	case m.recallPickerOpen && m.recallPicker != nil:
 		return popupBox(renderRecallPicker(m.recallPicker, m.popupWidth())), true
-	case m.codeMapPickerOpen && m.codeMapPicker != nil:
-		return popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth())), true
 	case m.sessionsPickerOpen && m.sessionsPicker != nil:
 		return popupBox(renderSessionsPicker(m.sessionsPicker, m.popupWidth())), true
 	case m.inspectPickerOpen && m.inspectPicker != nil:

@@ -127,8 +127,8 @@ func TestLoadAll_SilentlyDropsDisabledOptionalBuiltinTools(t *testing.T) {
 	if explore == nil {
 		t.Fatal("Explore missing")
 	}
-	if explore.ToolAllowed("code_map") {
-		t.Error("disabled code_map remained in effective allowlist")
+	if explore.ToolAllowed("code_impact") {
+		t.Error("disabled code_impact remained in effective allowlist")
 	}
 	if !explore.ToolAllowed("lsp_status") {
 		t.Error("available lsp_status was dropped")
@@ -136,10 +136,10 @@ func TestLoadAll_SilentlyDropsDisabledOptionalBuiltinTools(t *testing.T) {
 }
 
 func TestValidateToolAllowlists_CustomOptionalToolStillWarns(t *testing.T) {
-	configs := []AgentConfig{{Name: "Custom", Source: "project", Tools: []string{"code_map"}}}
+	configs := []AgentConfig{{Name: "Custom", Source: "project", Tools: []string{"code_impact"}}}
 	warnings := validateToolAllowlists(configs, map[string]bool{"read_file": true})
-	if len(warnings) != 1 || !strings.Contains(warnings[0], "code_map") {
-		t.Fatalf("warnings = %v, want custom code_map warning", warnings)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "code_impact") {
+		t.Fatalf("warnings = %v, want custom code_impact warning", warnings)
 	}
 	if len(configs[0].Tools) != 0 {
 		t.Fatalf("Tools = %v, want disabled tool dropped", configs[0].Tools)

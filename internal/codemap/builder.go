@@ -18,7 +18,14 @@ import (
 	"github.com/yottadynamics/yottacode/internal/lsp"
 )
 
-const defaultMaxFiles = 2000
+const (
+	defaultMaxFiles = 5000
+
+	// defaultMaxBuildDuration bounds one full build's wall-clock time. File
+	// count alone is a poor proxy for cost: LSP-backed symbol lookups can make
+	// a few hundred files slower than thousands of parser-backed ones.
+	defaultMaxBuildDuration = 20 * time.Second
+)
 
 // SymbolSource provides structural symbols for one source file. Implementations
 // can use LSP, fallback parsers, or both.
@@ -30,7 +37,13 @@ type SymbolSource interface {
 type BuildOptions struct {
 	Root     string
 	MaxFiles int
-	Source   SymbolSource
+	// MaxDuration bounds the build's wall-clock time (default 20s). A build
+	// that runs out returns what it indexed so far, flagged partial.
+	MaxDuration time.Duration
+	// Source supplies per-file symbols. Nil uses FallbackSource, the offline
+	// parser layer, which is what production wants: it is an order of magnitude
+	// faster than querying a language server per file.
+	Source SymbolSource
 
 	// WatchDebounce controls how long CachedProvider.StartWatch waits after
 	// the last relevant filesystem event before applying pending changes.
@@ -61,12 +74,18 @@ func Build(ctx context.Context, opts BuildOptions) (*CodeIndex, error) {
 // without double-counting a directory's or file's already-aggregated
 // totals from a previous run.
 type buildState struct {
-	absRoot    string
-	rootID     NodeID
-	modulePath string
-	source     SymbolSource
-	maxFiles   int
-	fileCount  int
+	absRoot   string
+	rootID    NodeID
+	goModules []goModule // every go.mod found, for resolving module-qualified imports
+	source    SymbolSource
+	maxFiles  int
+	fileCount int
+	capped    bool // a new file was turned away by maxFiles
+	timedOut  bool // the build ran past its deadline
+	deadline  time.Time
+	maxTime   time.Duration
+	generated int      // generated files left out of the index
+	tsConfigs []string // repo-relative tsconfig.json / jsconfig.json paths, for alias resolution
 
 	nodes    map[NodeID]Node
 	children map[NodeID][]NodeID
@@ -101,17 +120,22 @@ func newBuildState(opts BuildOptions) (*buildState, error) {
 	if maxFiles <= 0 {
 		maxFiles = defaultMaxFiles
 	}
+	maxTime := opts.MaxDuration
+	if maxTime <= 0 {
+		maxTime = defaultMaxBuildDuration
+	}
 	source := opts.Source
 	if source == nil {
 		source = FallbackSource{}
 	}
 	rootID := NodeID("dir:.")
 	return &buildState{
-		absRoot:    absRoot,
-		rootID:     rootID,
-		modulePath: readGoModulePath(filepath.Join(absRoot, "go.mod")),
-		source:     source,
-		maxFiles:   maxFiles,
+		absRoot:  absRoot,
+		rootID:   rootID,
+		source:   source,
+		maxFiles: maxFiles,
+		maxTime:  maxTime,
+		deadline: time.Now().Add(maxTime),
 		nodes: map[NodeID]Node{
 			rootID: {ID: rootID, Kind: NodeDirectory, Name: filepath.Base(absRoot), Path: absRoot, RelPath: "."},
 		},
@@ -126,19 +150,11 @@ func newBuildState(opts BuildOptions) (*buildState, error) {
 	}, nil
 }
 
+// walkAll walks the workspace and upserts every directory and file found,
+// stopping early (and recording why) when the file cap or the time budget runs
+// out so callers can say the index is partial instead of passing it off as whole.
 func (st *buildState) walkAll(ctx context.Context) error {
-	return st.walkSubtree(ctx, st.absRoot)
-}
-
-// walkSubtree walks root (the whole workspace for a fresh Build, or one
-// directory for an incremental re-index — see CachedProvider.applyChanges)
-// and upserts every directory/file found. Unlike Build's original inline
-// WalkDir, the MaxFiles cap is enforced per-node (skip-and-stop for a fresh
-// walk once a brand-new file would exceed it) rather than assumed to run
-// only once over an empty state, so it stays correct when files already
-// tracked from a previous build are encountered again.
-func (st *buildState) walkSubtree(ctx context.Context, root string) error {
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(st.absRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
@@ -158,11 +174,30 @@ func (st *buildState) walkSubtree(ctx context.Context, root string) error {
 			st.upsertDir(path)
 			return nil
 		}
-		if _, _, ok := classifyFile(path); !ok {
+		if d.Name() == "go.mod" {
+			if mod := readGoModulePath(path); mod != "" {
+				st.goModules = append(st.goModules, goModule{dir: parentRel(relPath(st.absRoot, path)), path: mod})
+			}
 			return nil
 		}
-		rel := relPath(st.absRoot, path)
-		if _, existed := st.nodes[fileID(rel)]; !existed && st.fileCount >= st.maxFiles {
+		if name := d.Name(); name == "tsconfig.json" || name == "jsconfig.json" {
+			st.tsConfigs = append(st.tsConfigs, relPath(st.absRoot, path))
+			return nil
+		}
+		lang, _, ok := classifyFile(path)
+		if !ok {
+			return nil
+		}
+		if time.Now().After(st.deadline) {
+			st.timedOut = true
+			return filepath.SkipAll
+		}
+		if lang.ID != "markdown" && isGeneratedFile(path) {
+			st.generated++
+			return nil
+		}
+		if st.fileCount >= st.maxFiles {
+			st.capped = true
 			return filepath.SkipAll
 		}
 		st.upsertFile(ctx, path)
@@ -195,26 +230,15 @@ func (st *buildState) upsertDir(path string) {
 	st.children[parent] = appendUnique(st.children[parent], id)
 }
 
-// upsertFile (re-)derives one file's node, symbol children, and
-// per-language import list, replacing any prior contribution for the same
-// path first. It enforces MaxFiles itself (not just the walker) so a
-// direct single-file call from an incremental update — not routed through
-// walkSubtree — still respects the cap for a genuinely new file; an
-// existing file being refreshed is never turned away by the cap.
+// upsertFile derives one file's node, symbol children, and per-language
+// import list. The caller (walkAll) has already enforced the file cap.
 func (st *buildState) upsertFile(ctx context.Context, path string) {
 	lang, isDoc, ok := classifyFile(path)
 	if !ok {
 		return
 	}
 	rel := relPath(st.absRoot, path)
-	_, existed := st.nodes[fileID(rel)]
-	if !existed && st.fileCount >= st.maxFiles {
-		return
-	}
-	st.removeFile(rel)
-	if !existed {
-		st.fileCount++
-	}
+	st.fileCount++
 	parent := dirID(parentRel(rel))
 	fid := fileID(rel)
 	loc, _ := countLOC(path)
@@ -278,66 +302,6 @@ func (st *buildState) upsertFile(ctx context.Context, path string) {
 	}
 }
 
-// removeFile purges a file's node, symbol children, and per-language import
-// entries. It is structural cleanup only — it does not adjust fileCount,
-// since upsertFile calls it internally to clear stale data before
-// re-adding the same file (a no-op count change), while removeFileTracked
-// is what a genuine removal (the file is gone from disk) should call.
-func (st *buildState) removeFile(rel string) {
-	fid := fileID(rel)
-	if old, ok := st.nodes[fid]; ok {
-		for _, sid := range st.children[fid] {
-			delete(st.nodes, sid)
-			delete(st.own, sid)
-		}
-		delete(st.children, fid)
-		delete(st.nodes, fid)
-		delete(st.own, fid)
-		st.children[old.Parent] = removeNodeID(st.children[old.Parent], fid)
-	}
-	delete(st.goImports, rel)
-	delete(st.goSelectors, rel)
-	delete(st.tsImports, rel)
-	delete(st.pyImports, rel)
-	delete(st.rustImports, rel)
-}
-
-// removeFileTracked removes a file that has genuinely disappeared from
-// disk, decrementing fileCount so long-running watch sessions with lots of
-// create/delete churn don't drift toward a phantom MaxFiles cap.
-func (st *buildState) removeFileTracked(rel string) {
-	if _, ok := st.nodes[fileID(rel)]; ok {
-		st.fileCount--
-	}
-	st.removeFile(rel)
-}
-
-// removeDirRecursive purges a directory and everything under it — used when
-// a watched directory is removed. It's a no-op if the directory isn't
-// currently tracked.
-func (st *buildState) removeDirRecursive(rel string) {
-	id := dirID(rel)
-	n, ok := st.nodes[id]
-	if !ok {
-		return
-	}
-	for _, child := range append([]NodeID(nil), st.children[id]...) {
-		cn, ok := st.nodes[child]
-		if !ok {
-			continue
-		}
-		switch cn.Kind {
-		case NodeFile:
-			st.removeFileTracked(cn.RelPath)
-		case NodeDirectory:
-			st.removeDirRecursive(cn.RelPath)
-		}
-	}
-	st.children[n.Parent] = removeNodeID(st.children[n.Parent], id)
-	delete(st.children, id)
-	delete(st.nodes, id)
-}
-
 // finalize re-derives cross-file import edges and aggregate stats — pure
 // in-memory computation over already-collected per-file data, no file I/O
 // — and returns a fresh immutable snapshot. Safe to call any number of
@@ -345,11 +309,11 @@ func (st *buildState) removeDirRecursive(rel string) {
 // buildState).
 func (st *buildState) finalize() *CodeIndex {
 	aggregateStats(st.rootID, st.nodes, st.children, st.own)
-	edges := buildGoImportEdges(st.goImports, st.goPackages, st.goSelectors, st.nodes, st.modulePath)
-	edges = append(edges, buildTSImportEdges(st.tsImports, st.nodes)...)
+	edges := buildGoImportEdges(st.goImports, st.goPackages, st.goSelectors, st.nodes, st.goModules)
+	edges = append(edges, buildTSImportEdges(st.tsImports, st.nodes, loadTSConfigs(st.absRoot, st.tsConfigs))...)
 	edges = append(edges, buildPythonImportEdges(st.pyImports, st.nodes)...)
 	edges = append(edges, buildRustImportEdges(st.rustImports, st.nodes)...)
-	return NewIndex(st.absRoot, st.rootID, st.nodes, st.children, edges)
+	return NewIndex(st.absRoot, st.rootID, st.nodes, st.children, edges).withBuildResult(st)
 }
 
 // aggregateStats writes each node's aggregated Stats (own contribution plus
@@ -408,16 +372,6 @@ func appendUnique(in []NodeID, id NodeID) []NodeID {
 	return append(in, id)
 }
 
-func removeNodeID(ids []NodeID, target NodeID) []NodeID {
-	out := ids[:0]
-	for _, id := range ids {
-		if id != target {
-			out = append(out, id)
-		}
-	}
-	return out
-}
-
 var docExtensions = map[string]bool{".md": true, ".mdx": true}
 
 func isDocFile(path string) bool {
@@ -426,7 +380,7 @@ func isDocFile(path string) bool {
 
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", ".hg", ".svn", ".yottacode", "node_modules", "vendor", "target", "build", "dist":
+	case ".git", ".hg", ".svn", ".yottacode", "node_modules", "vendor", "target", "build", "dist", "__pycache__", "coverage":
 		return true
 	default:
 		return strings.HasPrefix(name, ".")
@@ -524,16 +478,17 @@ func readGoModulePath(path string) string {
 // shrink an edge set from what the previous file-level resolution
 // produced, never lose an edge for an import that's genuinely used but
 // whose usage this best-effort analysis couldn't pin down.
-func buildGoImportEdges(importsByFile map[string][]string, packages map[string]string, selectorsByFile map[string]map[string][]string, nodes map[NodeID]Node, modulePath string) []Edge {
+func buildGoImportEdges(importsByFile map[string][]string, packages map[string]string, selectorsByFile map[string]map[string][]string, nodes map[NodeID]Node, modules []goModule) []Edge {
 	if len(importsByFile) == 0 {
 		return nil
 	}
-	pkgToDirs := map[string][]string{}
+	// Directories that hold an importable (non-main) package, for resolving
+	// imports when the repository has no go.mod to qualify them.
+	pkgDirs := map[string]bool{}
 	for dir, pkg := range packages {
-		if pkg == "" || pkg == "main" {
-			continue
+		if pkg != "" && pkg != "main" {
+			pkgDirs[dir] = true
 		}
-		pkgToDirs[pkg] = append(pkgToDirs[pkg], dir)
 	}
 
 	// Precompute once (not per import): each directory's non-test file IDs,
@@ -570,7 +525,7 @@ func buildGoImportEdges(importsByFile map[string][]string, packages map[string]s
 		fromDir := parentRel(rel)
 		selectors := selectorsByFile[rel]
 		for _, imp := range imports {
-			targetDir := resolveGoImportDir(imp, fromDir, pkgToDirs, modulePath)
+			targetDir := resolveGoImportDir(imp, fromDir, pkgDirs, modules)
 			if targetDir == "" {
 				continue
 			}
@@ -624,24 +579,51 @@ func goImportTargets(targetDir, targetPkg string, selectors map[string][]string,
 	return matched
 }
 
-func resolveGoImportDir(imp, fromDir string, pkgToDirs map[string][]string, modulePath string) string {
+// goModule is one go.mod: the repo-relative directory it sits in and the module
+// path its packages are imported under.
+type goModule struct {
+	dir  string
+	path string
+}
+
+// resolveGoImportDir maps an import path to a repo-relative directory, or "" when
+// the import is not part of the repository.
+//
+// With go.mod files present the answer is exact: the longest module path that
+// prefixes the import names the module, and the rest is the package directory
+// inside it. Anything else is external (standard library, third party) and
+// resolves to nothing, so `net/http` can never be mistaken for a local package
+// that happens to be called http.
+//
+// Without any go.mod (GOPATH-style trees, "+incompatible" checkouts) the import
+// is matched against the repository's package directories by the longest path
+// suffix, so `example.org/x/api/types/container` finds `api/types/container`
+// rather than some other directory named `container`. The result never depends
+// on map iteration order.
+func resolveGoImportDir(imp, fromDir string, pkgDirs map[string]bool, modules []goModule) string {
 	if strings.HasPrefix(imp, "./") || strings.HasPrefix(imp, "../") {
 		return filepath.ToSlash(filepath.Clean(filepath.Join(fromDir, imp)))
 	}
-	if modulePath != "" && imp == modulePath {
-		return "."
+	if len(modules) > 0 {
+		best := -1
+		dir := ""
+		for _, m := range modules {
+			if m.path == "" || len(m.path) <= best {
+				continue
+			}
+			switch {
+			case imp == m.path:
+				best, dir = len(m.path), m.dir
+			case strings.HasPrefix(imp, m.path+"/"):
+				best, dir = len(m.path), filepath.ToSlash(filepath.Clean(filepath.Join(m.dir, strings.TrimPrefix(imp, m.path+"/"))))
+			}
+		}
+		return dir
 	}
-	if modulePath != "" && strings.HasPrefix(imp, modulePath+"/") {
-		return filepath.ToSlash(strings.TrimPrefix(imp, modulePath+"/"))
-	}
-	base := filepath.Base(imp)
-	candidates := pkgToDirs[base]
-	if len(candidates) == 1 {
-		return candidates[0]
-	}
-	for _, dir := range candidates {
-		if strings.HasSuffix(imp, "/"+filepath.Base(dir)) || strings.HasSuffix(imp, filepath.ToSlash(dir)) {
-			return dir
+	segs := strings.Split(imp, "/")
+	for i := range segs {
+		if cand := strings.Join(segs[i:], "/"); pkgDirs[cand] {
+			return cand
 		}
 	}
 	return ""
@@ -665,6 +647,41 @@ func containerDefault(container, fallback string) string {
 func isExported(name string) bool {
 	for _, r := range name {
 		return unicode.IsUpper(r)
+	}
+	return false
+}
+
+// generatedHeaderBytes is how much of a file's head isGeneratedFile inspects.
+const generatedHeaderBytes = 1024
+
+// isGeneratedFile reports whether a source file is machine-generated, which
+// would dilute the graph with edges nobody edits by hand. It matches minified
+// bundles and .pb.go by name, and otherwise looks for a marker comment line in
+// the first kilobyte: "@generated", Go's "Code generated ... DO NOT EDIT", or a
+// "Generated by ... DO NOT EDIT" banner. The phrase alone, buried in prose, does
+// not count.
+func isGeneratedFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	if strings.HasSuffix(base, ".min.js") || strings.HasSuffix(base, ".min.mjs") || strings.HasSuffix(base, ".pb.go") {
+		return true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, generatedHeaderBytes)
+	n, _ := f.Read(buf)
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		text := strings.ToLower(strings.TrimLeft(strings.TrimSpace(line), "/#*! "))
+		switch {
+		case strings.HasPrefix(text, "@generated"):
+			return true
+		case strings.HasPrefix(text, "code generated"):
+			return true
+		case strings.HasPrefix(text, "generated by") && strings.Contains(text, "do not edit"):
+			return true
+		}
 	}
 	return false
 }

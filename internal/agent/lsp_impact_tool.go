@@ -62,7 +62,7 @@ func (t *LSPImpactTool) Execute(ctx context.Context, argsJSON string) (string, e
 	writeImpactLocations(ctx, &b, "references", func() ([]lspci.Location, error) { return client.References(ctx, path, pos, a.IncludeDeclaration) }, limit)
 	writeImpactCalls(ctx, &b, client, path, pos, limit)
 	writeImpactDiagnostics(ctx, &b, client, path)
-	writeImpactCodeMap(ctx, &b, t.CodeMapProvider, path, limit)
+	writeImpactCodeMap(ctx, &b, t.CodeMapProvider, t.DenyReadPaths, path, limit)
 	return b.String(), nil
 }
 
@@ -137,7 +137,7 @@ func writeImpactDiagnostics(ctx context.Context, b *strings.Builder, client lspC
 	}
 }
 
-func writeImpactCodeMap(ctx context.Context, b *strings.Builder, provider codemap.Provider, path string, limit int) {
+func writeImpactCodeMap(ctx context.Context, b *strings.Builder, provider codemap.Provider, deny []string, path string, limit int) {
 	b.WriteString("code_map_import_impact\n")
 	if provider == nil {
 		b.WriteString("  unavailable: code map is not enabled\n")
@@ -157,7 +157,23 @@ func writeImpactCodeMap(ctx context.Context, b *strings.Builder, provider codema
 			query = filepath.ToSlash(rel)
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSuffix(codemap.FormatImpact(idx.Impact(query, codemap.MaxDepthAll, limit), limit), "\n"), "\n") {
+	matches := idx.FindFiles(query)
+	if len(matches) != 1 {
+		if len(matches) == 0 {
+			fmt.Fprintf(b, "  no indexed file matches %q\n", query)
+		} else {
+			fmt.Fprintf(b, "  %q matches %d indexed files, so import impact is skipped\n", query, len(matches))
+		}
+		return
+	}
+	target := matches[0]
+	ci := &CodeImpactTool{DenyReadPaths: deny}
+	if ci.denied(idx, target) {
+		b.WriteString("  unavailable: target is on the read deny list\n")
+		return
+	}
+	report := codemap.Report{Mode: "impact", Target: target.RelPath, Info: idx.Info(), Sections: ci.sections(idx, target, "impact", "package", codemap.MaxDepthAll)}
+	for _, line := range strings.Split(strings.TrimSuffix(report.Render(limit*80), "\n"), "\n") {
 		if strings.TrimSpace(line) != "" {
 			fmt.Fprintf(b, "  %s\n", line)
 		}

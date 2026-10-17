@@ -661,14 +661,7 @@ var readOnlyChildTools = map[string]bool{
 	"lsp_impact":                    true,
 	"syntax_range":                  true,
 	"pr_readiness_context":          true,
-	"code_map":                      true,
-	"code_symbols":                  true,
-	"code_structure_projection":     true,
-	"code_dependencies":             true,
-	"code_dependents":               true,
 	"code_impact":                   true,
-	"code_cycles":                   true,
-	"code_map_diagram":              true,
 	ConsultAdvisorToolName:          true,
 }
 

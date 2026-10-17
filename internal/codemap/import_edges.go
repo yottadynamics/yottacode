@@ -2,9 +2,11 @@ package codemap
 
 import (
 	"bufio"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -55,7 +57,7 @@ func parseTSImports(path string) ([]string, error) {
 	return specs, s.Err()
 }
 
-func buildTSImportEdges(importsByFile map[string][]string, nodes map[NodeID]Node) []Edge {
+func buildTSImportEdges(importsByFile map[string][]string, nodes map[NodeID]Node, configs []tsConfig) []Edge {
 	if len(importsByFile) == 0 {
 		return nil
 	}
@@ -66,7 +68,7 @@ func buildTSImportEdges(importsByFile map[string][]string, nodes map[NodeID]Node
 		from := fileID(rel)
 		fromDir := parentRel(rel)
 		for _, spec := range specs {
-			target := resolveTSImportFile(spec, fromDir, fileSet)
+			target := resolveTSImportFile(spec, fromDir, fileSet, configs)
 			if target == "" {
 				continue
 			}
@@ -80,14 +82,32 @@ func buildTSImportEdges(importsByFile map[string][]string, nodes map[NodeID]Node
 	return edges
 }
 
-// resolveTSImportFile only resolves relative specifiers ("./x", "../x") —
-// TS module resolution for relative paths is file-based, unlike Go's
-// package-based resolution. Bare/package specifiers are external.
-func resolveTSImportFile(spec, fromDir string, fileSet map[string]bool) string {
-	if !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
+// resolveTSImportFile resolves relative specifiers ("./x", "../x") by file
+// path, and bare specifiers through the nearest tsconfig/jsconfig `paths` and
+// `baseUrl` aliases. Bare specifiers no alias claims are external packages and
+// stay unresolved.
+func resolveTSImportFile(spec, fromDir string, fileSet map[string]bool, configs []tsConfig) string {
+	if strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") {
+		return tsResolveBase(filepath.ToSlash(filepath.Clean(filepath.Join(fromDir, spec))), fileSet)
+	}
+	for _, cfg := range configs {
+		if !pathWithin(cfg.dir, fromDir) {
+			continue
+		}
+		for _, target := range cfg.expand(spec) {
+			if resolved := tsResolveBase(target, fileSet); resolved != "" {
+				return resolved
+			}
+		}
+		// The nearest config owns the file; do not fall through to an outer one.
 		return ""
 	}
-	base := filepath.ToSlash(filepath.Clean(filepath.Join(fromDir, spec)))
+	return ""
+}
+
+// tsResolveBase tries a module path as an exact file, with each known extension,
+// then as a directory index.
+func tsResolveBase(base string, fileSet map[string]bool) string {
 	if fileSet[base] {
 		return base
 	}
@@ -103,6 +123,189 @@ func resolveTSImportFile(spec, fromDir string, fileSet map[string]bool) string {
 	}
 	return ""
 }
+
+// pathWithin reports whether dir is root or lies under it (both repo-relative).
+func pathWithin(root, dir string) bool {
+	if root == "." || root == "" {
+		return true
+	}
+	return dir == root || strings.HasPrefix(dir, root+"/")
+}
+
+// tsConfig is the alias-relevant part of one tsconfig.json / jsconfig.json.
+type tsConfig struct {
+	dir      string // repo-relative directory holding the config
+	baseURL  string // repo-relative base directory, or "" when unset
+	pathsDir string // repo-relative directory of the config that defines paths
+	paths    []tsPathAlias
+}
+
+type tsPathAlias struct {
+	prefix, suffix string // pattern split around its single "*"; no star means exact
+	wildcard       bool
+	targets        []string
+}
+
+// expand maps a bare specifier to candidate repo-relative module paths, longest
+// matching alias first, then the baseUrl fallback.
+func (c tsConfig) expand(spec string) []string {
+	var out []string
+	best := -1
+	var bestAlias tsPathAlias
+	var captured string
+	for _, a := range c.paths {
+		switch {
+		case !a.wildcard && spec == a.prefix:
+			best, bestAlias, captured = len(a.prefix)+1<<20, a, ""
+		case a.wildcard && len(spec) >= len(a.prefix)+len(a.suffix) && strings.HasPrefix(spec, a.prefix) && strings.HasSuffix(spec, a.suffix) && len(a.prefix) > best:
+			best, bestAlias, captured = len(a.prefix), a, spec[len(a.prefix):len(spec)-len(a.suffix)]
+		}
+	}
+	if best >= 0 {
+		for _, t := range bestAlias.targets {
+			out = append(out, filepath.ToSlash(filepath.Clean(filepath.Join(c.baseOrDir(), strings.Replace(t, "*", captured, 1)))))
+		}
+	}
+	if c.baseURL != "" {
+		out = append(out, filepath.ToSlash(filepath.Clean(filepath.Join(c.baseURL, spec))))
+	}
+	return out
+}
+
+// baseOrDir is what `paths` targets are relative to: baseUrl when any config in
+// the chain sets it, otherwise the directory of the config that defines paths.
+func (c tsConfig) baseOrDir() string {
+	if c.baseURL != "" {
+		return c.baseURL
+	}
+	if c.pathsDir != "" {
+		return c.pathsDir
+	}
+	return c.dir
+}
+
+// maxTSExtendsDepth bounds an `extends` chain, which also stops a cycle.
+const maxTSExtendsDepth = 8
+
+// tsOptions is the alias-relevant compilerOptions after following `extends`.
+type tsOptions struct {
+	baseURL  string // repo-relative, from the nearest config in the chain that sets it
+	paths    map[string][]string
+	pathsDir string // repo-relative directory of the config that set paths
+}
+
+// readTSOptions parses one config and layers it over its `extends` parent, as
+// the TypeScript compiler does: a child's baseUrl and paths replace the parent's
+// wholesale, each resolved against the config that defines it. Only relative
+// `extends` paths inside the repository are followed; package-name extends
+// (`@tsconfig/node20`) and unreadable parents are ignored.
+func readTSOptions(absRoot, rel string, depth int) (tsOptions, bool) {
+	data, err := os.ReadFile(filepath.Join(absRoot, filepath.FromSlash(rel)))
+	if err != nil {
+		return tsOptions{}, false
+	}
+	var raw struct {
+		Extends         string `json:"extends"`
+		CompilerOptions struct {
+			BaseURL string              `json:"baseUrl"`
+			Paths   map[string][]string `json:"paths"`
+		} `json:"compilerOptions"`
+	}
+	if json.Unmarshal(stripJSONC(data), &raw) != nil {
+		return tsOptions{}, false
+	}
+	var opts tsOptions
+	dir := parentRel(rel)
+	if ext := raw.Extends; depth < maxTSExtendsDepth && (strings.HasPrefix(ext, "./") || strings.HasPrefix(ext, "../")) {
+		parent := filepath.ToSlash(filepath.Clean(filepath.Join(dir, ext)))
+		if filepath.Ext(parent) != ".json" {
+			parent += ".json"
+		}
+		if !strings.HasPrefix(parent, "../") {
+			if inherited, ok := readTSOptions(absRoot, parent, depth+1); ok {
+				opts = inherited
+			}
+		}
+	}
+	if raw.CompilerOptions.BaseURL != "" {
+		opts.baseURL = filepath.ToSlash(filepath.Clean(filepath.Join(dir, raw.CompilerOptions.BaseURL)))
+	}
+	if raw.CompilerOptions.Paths != nil {
+		opts.paths, opts.pathsDir = raw.CompilerOptions.Paths, dir
+	}
+	return opts, true
+}
+
+// loadTSConfigs parses every collected tsconfig/jsconfig. Unreadable or invalid
+// files are skipped. Configs are returned deepest directory first so the
+// nearest one wins.
+func loadTSConfigs(absRoot string, rels []string) []tsConfig {
+	var out []tsConfig
+	for _, rel := range rels {
+		opts, ok := readTSOptions(absRoot, rel, 0)
+		if !ok {
+			continue
+		}
+		cfg := tsConfig{dir: parentRel(rel), baseURL: opts.baseURL, pathsDir: opts.pathsDir}
+		keys := make([]string, 0, len(opts.paths))
+		for k := range opts.paths {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			a := tsPathAlias{targets: opts.paths[k]}
+			if i := strings.Index(k, "*"); i >= 0 {
+				a.wildcard, a.prefix, a.suffix = true, k[:i], k[i+1:]
+			} else {
+				a.prefix = k
+			}
+			cfg.paths = append(cfg.paths, a)
+		}
+		out = append(out, cfg)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i].dir) > len(out[j].dir) })
+	return out
+}
+
+// stripJSONC removes // and /* */ comments and trailing commas so tsconfig files,
+// which are JSON with comments, decode with encoding/json. String contents are
+// left untouched.
+func stripJSONC(in []byte) []byte {
+	out := make([]byte, 0, len(in))
+	inStr := false
+	for i := 0; i < len(in); i++ {
+		c := in[i]
+		switch {
+		case inStr:
+			out = append(out, c)
+			if c == '\\' && i+1 < len(in) {
+				i++
+				out = append(out, in[i])
+			} else if c == '"' {
+				inStr = false
+			}
+		case c == '"':
+			inStr = true
+			out = append(out, c)
+		case c == '/' && i+1 < len(in) && in[i+1] == '/':
+			for i < len(in) && in[i] != '\n' {
+				i++
+			}
+			out = append(out, '\n')
+		case c == '/' && i+1 < len(in) && in[i+1] == '*':
+			i += 2
+			for i+1 < len(in) && !(in[i] == '*' && in[i+1] == '/') {
+				i++
+			}
+			i++
+		default:
+			out = append(out, c)
+		}
+	}
+	return trailingComma.ReplaceAll(out, []byte("$1"))
+}
+
+var trailingComma = regexp.MustCompile(`,(\s*[}\]])`)
 
 // --- Python ---
 
@@ -153,10 +356,29 @@ func parsePythonImports(path string) ([]string, error) {
 				specs = append(specs, module+name)
 			}
 		} else {
+			// `from pkg import name` may name a submodule, so offer pkg.name as
+			// well; names that are not modules simply do not resolve.
 			specs = append(specs, module)
+			for _, name := range splitPythonImportNames(names) {
+				if isPythonIdent(name) {
+					specs = append(specs, module+"."+name)
+				}
+			}
 		}
 	}
 	return specs, s.Err()
+}
+
+func isPythonIdent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || i > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func isDotsOnly(s string) bool {
@@ -210,6 +432,7 @@ func buildPythonImportEdges(importsByFile map[string][]string, nodes map[NodeID]
 		}
 		return "", false
 	}
+	suffixes := pythonSuffixIndex(relToID)
 	var edges []Edge
 	seen := map[string]bool{}
 	for rel, specs := range importsByFile {
@@ -221,6 +444,9 @@ func buildPythonImportEdges(importsByFile map[string][]string, nodes map[NodeID]
 				continue
 			}
 			to, ok := resolve(dir)
+			if !ok && !strings.HasPrefix(spec, ".") {
+				to, ok = resolvePythonBySuffix(dir, fromDir, suffixes, relToID)
+			}
 			if !ok || to == from {
 				continue
 			}
@@ -228,6 +454,71 @@ func buildPythonImportEdges(importsByFile map[string][]string, nodes map[NodeID]
 		}
 	}
 	return edges
+}
+
+// pythonSuffixIndex maps every trailing path of each Python module ("a/b/c",
+// "b/c", "c" for a/b/c.py or a/b/c/__init__.py) to the files it could name. It
+// is how absolute imports resolve in src/ and namespaced layouts, where the
+// import root is a subdirectory rather than the repository root.
+func pythonSuffixIndex(relToID map[string]NodeID) map[string][]string {
+	out := map[string][]string{}
+	for rel := range relToID {
+		if !strings.HasSuffix(rel, ".py") {
+			continue
+		}
+		parts := strings.Split(strings.TrimSuffix(rel, ".py"), "/")
+		if parts[len(parts)-1] == "__init__" {
+			parts = parts[:len(parts)-1]
+		}
+		for i := range parts {
+			key := strings.Join(parts[i:], "/")
+			out[key] = append(out[key], rel)
+		}
+	}
+	return out
+}
+
+// resolvePythonBySuffix resolves an absolute import path whose root-relative form
+// did not exist. Several matches are broken by closeness to the importing file;
+// a tie is left unresolved rather than guessed. A one-segment name ("json",
+// "logging") only resolves to a module in the importer's own directory chain,
+// since matching it anywhere would turn standard-library imports into edges.
+func resolvePythonBySuffix(dir, fromDir string, suffixes map[string][]string, relToID map[string]NodeID) (NodeID, bool) {
+	var best string
+	bestScore, tied := -1, false
+	for _, rel := range suffixes[dir] {
+		modDir := parentRel(rel)
+		if strings.HasSuffix(rel, "/__init__.py") || rel == "__init__.py" {
+			modDir = parentRel(modDir)
+		}
+		if !strings.Contains(dir, "/") && !pathWithin(modDir, fromDir) {
+			continue
+		}
+		score := commonDirDepth(modDir, fromDir)
+		switch {
+		case score > bestScore:
+			best, bestScore, tied = rel, score, false
+		case score == bestScore:
+			tied = true
+		}
+	}
+	if best == "" || tied {
+		return "", false
+	}
+	id, ok := relToID[best]
+	return id, ok
+}
+
+func commonDirDepth(a, b string) int {
+	if a == "." || b == "." {
+		return 0
+	}
+	as, bs := strings.Split(a, "/"), strings.Split(b, "/")
+	n := 0
+	for n < len(as) && n < len(bs) && as[n] == bs[n] {
+		n++
+	}
+	return n
 }
 
 // resolvePythonImportDir maps an import spec to a repo-relative module path

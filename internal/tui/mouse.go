@@ -260,30 +260,6 @@ func (m Model) handleMemoryPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
 	return m.updateMemoryPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
-// handleCodeMapPickerClick resolves a click on a code-map row to a
-// cursor move + synthesized Enter (expand/select, same as
-// updateCodeMapPicker's own Enter case). No-ops while the map is
-// loading, errored, or showing a diagram (no rows registered by the
-// renderer in those states, so hits.resolve naturally returns ok=false).
-func (m Model) handleCodeMapPickerClick(msg tea.MouseClickMsg) (Model, tea.Cmd) {
-	if m.codeMapPicker == nil {
-		return m, nil
-	}
-	hits := &pickerHits{}
-	box := popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth(), hits))
-	ox, oy := m.popupOrigin(box)
-	row, col, ok := bodyPoint(box, ox, oy, msg.X, msg.Y)
-	if !ok {
-		return m, nil
-	}
-	kind, index, _, ok := hits.resolve(row, col)
-	if !ok || kind != hitItem {
-		return m, nil
-	}
-	m.codeMapPicker.cursor = index
-	return m.updateCodeMapPicker(tea.KeyPressMsg{Code: tea.KeyEnter})
-}
-
 // handleEffortPickerClick resolves a click on an effort-level row to a
 // cursor move + synthesized Enter (same as updateEffortPicker's own
 // Enter case). Note renderEffortPicker takes no width parameter, unlike
@@ -965,14 +941,6 @@ func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
 			} else {
 				m.memoryPicker.cursor = index
 			}
-		}
-		return m
-	}
-	if m.codeMapPickerOpen && m.codeMapPicker != nil {
-		hits := &pickerHits{}
-		box := popupBox(renderCodeMapPicker(m.codeMapPicker, m.popupWidth(), hits))
-		if _, index, _, ok := m.resolvePopupHover(box, hits, msg.X, msg.Y); ok {
-			m.codeMapPicker.cursor = index
 		}
 		return m
 	}

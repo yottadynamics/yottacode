@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -536,4 +537,57 @@ func sleepCmd(t *testing.T) *exec.Cmd {
 		return exec.Command("/bin/sh", "-c", "sleep 30")
 	}
 	return exec.Command("sleep", "30")
+}
+
+// TestClientCallHierarchyEchoesPreparedItemVerbatim is the regression for a bug
+// found by running against gopls: the client rebuilt the item from a typed struct
+// that dropped `range` and `data`, gopls then looked up the symbol at position
+// 0:0, and every call hierarchy query came back empty with no error.
+func TestClientCallHierarchyEchoesPreparedItemVerbatim(t *testing.T) {
+	clientReader, serverWriter := io.Pipe()
+	serverReader, clientWriter := io.Pipe()
+	c := &Client{stdin: clientWriter, stdout: bufio.NewReader(clientReader), capOK: true, caps: serverCapabilities{CallHierarchy: true}, docs: map[string]openDocumentState{}}
+	item := map[string]any{
+		"name": "Run", "kind": 12, "uri": "file:///tmp/main.go",
+		"range":          map[string]any{"start": map[string]any{"line": 4, "character": 0}, "end": map[string]any{"line": 9, "character": 1}},
+		"selectionRange": map[string]any{"start": map[string]any{"line": 4, "character": 5}, "end": map[string]any{"line": 4, "character": 8}},
+		"data":           map[string]any{"opaque": "server-state"},
+	}
+	// Compare as decoded JSON so int vs float64 literals do not matter.
+	var want map[string]any
+	wire, _ := json.Marshal(item)
+	_ = json.Unmarshal(wire, &want)
+	var gotIncoming, gotOutgoing []byte
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		readServerRequest(t, serverReader, "textDocument/didOpen")
+		readServerRequest(t, serverReader, "textDocument/prepareCallHierarchy")
+		writeServerResponse(t, serverWriter, 1, []map[string]any{item})
+		gotIncoming = readServerRequestBody(t, serverReader, "callHierarchy/incomingCalls")
+		writeServerResponse(t, serverWriter, 2, []map[string]any{{"from": map[string]any{"name": "caller", "kind": 12, "uri": "file:///tmp/other.go", "selectionRange": map[string]any{"start": map[string]any{"line": 1, "character": 2}}}}})
+		gotOutgoing = readServerRequestBody(t, serverReader, "callHierarchy/outgoingCalls")
+		writeServerResponse(t, serverWriter, 3, []map[string]any{{"to": map[string]any{"name": "callee", "kind": 12, "uri": "file:///tmp/dep.go", "selectionRange": map[string]any{"start": map[string]any{"line": 3, "character": 4}}}}})
+	}()
+	items, err := c.CallHierarchy(context.Background(), "/tmp/main.go", Position{Line: 4, Character: 5})
+	if err != nil {
+		t.Fatalf("CallHierarchy: %v", err)
+	}
+	<-done
+	for name, body := range map[string][]byte{"incomingCalls": gotIncoming, "outgoingCalls": gotOutgoing} {
+		var req struct {
+			Params struct {
+				Item map[string]any `json:"item"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !reflect.DeepEqual(req.Params.Item, want) {
+			t.Errorf("%s item = %v, want the prepared item unchanged %v", name, req.Params.Item, want)
+		}
+	}
+	if len(items) != 2 || items[0].Direction != "incoming" || items[0].Name != "caller" || items[1].Direction != "outgoing" || items[1].Name != "callee" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
 }

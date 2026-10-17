@@ -4,10 +4,16 @@
 package codemap
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
+	"sync"
+	"time"
 )
 
 // NodeID is stable within one workspace snapshot. IDs are repo-relative where
@@ -94,13 +100,6 @@ type ImpactResult struct {
 	LikelyDocs  []Node
 }
 
-// ContextSuggestion is a file worth attaching as context and the reason it
-// was selected.
-type ContextSuggestion struct {
-	File   Node
-	Reason string
-}
-
 // MaxDepthAll means dependency traversal should continue until exhausted.
 const MaxDepthAll = -1
 
@@ -114,6 +113,82 @@ type CodeIndex struct {
 	edgesOut map[NodeID][]Edge
 	edgesIn  map[NodeID][]Edge
 	order    []NodeID
+	info     IndexInfo
+
+	docsOnce sync.Once
+	docs     []docText
+
+	dirsOnce sync.Once
+	dirGraph *dirGraph
+}
+
+// IndexInfo describes how complete an index snapshot is, so callers can state
+// the limits of an answer instead of presenting a truncated index as whole.
+type IndexInfo struct {
+	// Files is the number of indexed file nodes.
+	Files int
+	// MaxFiles is the file cap the build ran under; Capped reports that the
+	// walk stopped at it, so some files (and their edges) are missing.
+	MaxFiles int
+	Capped   bool
+	// TimedOut reports that the build ran past MaxDuration and stopped early.
+	TimedOut    bool
+	MaxDuration time.Duration
+	// Generated counts generated source files deliberately left out.
+	Generated int
+	// Version is a short content-derived digest of the indexed files and edges.
+	Version string
+}
+
+// String renders the one-line index status used in tool output.
+func (in IndexInfo) String() string {
+	s := fmt.Sprintf("%d files, version %s", in.Files, in.Version)
+	switch {
+	case in.Capped:
+		s += fmt.Sprintf(", PARTIAL: stopped at the %d-file cap, so dependents and tests outside the indexed files are missing", in.MaxFiles)
+	case in.TimedOut:
+		s += fmt.Sprintf(", PARTIAL: stopped after the %s build budget, so dependents and tests outside the indexed files are missing", in.MaxDuration)
+	}
+	if in.Generated > 0 {
+		s += fmt.Sprintf(", %d generated files excluded", in.Generated)
+	}
+	return s
+}
+
+// Info returns the snapshot's completeness metadata.
+func (i *CodeIndex) Info() IndexInfo {
+	if i == nil {
+		return IndexInfo{}
+	}
+	return i.info
+}
+
+// withBuildResult records how the build that produced this snapshot ended.
+func (i *CodeIndex) withBuildResult(st *buildState) *CodeIndex {
+	i.info.MaxFiles = st.maxFiles
+	i.info.Capped = st.capped
+	i.info.TimedOut = st.timedOut
+	i.info.MaxDuration = st.maxTime
+	i.info.Generated = st.generated
+	return i
+}
+
+// computeInfo derives file count and the version digest. Nodes and edges are
+// visited in the sorted idx.order, so the digest is deterministic.
+func (i *CodeIndex) computeInfo() {
+	h := sha256.New()
+	for _, id := range i.order {
+		n := i.nodes[id]
+		if n.Kind != NodeFile {
+			continue
+		}
+		i.info.Files++
+		fmt.Fprintf(h, "f %s %d\n", n.RelPath, n.Stats.LOC)
+		for _, e := range i.edgesOut[id] {
+			fmt.Fprintf(h, "e %s %s\n", n.RelPath, i.nodes[e.To].RelPath)
+		}
+	}
+	i.info.Version = hex.EncodeToString(h.Sum(nil))[:8]
 }
 
 // NewIndex constructs an immutable snapshot from prebuilt nodes and edges.
@@ -141,6 +216,7 @@ func NewIndex(root string, rootID NodeID, nodes map[NodeID]Node, children map[No
 		sort.Slice(idx.edgesIn[id], func(i, j int) bool { return edgeLess(idx, idx.edgesIn[id][i], idx.edgesIn[id][j]) })
 	}
 	sort.Slice(idx.order, func(i, j int) bool { return string(idx.order[i]) < string(idx.order[j]) })
+	idx.computeInfo()
 	return idx
 }
 
@@ -353,158 +429,6 @@ func (i *CodeIndex) Filter(query string, max int) []Node {
 	return out
 }
 
-// SuggestedContext returns a small, deterministic set of files related to
-// the supplied files or directory prefixes. Changed targets rank first,
-// followed by their imports, importers, and likely tests.
-func (i *CodeIndex) SuggestedContext(paths []string, max int) []ContextSuggestion {
-	if i == nil {
-		return nil
-	}
-	if max <= 0 || max > 8 {
-		max = 8
-	}
-	targets := i.contextTargets(paths)
-	if len(targets) == 0 {
-		return nil
-	}
-
-	out := make([]ContextSuggestion, 0, max)
-	seen := make(map[NodeID]bool)
-	add := func(nodes []Node, reason string) {
-		for _, node := range nodes {
-			if len(out) >= max || node.Kind != NodeFile || seen[node.ID] || strings.IndexFunc(node.RelPath, unicode.IsSpace) >= 0 {
-				continue
-			}
-			seen[node.ID] = true
-			out = append(out, ContextSuggestion{File: node, Reason: reason})
-		}
-	}
-
-	add(targets, "changed")
-	add(i.contextEdgeFiles(targets, true), "imported by target")
-	add(i.contextEdgeFiles(targets, false), "imports target")
-	add(i.contextTestFiles(targets), "test for target")
-	return out
-}
-
-func (i *CodeIndex) contextTargets(paths []string) []Node {
-	files := make(map[string]Node)
-	for _, id := range i.order {
-		node := i.nodes[id]
-		if node.Kind == NodeFile {
-			files[filepath.ToSlash(filepath.Clean(node.RelPath))] = node
-		}
-	}
-
-	selected := make(map[NodeID]Node)
-	for _, path := range paths {
-		key := filepath.Clean(strings.TrimSpace(path))
-		if key == "" {
-			continue
-		}
-		if filepath.IsAbs(key) {
-			rel, err := filepath.Rel(i.root, key)
-			if err != nil {
-				continue
-			}
-			key = rel
-		}
-		key = filepath.ToSlash(filepath.Clean(key))
-		if node, ok := files[key]; ok {
-			selected[node.ID] = node
-			continue
-		}
-		prefix := strings.TrimSuffix(key, "/") + "/"
-		for rel, node := range files {
-			if key == "." || strings.HasPrefix(rel, prefix) {
-				selected[node.ID] = node
-			}
-		}
-	}
-	return sortedContextNodes(selected)
-}
-
-func (i *CodeIndex) contextEdgeFiles(targets []Node, outgoing bool) []Node {
-	selected := make(map[NodeID]Node)
-	for _, target := range targets {
-		edges := i.edgesOut[target.ID]
-		if !outgoing {
-			edges = i.edgesIn[target.ID]
-		}
-		for _, edge := range edges {
-			if edge.Kind != EdgeImports {
-				continue
-			}
-			id := edge.To
-			if !outgoing {
-				id = edge.From
-			}
-			if node, ok := i.nodes[id]; ok && node.Kind == NodeFile {
-				selected[id] = node
-			}
-		}
-	}
-	return sortedContextNodes(selected)
-}
-
-func (i *CodeIndex) contextTestFiles(targets []Node) []Node {
-	selected := make(map[NodeID]Node)
-	for _, target := range targets {
-		if isTestPath(target.RelPath) {
-			continue
-		}
-		for _, id := range i.order {
-			candidate := i.nodes[id]
-			if candidate.Kind == NodeFile && likelyTestFor(candidate.RelPath, target.RelPath) {
-				selected[id] = candidate
-			}
-		}
-	}
-	return sortedContextNodes(selected)
-}
-
-func likelyTestFor(candidate, target string) bool {
-	candidate = filepath.ToSlash(filepath.Clean(candidate))
-	target = filepath.ToSlash(filepath.Clean(target))
-	if filepath.Dir(candidate) != filepath.Dir(target) {
-		return false
-	}
-	targetBase := filepath.Base(target)
-	targetExt := filepath.Ext(targetBase)
-	targetStem := strings.TrimSuffix(targetBase, targetExt)
-	candidateBase := filepath.Base(candidate)
-	candidateExt := filepath.Ext(candidateBase)
-	if candidateExt != targetExt {
-		return false
-	}
-	candidateStem := strings.TrimSuffix(candidateBase, candidateExt)
-	return candidateStem == targetStem+"_test" || candidateStem == targetStem+".test" || candidateStem == targetStem+".spec"
-}
-
-func isTestPath(path string) bool {
-	base := filepath.Base(path)
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	return strings.HasSuffix(stem, "_test") || strings.HasSuffix(stem, ".test") || strings.HasSuffix(stem, ".spec")
-}
-
-func sortedContextNodes(nodes map[NodeID]Node) []Node {
-	out := make([]Node, 0, len(nodes))
-	for _, node := range nodes {
-		out = append(out, node)
-	}
-	sort.Slice(out, func(a, b int) bool { return contextNodeLess(out[a], out[b]) })
-	return out
-}
-
-func contextNodeLess(a, b Node) bool {
-	aPath := filepath.ToSlash(filepath.Clean(a.RelPath))
-	bPath := filepath.ToSlash(filepath.Clean(b.RelPath))
-	if aPath != bPath {
-		return aPath < bPath
-	}
-	return a.ID < b.ID
-}
-
 // Dependencies returns outgoing import edges for a matching file node.
 func (i *CodeIndex) Dependencies(pathOrQuery string, max int) []Node {
 	return i.edgeNodes(pathOrQuery, true, max)
@@ -674,10 +598,19 @@ func (i *CodeIndex) edgeNodes(pathOrQuery string, outgoing bool, max int) []Node
 	return proximityNodes(i.nodes[start], out)
 }
 
-func (i *CodeIndex) firstFileMatch(pathOrQuery string) NodeID {
+// FindFiles returns the indexed files a path or path fragment names, from the
+// strongest kind of match that has any: an exact repo-relative path, else files
+// whose path ends with the fragment on a directory boundary ("main.go" matches
+// "cmd/x/main.go" but not "domain.go"), else any path or file-name substring.
+// Matches come back in a stable order. One result means the query is
+// unambiguous; several mean the caller must not pick one silently.
+func (i *CodeIndex) FindFiles(pathOrQuery string) []Node {
+	if i == nil {
+		return nil
+	}
 	key := filepath.Clean(strings.TrimSpace(pathOrQuery))
 	if key == "." || key == "" {
-		return ""
+		return nil
 	}
 	if filepath.IsAbs(key) {
 		if rel, err := filepath.Rel(i.root, key); err == nil {
@@ -685,17 +618,51 @@ func (i *CodeIndex) firstFileMatch(pathOrQuery string) NodeID {
 		}
 	}
 	query := strings.ToLower(filepath.ToSlash(key))
+	var exact, suffix, substr []Node
 	for _, id := range i.order {
 		n := i.nodes[id]
 		if n.Kind != NodeFile {
 			continue
 		}
 		rel := strings.ToLower(filepath.ToSlash(n.RelPath))
-		if rel == query || strings.Contains(rel, query) || strings.Contains(strings.ToLower(n.Name), query) {
-			return id
+		switch {
+		case rel == query:
+			exact = append(exact, n)
+		case strings.HasSuffix(rel, "/"+query):
+			suffix = append(suffix, n)
+		case strings.Contains(rel, query) || strings.Contains(strings.ToLower(n.Name), query):
+			substr = append(substr, n)
 		}
 	}
-	return ""
+	switch {
+	case len(exact) > 0:
+		return exact
+	case len(suffix) > 0:
+		return suffix
+	default:
+		return substr
+	}
+}
+
+// ResolveFile returns the indexed file a path or fragment unambiguously names.
+// It reports false both when nothing matches and when several files do; use
+// FindFiles to tell the two apart.
+func (i *CodeIndex) ResolveFile(pathOrQuery string) (Node, bool) {
+	matches := i.FindFiles(pathOrQuery)
+	if len(matches) != 1 {
+		return Node{}, false
+	}
+	return matches[0], true
+}
+
+// firstFileMatch is the internal best-effort lookup used by queries that are
+// handed an already-resolved path: the strongest match, first in stable order.
+func (i *CodeIndex) firstFileMatch(pathOrQuery string) NodeID {
+	matches := i.FindFiles(pathOrQuery)
+	if len(matches) == 0 {
+		return ""
+	}
+	return matches[0].ID
 }
 
 // Cycles returns import cycles, optionally narrowed to cycles involving a
@@ -820,4 +787,52 @@ func (i *CodeIndex) Count() int {
 		return 0
 	}
 	return len(i.nodes)
+}
+
+// docText is one markdown file's content, kept so doc-mention queries do not
+// re-read every document on every call.
+type docText struct {
+	node Node
+	text string
+}
+
+const (
+	// maxDocBytes caps how much of one document is searched, and maxDocCorpus
+	// bounds the total held per snapshot, so a docs-heavy repository cannot
+	// balloon memory. Documents past the budget are simply not searched.
+	maxDocBytes  = 256 << 10
+	maxDocCorpus = 16 << 20
+)
+
+// docCorpus loads the snapshot's markdown content once. The snapshot is
+// immutable and a markdown edit marks the cached index dirty, so the corpus
+// stays in step with the files without any invalidation of its own.
+func (i *CodeIndex) docCorpus() []docText {
+	i.docsOnce.Do(func() {
+		total := 0
+		for _, id := range i.order {
+			n := i.nodes[id]
+			if n.Kind != NodeFile || n.Language != "markdown" {
+				continue
+			}
+			data, err := readCapped(n.Path, maxDocBytes)
+			if err != nil {
+				continue
+			}
+			if total += len(data); total > maxDocCorpus {
+				break
+			}
+			i.docs = append(i.docs, docText{node: n, text: string(data)})
+		}
+	})
+	return i.docs
+}
+
+func readCapped(path string, limit int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, int64(limit)))
 }

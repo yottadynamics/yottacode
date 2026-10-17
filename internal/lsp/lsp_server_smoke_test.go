@@ -165,3 +165,41 @@ func smokeUnavailable(t *testing.T, required bool, format string, args ...any) {
 	}
 	t.Skipf(format, args...)
 }
+
+// TestGoplsCallHierarchySmoke runs call hierarchy against a real gopls. Every
+// other call-hierarchy test uses a scripted server, which is how a client that
+// dropped the prepared item's range and data (so gopls looked up position 0:0 and
+// answered nothing, with no error) went unnoticed.
+func TestGoplsCallHierarchySmoke(t *testing.T) {
+	required := os.Getenv("YOTTACODE_LSP_SMOKE_REQUIRED") == "1"
+	if _, err := exec.LookPath("gopls"); err != nil {
+		smokeUnavailable(t, required, "gopls not installed")
+		return
+	}
+	root := t.TempDir()
+	writeSmokeFile(t, root, "go.mod", "module gopls-calls\n\ngo 1.26.6\n")
+	writeSmokeFile(t, root, "main.go", "package main\n\nfunc callee() int { return 1 }\n\nfunc caller() int { return callee() }\n\nfunc main() { caller() }\n")
+	ctx := context.Background()
+	lang := Language{ID: "go", Name: "Go", Extensions: []string{".go"}, Command: []string{"gopls"}}
+	client, err := NewClient(ctx, lang, root)
+	if err != nil {
+		smokeUnavailable(t, required, "gopls installed but not usable: %v", err)
+		return
+	}
+	defer client.Close()
+	path := filepath.Join(root, "main.go")
+	// `func callee` is on line 2 (zero-based); the identifier starts at column 5.
+	items, err := client.CallHierarchy(ctx, path, Position{Line: 2, Character: 5})
+	if err != nil {
+		t.Fatalf("CallHierarchy: %v", err)
+	}
+	var sawCaller bool
+	for _, it := range items {
+		if it.Direction == "incoming" && it.Name == "caller" {
+			sawCaller = true
+		}
+	}
+	if !sawCaller {
+		t.Fatalf("expected callee to have incoming caller %q, got %+v", "caller", items)
+	}
+}
