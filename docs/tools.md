@@ -2181,8 +2181,10 @@ Each question has:
   one-line `description` (max 160).
 - `multi_select` — optional; lets the user pick more than one option.
 
-Mark at most one option per question `recommended:true`. The interactive picker
-pre-selects it and non-interactive runs auto-pick it. Zero or several
+Give every question a recommendation: mark exactly one option `recommended:true`
+(listed first) and use each option's `description` for its trade-off. The
+interactive picker labels it `★ recommended`, pre-selects it, and
+non-interactive runs auto-pick it. Zero or several
 recommended options count as "no default". Text over the length limits is
 rejected, not truncated.
 
@@ -2191,8 +2193,10 @@ A free-text **Other** choice is always added after your options. With
 
 The result is JSON: `{"answers": {"<header>": <answer>}, "order": [...]}`.
 An answer is a label, a list of labels, free text, or
-`{"options": [...], "other": "..."}` for multi-select plus Other. If the user
-cancels, the result is `{"cancelled":true}`.
+`{"options": [...], "other": "..."}` for multi-select plus Other. A note turns the answer into
+`{"answer": <answer>, "note": "..."}`; a skipped question is
+`{"skipped": true}` (plus `"note"` if given). If the user cancels, the result is
+`{"cancelled":true}`.
 
 | Param | Type | Notes |
 |---|---|---|
@@ -2201,17 +2205,26 @@ cancels, the result is `{"cancelled":true}`.
 
 ### In the TUI
 
-The picker is a tab strip (`1 Auth`, `2 Notify`, `Review`) over a fixed-size
-frame, so switching tabs never moves the window. The final **Review** tab
-submits once every question is answered.
+The picker is a progress strip (`✓ Auth · ○ Notify · → Review`; only the active
+tab is green, and a pre-selected recommendation shows `○` until you visit it) over a
+fixed-size frame, so switching tabs never moves the window. Options are
+numbered with a radio (`◉`/`○`) or checkbox (`☑`/`☐`) marker, the recommended
+one carries `★ recommended`, and each description sits on its own line below.
+The final **Review** tab recaps the answers and submits once every question is
+answered. Agreeing with every recommendation is Enter on each question, then
+Enter on Review.
 
 | Key | Action |
 |---|---|
 | ↑/↓ | Move between options |
+| 1-9 | Pick that option (single-choice: also move on; multi-select: toggle) |
+| n | Attach a note to the answer (Enter saves, Esc abandons the edit; an empty note clears it) |
+| s | Skip the question and move on; skipped questions count as answered |
 | Enter | Select the option and move to the next question (single-choice); move on (multi-select); submit on Review |
 | Space | Select or toggle the highlighted option |
 | ←/→ | Switch question |
-| Esc | Cancel all questions (while typing in Other: cancel the edit only) |
+| Esc | Press twice to cancel all questions (the first press arms it; any other key disarms). While typing in Other or a note: cancel the edit only |
+| (typing) | On the `✎ Type your own answer…` row, any printable key starts the answer |
 
 ### Where it works
 

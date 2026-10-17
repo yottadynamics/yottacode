@@ -301,3 +301,16 @@ func TestLoop_AskUserQuestion_YoloDoesNotShortCircuit(t *testing.T) {
 		t.Errorf("expected the model's tool result to carry the real answer; got %q", toolResult)
 	}
 }
+
+func TestFormatQuestionAnswer_NoteAndSkip(t *testing.T) {
+	got := formatQuestionAnswer(&QuestionAnswer{Selections: []QuestionSelection{
+		{Header: "A", Labels: []string{"x"}, Note: "but no Airbnb"},
+		{Header: "B", Skipped: true},
+		{Header: "C", Skipped: true, Note: "n/a"},
+		{Header: "D", Labels: []string{"y"}},
+	}})
+	want := `{"answers":{"A":{"answer":"x","note":"but no Airbnb"},"B":{"skipped":true},"C":{"note":"n/a","skipped":true},"D":"y"},"order":["A","B","C","D"]}`
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

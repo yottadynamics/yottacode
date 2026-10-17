@@ -64,6 +64,11 @@ type QuestionSelection struct {
 	Header   string
 	Labels   []string
 	FreeText string
+	// Note is an optional free-text comment attached to the answer
+	// ("option 2, but no Airbnb"). Skipped means the user declined to
+	// answer this question; Labels and FreeText are then empty.
+	Note    string
+	Skipped bool
 }
 
 // QuestionAnswer is the reply payload threaded back through
@@ -106,7 +111,8 @@ func (t *AskUserQuestionTool) Description() string {
 	return "Ask the user one to four structured multiple-choice questions and get back a machine-checkable answer, instead of ending the turn with a prose question. " +
 		"Use this when you're genuinely blocked on a decision only the user can make — not for trivia you can reasonably assume. " +
 		"Each question needs a short header (<=12 chars, shown as a tab when there's more than one question), the full question text, and 2-4 options (each with a label and an optional one-line description). " +
-		"Mark at most one option per question recommended:true — it's what a non-interactive session auto-picks and what the interactive picker pre-selects. " +
+		"Give every question a recommendation: mark exactly one option recommended:true (put it first) whenever you have a view — the picker shows it as \"★ recommended\", pre-selects it, and a non-interactive session auto-picks it. Leave it off only when the options are genuinely a coin-flip. Use each option's description for its trade-off. " +
+		"The user may skip a question ({\"skipped\":true}) or attach a note to an answer ({\"answer\":...,\"note\":\"...\"}); honour both. "+
 		"An automatic free-text \"Other\" choice is always offered in addition to your listed options; you don't need to add it yourself. " +
 		"Set multi_select:true on a question where more than one option can apply. " +
 		"Unavailable in plan mode until you've investigated and written a real plan to the plan file — investigate and draft first, ask what's still ambiguous last. " +
@@ -314,21 +320,35 @@ func (q Question) RecommendedOnly() (QuestionOption, bool) {
 // string the model sees: a JSON object keyed by each unique question
 // header. Multi-select answers that include both listed options and
 // free text use {"options": [...], "other": "..."} so neither part
-// is lost.
+// is lost. An answer with a note becomes {"answer": <answer>, "note": "..."};
+// a skipped question is {"skipped": true} (plus "note" when given).
 func formatQuestionAnswer(reply *QuestionAnswer) string {
 	answers := make(map[string]any, len(reply.Selections))
 	order := make([]string, 0, len(reply.Selections))
 	for _, sel := range reply.Selections {
 		order = append(order, sel.Header)
+		var answer any
 		switch {
+		case sel.Skipped:
+			answer = nil
 		case sel.FreeText != "" && len(sel.Labels) > 0:
-			answers[sel.Header] = map[string]any{"options": sel.Labels, "other": sel.FreeText}
+			answer = map[string]any{"options": sel.Labels, "other": sel.FreeText}
 		case sel.FreeText != "":
-			answers[sel.Header] = sel.FreeText
+			answer = sel.FreeText
 		case len(sel.Labels) == 1:
-			answers[sel.Header] = sel.Labels[0]
+			answer = sel.Labels[0]
 		default:
-			answers[sel.Header] = sel.Labels
+			answer = sel.Labels
+		}
+		switch {
+		case sel.Skipped && sel.Note != "":
+			answers[sel.Header] = map[string]any{"skipped": true, "note": sel.Note}
+		case sel.Skipped:
+			answers[sel.Header] = map[string]any{"skipped": true}
+		case sel.Note != "":
+			answers[sel.Header] = map[string]any{"answer": answer, "note": sel.Note}
+		default:
+			answers[sel.Header] = answer
 		}
 	}
 	out, err := json.Marshal(map[string]any{"answers": answers, "order": order})

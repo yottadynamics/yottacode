@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
 )
@@ -178,9 +179,13 @@ func TestQuestionNeeded_EscCancelsWholeSet(t *testing.T) {
 	reply := m.questionReq.Reply
 
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !m.awaitingQuestion {
+		t.Fatalf("first Esc must only arm cancellation")
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 
 	if m.awaitingQuestion {
-		t.Errorf("Esc should clear awaitingQuestion")
+		t.Errorf("second Esc should clear awaitingQuestion")
 	}
 	select {
 	case d := <-m.decisions:
@@ -390,5 +395,223 @@ func TestQuestionPickerState_SummaryLineTruncatesLongFreeText(t *testing.T) {
 	}
 	if !strings.Contains(line, "…") {
 		t.Errorf("expected an ellipsis on the truncated answer; got %q", line)
+	}
+}
+
+func TestRenderQuestionPicker_ShowsRecommendedMarkerAndNumbers(t *testing.T) {
+	qs := twoQuestions()
+	qs[0].Options[1].Description = "Simplest to ship"
+	p := newQuestionPickerState(qs)
+	out := stripANSI(renderQuestionPicker(&p, 80))
+	for _, want := range []string{"1. ○ OAuth", "2. ◉ API key", "★ recommended", "Simplest to ship", "✎ Type your own answer…", "1-9 quick pick", "○ Notify", "✓ Auth"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("picker missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "★ recommended") != 1 {
+		t.Errorf("recommended marker should appear once:\n%s", out)
+	}
+	p.activeTab = 1
+	if out := stripANSI(renderQuestionPicker(&p, 80)); strings.Contains(out, "★") || !strings.Contains(out, "1. ☐ Slack") {
+		t.Errorf("multi-select tab without recommendation should use checkboxes and no star:\n%s", out)
+	}
+}
+
+func TestQuestionPickerState_QuickPickSelectsByNumber(t *testing.T) {
+	p := newQuestionPickerState(twoQuestions())
+	if !p.quickPick(0) || !p.answers[0].selected[0] || p.answers[0].selected[1] {
+		t.Fatalf("quickPick(0) should select only option 1: %+v", p.answers[0].selected)
+	}
+	if p.quickPick(5) {
+		t.Errorf("out-of-range digit must be ignored")
+	}
+	p.activeTab = 1
+	p.quickPick(0)
+	p.quickPick(1)
+	if len(p.answers[1].selected) != 2 {
+		t.Errorf("multi-select quick pick should toggle on: %+v", p.answers[1].selected)
+	}
+	p.quickPick(0)
+	if p.answers[1].selected[0] {
+		t.Errorf("second quick pick should toggle off")
+	}
+}
+
+func TestQuestionNeeded_DigitKeyPicksAndAdvances(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	next, _ := m.updateQuestionPicker(tea.KeyPressMsg{Code: '1', Text: "1"})
+	m = next
+	if !m.questionPicker.answers[0].selected[0] || m.questionPicker.activeTab != 1 {
+		t.Fatalf("digit should select option and advance: tab=%d sel=%+v", m.questionPicker.activeTab, m.questionPicker.answers[0].selected)
+	}
+}
+
+func TestRenderQuestionPicker_HeightStableAcrossEveryTabIncludingReview(t *testing.T) {
+	qs := twoQuestions()
+	qs[0].Options[0].Description = strings.Repeat("a long trade-off description ", 6)
+	qs[1].Options = append(qs[1].Options, agent.QuestionOption{Label: "Pager"}, agent.QuestionOption{Label: "SMS"})
+	p := newQuestionPickerState(qs)
+	p.quickPick(0)
+	p.activeTab = 1
+	p.quickPick(0)
+	for _, width := range []int{60, 80, 120} {
+		want := -1
+		for tab := 0; tab <= len(qs); tab++ {
+			p.activeTab = tab
+			got := strings.Count(stripANSI(renderQuestionPicker(&p, width)), "\n")
+			if want < 0 {
+				want = got
+			}
+			if got != want {
+				t.Fatalf("width %d tab %d: height %d, want %d", width, tab, got, want)
+			}
+		}
+	}
+}
+
+func TestQuestionNeeded_NoteKeyAttachesNote(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	for _, k := range []tea.KeyPressMsg{{Code: 'n', Text: "n"}, {Code: 'n', Text: "n"}, {Code: 'o', Text: "o"}, {Code: tea.KeyEnter}} {
+		m, _ = m.updateQuestionPicker(k)
+	}
+	if got := m.questionPicker.answers[0].note; got != "no" {
+		t.Fatalf("note = %q; the first n opens the editor, later keys are text", got)
+	}
+	if got := m.questionPicker.buildAnswer().Selections[0].Note; got != "no" {
+		t.Errorf("answer note = %q", got)
+	}
+	m, _ = m.updateQuestionPicker(tea.KeyPressMsg{Code: 'n', Text: "n"})
+	m, _ = m.updateQuestionPicker(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.questionPicker.answers[0].note != "no" || m.questionPicker.isEditing() {
+		t.Errorf("Esc should abandon the edit and keep the stored note")
+	}
+}
+
+func TestQuestionNeeded_SkipKeyAnswersWithoutSelection(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = m.updateQuestionPicker(tea.KeyPressMsg{Code: 's', Text: "s"})
+	p := &m.questionPicker
+	if !p.answered(0) || p.activeTab != 1 || len(p.answers[0].selected) != 0 {
+		t.Fatalf("skip should clear the preselection, count as answered, and advance: %+v tab=%d", p.answers[0], p.activeTab)
+	}
+	if sel := p.buildAnswer().Selections[0]; !sel.Skipped || len(sel.Labels) != 0 {
+		t.Errorf("selection = %+v", sel)
+	}
+	p.activeTab = 0
+	p.quickPick(1)
+	if p.answers[0].skipped {
+		t.Errorf("choosing an option should clear skipped")
+	}
+}
+
+func TestQuestionPopup_HasNoMouseCloseGlyph(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	body, ok := m.activePopupBody()
+	if !ok {
+		t.Fatalf("question popup should be active")
+	}
+	if strings.Contains(stripANSI(body), "×") {
+		t.Errorf("keyboard-only question popup must not draw the mouse close glyph")
+	}
+}
+
+func TestQuestionNeeded_EscArmingResetsOnOtherKey(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !strings.Contains(stripANSI(renderQuestionPicker(&m.questionPicker, 80)), "esc again to cancel") {
+		t.Errorf("armed footer should explain the second Esc")
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+	if !m.awaitingQuestion {
+		t.Fatalf("an intervening key must disarm Esc")
+	}
+}
+
+func TestRenderQuestionPicker_UnvisitedDefaultShowsPendingMark(t *testing.T) {
+	qs := twoQuestions()
+	qs[1].Options[0].Recommended = true
+	p := newQuestionPickerState(qs)
+	out := stripANSI(renderQuestionPicker(&p, 80))
+	if !strings.Contains(out, "✓ Auth") || !strings.Contains(out, "○ Notify") {
+		t.Errorf("defaulted but unvisited question must show ○:\n%s", out)
+	}
+	if !p.allAnswered() {
+		t.Errorf("defaults still count as answered for submission")
+	}
+	p.nextTab()
+	if out := stripANSI(renderQuestionPicker(&p, 80)); !strings.Contains(out, "✓ Notify") {
+		t.Errorf("visiting the tab confirms it:\n%s", out)
+	}
+}
+
+func TestQuestionNeeded_TypingOnOtherRowStartsEditing(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	for _, r := range "no s" {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	if got := m.questionPicker.answers[0].freeTextBuf; got != "no s" {
+		t.Fatalf("typed text should land in Other (n/s included), got %q", got)
+	}
+	if m.questionPicker.answers[0].skipped || m.questionPicker.answers[0].editingNote {
+		t.Errorf("n/s must not trigger note/skip while typing on the Other row")
+	}
+}
+
+func TestRenderQuestionPicker_NarrowWidthStaysStableAndBounded(t *testing.T) {
+	qs := twoQuestions()
+	qs[0].Options[1].Description = strings.Repeat("trade-off ", 20)
+	p := newQuestionPickerState(qs)
+	want := -1
+	for tab := 0; tab <= len(qs); tab++ {
+		p.activeTab = tab
+		out := stripANSI(renderQuestionPicker(&p, 50))
+		if want < 0 {
+			want = strings.Count(out, "\n")
+		}
+		if got := strings.Count(out, "\n"); got != want {
+			t.Fatalf("tab %d height %d want %d", tab, got, want)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if w := ansi.StringWidth(line); w > 50 {
+				t.Fatalf("tab %d line exceeds width 50 (%d): %q", tab, w, line)
+			}
+		}
+	}
+}
+
+func TestRenderQuestionPicker_NeverExceedsContentWidth(t *testing.T) {
+	long := strings.Repeat("L", 60)
+	var qs []agent.Question
+	for i, h := range []string{"HeaderNumber1", "HeaderNumber2", "HeaderNumber3", "HeaderNumber4"} {
+		qs = append(qs, agent.Question{
+			Header: h[:12], Question: "Pick one of these please? " + strings.Repeat("q ", 30),
+			Options: []agent.QuestionOption{
+				{Label: long, Description: strings.Repeat("trade-off ", 20), Recommended: i%2 == 0},
+				{Label: "short"},
+			},
+		})
+	}
+	for _, width := range []int{48, 60, 80, 100} {
+		limit := width - 8
+		p := newQuestionPickerState(qs)
+		p.answers[0].note = strings.Repeat("n", 200)
+		p.answers[1].freeText, p.answers[1].usingFreeText = strings.Repeat("f", 200), true
+		for tab := 0; tab <= len(qs); tab++ {
+			p.activeTab = tab
+			for _, editing := range []bool{false, true} {
+				if tab < len(qs) {
+					p.answers[tab].editingNote = editing
+					p.answers[tab].noteBuf = strings.Repeat("e", 200)
+				}
+				for _, line := range strings.Split(stripANSI(renderQuestionPicker(&p, width)), "\n") {
+					if w := ansi.StringWidth(line); w > limit {
+						t.Fatalf("width %d tab %d editing=%v: line is %d > %d: %q", width, tab, editing, w, limit, line)
+					}
+				}
+			}
+		}
 	}
 }

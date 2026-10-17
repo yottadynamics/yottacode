@@ -17,7 +17,10 @@ worktree-inherited-dancing-boole
   `/plan` mode it unlocks once the plan file has content. Subagents and
   dispatch workers can't use it; `yottacode run` auto-answers from the
   recommended defaults (or fails with a clear message if there are none);
-  ACP fails closed. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
+  ACP fails closed. The picker marks the recommended option `★ recommended`,
+  numbers options for `1`-`9` quick pick, lets you attach a note (`n`) or skip
+  a question (`s`), keeps a fixed size across tabs, and asks for a second Esc
+  before discarding all answers. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
 - **Approval prompts can save a rule for more tools and for chained
   commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
   now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb

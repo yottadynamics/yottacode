@@ -3344,7 +3344,7 @@ func (m Model) activePopupBody() (box string, ok bool) {
 			return renderApprovalModal(m), true
 		}
 	case m.awaitingQuestion:
-		return popupBox(renderQuestionPicker(&m.questionPicker, m.popupWidth())), true
+		return keyboardOnlyPopupBox(renderQuestionPicker(&m.questionPicker, m.popupWidth())), true
 	case m.loopExitConfirmOpen:
 		return keyboardOnlyPopupBox(renderLoopExitConfirm(m)), true
 	case m.worktreeExitConfirmOpen:
@@ -3488,16 +3488,19 @@ func (m Model) contextualKeyHints() []string {
 	case m.awaitingPathTrust:
 		return []string{"1: once", "2: trust", "3: reject", "Enter: queue text"}
 	case m.awaitingQuestion:
+		if m.questionPicker.escArmed {
+			return []string{"Esc: cancel all", "Other key: keep answering"}
+		}
 		if m.questionPicker.onSubmitTab() {
 			return []string{"←/→: review", "Enter: submit", "Esc: cancel"}
 		}
-		if m.questionPicker.isEditingOther() {
+		if m.questionPicker.isEditing() {
 			return []string{"Enter: confirm", "Esc: cancel edit"}
 		}
 		if m.questionPicker.questions[m.questionPicker.activeTab].MultiSelect {
-			return []string{"←/→: question", "↑/↓: move", "Space: toggle", "Enter: next", "Esc: cancel"}
+			return []string{"←/→: question", "↑/↓: move", "Space: toggle", "1-9: toggle", "N: note", "S: skip", "Enter: next", "Esc: cancel"}
 		}
-		return []string{"←/→: question", "↑/↓: move", "Enter: select", "Esc: cancel"}
+		return []string{"←/→: question", "↑/↓: move", "Enter: select", "1-9: pick", "N: note", "S: skip", "Esc: cancel"}
 	case m.awaitingApproval && m.approvalTool == "exit_plan_mode":
 		return []string{"A: auto", "M: manual", "L: later", "K: keep planning"}
 	case m.awaitingApproval:
