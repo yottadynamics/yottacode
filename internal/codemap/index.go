@@ -134,8 +134,12 @@ type IndexInfo struct {
 	// TimedOut reports that the build ran past MaxDuration and stopped early.
 	TimedOut    bool
 	MaxDuration time.Duration
-	// Generated counts generated source files deliberately left out.
-	Generated int
+	// Generated counts generated source files deliberately left out, and Oversized
+	// counts files over the parse size limit. ParseFailures counts files whose
+	// parse panicked; they are indexed without symbols or imports.
+	Generated     int
+	Oversized     int
+	ParseFailures int
 	// Version is a short content-derived digest of the indexed files and edges.
 	Version string
 }
@@ -151,6 +155,12 @@ func (in IndexInfo) String() string {
 	}
 	if in.Generated > 0 {
 		s += fmt.Sprintf(", %d generated files excluded", in.Generated)
+	}
+	if in.Oversized > 0 {
+		s += fmt.Sprintf(", %d files over %d MiB skipped", in.Oversized, maxFileBytes>>20)
+	}
+	if in.ParseFailures > 0 {
+		s += fmt.Sprintf(", %d files failed to parse and have no symbols or imports", in.ParseFailures)
 	}
 	return s
 }
@@ -170,6 +180,8 @@ func (i *CodeIndex) withBuildResult(st *buildState) *CodeIndex {
 	i.info.TimedOut = st.timedOut
 	i.info.MaxDuration = st.maxTime
 	i.info.Generated = st.generated
+	i.info.Oversized = st.oversized
+	i.info.ParseFailures = int(st.failures.Load())
 	return i
 }
 

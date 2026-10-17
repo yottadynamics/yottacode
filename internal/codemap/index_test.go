@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/lsp"
@@ -26,8 +27,8 @@ func TestCachedProviderReusesSnapshotUntilFilesChange(t *testing.T) {
 	if first != second {
 		t.Fatal("unchanged workspace should reuse the cached snapshot")
 	}
-	if source.calls != 1 {
-		t.Fatalf("source calls after cached read = %d, want 1", source.calls)
+	if source.calls() != 1 {
+		t.Fatalf("source calls after cached read = %d, want 1", source.calls())
 	}
 	write(t, root, "a.go", "package main\nfunc A() {}\nfunc B() {}\n")
 	third, err := provider.Index(context.Background())
@@ -37,15 +38,18 @@ func TestCachedProviderReusesSnapshotUntilFilesChange(t *testing.T) {
 	if third == second {
 		t.Fatal("changed workspace should rebuild the snapshot")
 	}
-	if source.calls != 2 {
-		t.Fatalf("source calls after rebuild = %d, want 2", source.calls)
+	if source.calls() != 2 {
+		t.Fatalf("source calls after rebuild = %d, want 2", source.calls())
 	}
 }
 
-type countingSource struct{ calls int }
+// countingSource counts Symbols calls; builds may call it from several goroutines.
+type countingSource struct{ n atomic.Int64 }
+
+func (s *countingSource) calls() int { return int(s.n.Load()) }
 
 func (s *countingSource) Symbols(context.Context, string) ([]lsp.Symbol, string, error) {
-	s.calls++
+	s.n.Add(1)
 	return nil, "counting", nil
 }
 

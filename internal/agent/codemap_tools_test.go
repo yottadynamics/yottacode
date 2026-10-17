@@ -551,3 +551,16 @@ func TestCodeImpactCallsOmitDeniedFiles(t *testing.T) {
 		t.Fatalf("LSP call results must skip denied files:\n%s", out)
 	}
 }
+
+type panickingProvider struct{}
+
+func (panickingProvider) Index(context.Context) (*codemap.CodeIndex, error) { panic("index bug") }
+
+// TestCodeImpactTurnsAPanicIntoAToolError: the tool is read-only analysis, so a bug
+// in it must cost one failed call, never the session.
+func TestCodeImpactTurnsAPanicIntoAToolError(t *testing.T) {
+	out, err := (&CodeImpactTool{Provider: panickingProvider{}}).Execute(context.Background(), `{"path":"main.go"}`)
+	if err == nil || !strings.Contains(err.Error(), "internal error") {
+		t.Fatalf("err = %v (out %q), want an internal-error tool error", err, out)
+	}
+}

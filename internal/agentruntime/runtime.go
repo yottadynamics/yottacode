@@ -415,13 +415,26 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		// graph needs no live server, and asking gopls for every file's symbols
 		// made a full rebuild take 18.6s instead of 1.4s on 1,100 Go files for the
 		// same symbols. LSP is used live, and only by include_calls.
-		cached := &codemap.CachedProvider{Options: codemap.BuildOptions{Root: cwd}}
+		cached := &codemap.CachedProvider{Options: codemap.BuildOptions{
+			Root:        cwd,
+			MaxFiles:    fileCfg.CodeMap.MaxFiles,
+			MaxDuration: time.Duration(fileCfg.CodeMap.MaxBuildSeconds) * time.Second,
+			Workers:     fileCfg.CodeMap.Workers,
+		}}
 		// StartWatch is a soft-failure best-effort call: on any setup problem
 		// it silently leaves the provider on its per-call fingerprint-walk
 		// fallback, so its error is not worth surfacing as a runtime warning.
 		// The watch's own lifetime is independent of this build call's ctx —
 		// it runs until rt.Close cancels it via cached.Close below.
 		_ = cached.StartWatch(context.Background())
+		// Build the first snapshot in the background so the model's first
+		// code_impact call usually finds it ready. A call that arrives mid-build
+		// waits for it rather than starting another; rt.Close cancels it. Only for
+		// something that looks like a project: launched from $HOME or a scratch
+		// directory, the lazy first-query build is the better trade.
+		if codemap.LooksLikeProject(cwd) {
+			cached.StartWarm(context.Background())
+		}
 		codeMapProvider = cached
 	}
 	rt.CodeMapProvider = codeMapProvider

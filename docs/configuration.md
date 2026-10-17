@@ -758,6 +758,20 @@ python = ["pyright-langserver", "--stdio"]
 rust = ["rust-analyzer"]
 ```
 
+### Code Map limits
+
+The experimental `code_map` feature (see [code-map.md](code-map.md)) indexes up to
+5000 files and spends up to 20 seconds per build by default. Raise the limits for
+a larger repository; an index that reaches either one says `PARTIAL` in its
+output. The section has no effect unless the `code_map` flag is on.
+
+```toml
+[code_map]
+max_files = 12000          # default 5000, maximum 200000
+max_build_seconds = 45     # default 20, maximum 600
+workers = 0                # parse concurrency; 0 = one per CPU, at most 8; maximum 64
+```
+
 ## Runtime Reconfiguration
 
 The TUI supports changing the active session configuration without restarting:

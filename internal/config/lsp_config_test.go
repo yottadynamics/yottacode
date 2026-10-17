@@ -51,3 +51,50 @@ func TestLoad_RejectsInvalidLSPServerOverride(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_CodeMapLimitsValidateAndRoundTrip(t *testing.T) {
+	cfg, err := Load(writeFile(t, "[code_map]\nmax_files = 12000\nmax_build_seconds = 45\nworkers = 4\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CodeMap.MaxFiles != 12000 || cfg.CodeMap.MaxBuildSeconds != 45 || cfg.CodeMap.Workers != 4 {
+		t.Fatalf("code_map = %+v", cfg.CodeMap)
+	}
+	again, err := Load(writeFile(t, Render(cfg)))
+	if err != nil {
+		t.Fatalf("Load(Render): %v", err)
+	}
+	if again.CodeMap != cfg.CodeMap {
+		t.Fatalf("code_map lost after Render (a saved config would silently drop it): %+v\n%s", again.CodeMap, Render(cfg))
+	}
+	blank, err := Load(writeFile(t, ""))
+	if err != nil {
+		t.Fatalf("Load blank: %v", err)
+	}
+	rendered := Render(blank)
+	if i := strings.Index(rendered, "[code_map]"); i >= 0 {
+		block := rendered[i+len("[code_map]"):]
+		if j := strings.Index(block, "\n["); j >= 0 {
+			block = block[:j]
+		}
+		if strings.Contains(block, "=") {
+			t.Fatalf("unset code_map limits must not render as zero-valued keys, got block:\n%s", block)
+		}
+	}
+}
+
+func TestLoad_RejectsOutOfRangeCodeMapLimits(t *testing.T) {
+	for name, src := range map[string]string{
+		"negative files":   "[code_map]\nmax_files = -1",
+		"too many files":   "[code_map]\nmax_files = 200001",
+		"negative seconds": "[code_map]\nmax_build_seconds = -5",
+		"too many seconds": "[code_map]\nmax_build_seconds = 601",
+		"too many workers": "[code_map]\nworkers = 65",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeFile(t, src)); err == nil || !strings.Contains(err.Error(), "code_map.") {
+				t.Fatalf("Load error = %v, want a code_map range error", err)
+			}
+		})
+	}
+}

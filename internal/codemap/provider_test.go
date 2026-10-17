@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +161,7 @@ func TestCachedProviderCloseWithoutStartWatchIsNoop(t *testing.T) {
 func newWatchedTestProvider(t *testing.T, opts BuildOptions) *CachedProvider {
 	t.Helper()
 	p := &CachedProvider{Options: opts}
+	p.parseCache.racy = testRacyWindow // see newTestCache
 	p.watchStarted.Store(true)
 	if _, err := p.Index(context.Background()); err != nil {
 		t.Fatalf("initial Index: %v", err)
@@ -176,23 +179,29 @@ func TestCachedProviderServesCachedSnapshotUntilDirty(t *testing.T) {
 	write(t, root, "a.go", "package main\nfunc A() {}\n")
 	source := &countingSource{}
 	p := newWatchedTestProvider(t, BuildOptions{Root: root, Source: source})
-	callsAfterBuild := source.calls
+	first, _ := p.Index(context.Background())
+	callsAfterBuild := source.calls()
 
 	for range 3 {
-		if _, err := p.Index(context.Background()); err != nil {
+		again, err := p.Index(context.Background())
+		if err != nil {
 			t.Fatalf("Index: %v", err)
 		}
+		if again != first {
+			t.Fatal("a clean provider must keep serving the same snapshot")
+		}
 	}
-	if source.calls != callsAfterBuild {
-		t.Fatalf("clean Index re-parsed files: %d calls, want %d", source.calls, callsAfterBuild)
+	if source.calls() != callsAfterBuild {
+		t.Fatalf("clean Index re-parsed files: %d calls, want %d", source.calls(), callsAfterBuild)
 	}
 
 	p.dirty.Store(true)
-	if _, err := p.Index(context.Background()); err != nil {
+	rebuilt, err := p.Index(context.Background())
+	if err != nil {
 		t.Fatalf("Index after dirty: %v", err)
 	}
-	if source.calls == callsAfterBuild {
-		t.Fatal("dirty Index did not rebuild")
+	if rebuilt == first {
+		t.Fatal("a dirty provider must publish a new snapshot")
 	}
 	if p.dirty.Load() {
 		t.Fatal("a successful rebuild must clear the dirty flag")
@@ -234,14 +243,13 @@ func TestCachedProviderDirtyRebuildReflectsAddsEditsAndDeletes(t *testing.T) {
 // markDirtySource marks the provider dirty from inside a build, as a file
 // change landing mid-build would.
 type markDirtySource struct {
-	p     *CachedProvider
-	fired bool
+	p    *CachedProvider
+	once sync.Once
 }
 
 func (s *markDirtySource) Symbols(context.Context, string) ([]lsp.Symbol, string, error) {
-	if !s.fired && s.p != nil {
-		s.fired = true
-		s.p.dirty.Store(true)
+	if s.p != nil {
+		s.once.Do(func() { s.p.dirty.Store(true) })
 	}
 	return nil, "test", nil
 }
@@ -286,12 +294,11 @@ func TestCachedProviderFailedRebuildStaysDirty(t *testing.T) {
 // then runs at full speed, like a machine that was briefly overloaded.
 type timeoutOnceSource struct {
 	slowFirst time.Duration
-	calls     int
+	calls     atomic.Int64
 }
 
 func (s *timeoutOnceSource) Symbols(context.Context, string) ([]lsp.Symbol, string, error) {
-	s.calls++
-	if s.calls == 1 {
+	if s.calls.Add(1) == 1 {
 		time.Sleep(s.slowFirst)
 	}
 	return nil, "test", nil
@@ -303,7 +310,8 @@ func TestCachedProviderRetriesTimedOutSnapshotAfterExpiry(t *testing.T) {
 		write(t, root, fmt.Sprintf("f%d.go", i), "package main\n")
 	}
 	src := &timeoutOnceSource{slowFirst: 120 * time.Millisecond}
-	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src, MaxDuration: 50 * time.Millisecond}, RetryTimedOutAfter: 150 * time.Millisecond}
+	// One worker, so the stalled first file really does eat the whole budget.
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src, MaxDuration: 50 * time.Millisecond, Workers: 1}, RetryTimedOutAfter: 150 * time.Millisecond}
 	ctx := context.Background()
 
 	first, err := p.Index(ctx)
@@ -344,5 +352,159 @@ func TestCachedProviderDoesNotRetryFileCapSnapshot(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	if again, _ := p.Index(context.Background()); again != first {
 		t.Fatal("a file-cap snapshot would hit the same cap again, so it must not be retried")
+	}
+}
+
+func TestProviderConcurrentQueriesShareOneBuild(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 4; i++ {
+		write(t, root, fmt.Sprintf("f%d.go", i), "package main\n")
+	}
+	src := &concurrentCounter{delay: 60 * time.Millisecond}
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src, Workers: 1}}
+	var wg sync.WaitGroup
+	results := make([]*CodeIndex, 12)
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			idx, err := p.Index(context.Background())
+			if err != nil {
+				t.Error(err)
+			}
+			results[i] = idx
+		}()
+	}
+	wg.Wait()
+	if got := src.n.Load(); got != 4 {
+		t.Fatalf("source called %d times, want 4: concurrent queries must share one build", got)
+	}
+	for _, idx := range results {
+		if idx != results[0] {
+			t.Fatal("concurrent callers received different snapshots")
+		}
+	}
+}
+
+func TestProviderWaiterHonorsItsOwnContext(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", "package main\n")
+	src := &concurrentCounter{delay: 300 * time.Millisecond}
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src}}
+	go func() { _, _ = p.Index(context.Background()) }()
+	time.Sleep(30 * time.Millisecond) // let the build start
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := p.Index(ctx); err == nil {
+		t.Fatal("a waiter whose context ends must get its error, not block on the build")
+	}
+	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
+		t.Fatalf("waiter blocked %s past its own deadline", elapsed)
+	}
+}
+
+func TestProviderWaiterRebuildsWhenTheBuilderIsCanceled(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", "package main\n")
+	src := &concurrentCounter{delay: 200 * time.Millisecond}
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src}}
+
+	buildCtx, cancelBuild := context.WithCancel(context.Background())
+	builderDone := make(chan error, 1)
+	go func() { _, err := p.Index(buildCtx); builderDone <- err }()
+	time.Sleep(30 * time.Millisecond)
+
+	waiterDone := make(chan error, 1)
+	go func() { _, err := p.Index(context.Background()); waiterDone <- err }()
+	time.Sleep(30 * time.Millisecond)
+	cancelBuild()
+
+	if err := <-builderDone; err == nil {
+		t.Fatal("the canceled builder should fail")
+	}
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatalf("the waiter should take over and succeed, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the waiter never completed after the builder was canceled")
+	}
+}
+
+func TestProviderStartWarmBuildsInBackground(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", "package main\n")
+	src := &concurrentCounter{delay: 30 * time.Millisecond}
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src}}
+	t.Cleanup(p.Close)
+	p.StartWarm(context.Background())
+	p.StartWarm(context.Background()) // idempotent
+
+	idx, err := p.Index(context.Background()) // joins the warm build
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := src.n.Load(); got != 1 {
+		t.Fatalf("source called %d times, want 1: a query during warm-up must join it", got)
+	}
+	if again, _ := p.Index(context.Background()); again != idx {
+		t.Fatal("the warmed snapshot should be reused")
+	}
+}
+
+func TestProviderCloseCancelsWarmBuild(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		write(t, root, fmt.Sprintf("f%02d.go", i), "package main\n")
+	}
+	src := &concurrentCounter{delay: 5 * time.Second}
+	p := &CachedProvider{Options: BuildOptions{Root: root, Source: src, Workers: 2}}
+	p.StartWarm(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	p.Close()
+	p.Close() // idempotent
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		p.mu.Lock()
+		idle := p.inflight == nil
+		p.mu.Unlock()
+		if idle {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close did not stop the warm-up build")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestLooksLikeProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	write(t, home, ".git/HEAD", "ref: refs/heads/main\n") // even a repo in $HOME is not a project to warm
+	if LooksLikeProject(home) {
+		t.Error("$HOME must never be warmed, even with a .git inside it")
+	}
+	scratch := t.TempDir()
+	if LooksLikeProject(scratch) {
+		t.Error("an empty scratch directory is not a project")
+	}
+	for _, marker := range []string{"go.mod", "package.json", "pyproject.toml", "Cargo.toml"} {
+		dir := t.TempDir()
+		write(t, dir, marker, "x\n")
+		if !LooksLikeProject(dir) {
+			t.Errorf("a directory with %s should look like a project", marker)
+		}
+	}
+	gitDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(gitDir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !LooksLikeProject(gitDir) {
+		t.Error("a directory with .git should look like a project")
 	}
 }

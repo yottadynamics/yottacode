@@ -94,7 +94,14 @@ type codeImpactArgs struct {
 	IncludeCalls bool   `json:"include_calls"`
 }
 
-func (t *CodeImpactTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+func (t *CodeImpactTool) Execute(ctx context.Context, argsJSON string) (out string, err error) {
+	// An experimental, read-only analysis tool must never be able to crash the
+	// session over a bug of its own; report it as a tool error instead.
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = "", fmt.Errorf("code_impact: internal error: %v", r)
+		}
+	}()
 	var a codeImpactArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("code_impact: invalid args: %w", err)

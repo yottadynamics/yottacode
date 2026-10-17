@@ -15,7 +15,7 @@ language server. There is no TUI surface: no slash command, no overlay.
 Contents: [When to use it](#when-to-use-it) · [Enabling it](#enabling-it) ·
 [How the agent uses it](#how-the-agent-uses-it) · [The tool](#the-tool) ·
 [Reading the output](#reading-the-output) · [Architecture](#architecture) ·
-[Language support](#language-support) · [Trust model](#trust-model) ·
+[Configuration](#configuration) · [Language support](#language-support) · [Trust model](#trust-model) ·
 [Troubleshooting](#troubleshooting) · [Evaluation](#evaluation) ·
 [Non-goals](#non-goals)
 
@@ -66,7 +66,8 @@ TUI, oneshot, and ACP sessions are all built by the same
 does three things (`internal/agentruntime/runtime.go`):
 
 1. **Creates a `CachedProvider`** over the working directory and starts a
-   filesystem watch. Nothing is indexed yet; the first query triggers the build.
+   filesystem watch. In a directory that looks like a project it also starts the
+   first build in the background; elsewhere the first query triggers it.
 2. **Registers the `code_impact` tool** in the core tool set
    (`internal/agent/toolset.go`), holding the provider, the session's read deny
    list, and the LSP client factory used by the optional call-hierarchy
@@ -260,13 +261,29 @@ cycles [import] (0)
 
 ### Index lifecycle
 
-- **Lazy build.** The index is built on the first `code_impact` call, not at
-  session start, and lives in memory only. Nothing is written to disk.
+- **Warm start, otherwise lazy.** When the working directory looks like a project
+  (it contains `.git`, `go.mod`, `package.json`, `pyproject.toml`, `Cargo.toml` or
+  a similar marker, and is not your home directory), the first snapshot is built
+  in the background as the session starts, so the model's first `code_impact` call
+  usually finds it ready. Elsewhere it is built on the first call. Either way the
+  index lives in memory only and nothing is written to disk.
+- **One build at a time.** A query that arrives while a build is running waits for
+  it and shares the result instead of starting a second. Each waiter honors its
+  own cancellation, and if the builder is canceled a waiter takes over.
 - **Invalidation.** An `fsnotify` watch registers every directory and, on a
   relevant change (create, remove, rename, or a write to a source or markdown
   file), sets a debounced dirty flag (default 300 ms). The next call after a
-  change rebuilds the whole index. There is no incremental patching, so there is
-  no patch state that can drift out of sync with the files.
+  change rebuilds the index: the tree is walked again and the graph recomputed
+  from scratch, so there is no patched state that can drift out of sync.
+- **Parse cache.** What makes a rebuild cheap is memoization of the one expensive
+  step, parsing a file. Each file's result is kept in memory under its size,
+  modification time and inode change time, so a rebuild re-parses only files that
+  changed. A file modified within the last two seconds is never cached (file
+  timestamps are coarse, so a same-size rewrite could otherwise look unchanged),
+  entries for deleted files are dropped after a complete build, and a partial
+  build never evicts anything.
+- **Parallel parsing.** Files are parsed by up to 8 workers and merged in walk
+  order, so the index (and its version) is identical for any worker count.
 - **Ordering.** The dirty flag is cleared *before* a rebuild starts, so a change
   that lands mid-build marks the next snapshot stale instead of being lost. A
   failed or canceled rebuild leaves the flag set so the next call retries.
@@ -274,14 +291,27 @@ cycles [import] (0)
   inotify, setup failure), each call compares a cheap workspace fingerprint
   (file count, newest modification time, total size) and rebuilds only when it
   changed.
-- **Cost.** A rebuild re-parses everything up to the bounds below. Measured on
-  real trees: 0.3 s for 477 Go files (`k8s.io/apimachinery`), 0.5 s for 2,070
-  (`docker`), 1.4 s for 1,100 (this repository), 0.9 s for the 2,185 hand-written
-  files of the Azure SDK for Go (another 14,969 generated files are excluded), and
-  7.5 s for 2,168 Python files (`langflow`; the Python scanner is the slow one).
-  Queries then take 3 to 100 ms. The first query in a session pays the build
-  once, and so does the first query after any edit. Nothing larger than about
-  2,200 indexed files has been measured.
+- **Cost.** Measured on real trees on a 16-core machine (cold build, then a rebuild
+  with everything cached):
+
+  | tree | indexed files | cold | rebuild |
+  |---|---|---|---|
+  | this repository (Go) | 1,105 | 0.13 s | 0.04 s |
+  | `docker` v27 (Go, no `go.mod`) | 2,070 | 0.16 s | 0.07 s |
+  | Azure SDK for Go (14,969 generated files excluded) | 2,185 | 0.6 s | 0.5 s |
+  | `langflow` (Python + TypeScript) | 2,168 | 1.6 s | 0.07 s |
+
+  Parsing in one thread took 7.4 s on `langflow`, so the parallel build is about
+  4.7 times faster there. Queries take 3 to 100 ms. The Azure rebuild stays near
+  its cold time because its cost is walking and header-checking 17,000 files, not
+  parsing.
+
+  At larger scale, a synthetic 13,000-file corpus (six unrelated Go, Python and
+  TypeScript projects copied side by side): with the default 5000-file cap the build
+  stops in 0.5 s and says `PARTIAL`; with `max_files = 30000` it indexed 9,487 files
+  (the rest generated or oversized) in 2.3 s cold, 0.47 s on rebuild, using about 79
+  MB, and a query took 64 ms. That corpus is a stress test, not one repository, and
+  nothing has been measured above it.
 
 ### Bounds
 
@@ -289,10 +319,14 @@ cycles [import] (0)
 |---|---|---|
 | File cap | 5000 files | Build stops; index flagged `PARTIAL`. |
 | Build time | 20 seconds | Build stops; index flagged `PARTIAL`. |
+| Parse size | 2 MiB per file | The file is skipped and counted in the `index:` line. |
+| Parse workers | one per CPU, at most 8 | n/a |
 | Per-query cap | 500 files per section | Count shown with a trailing `+`. |
 | Output budget | 1500 tokens (max 4000) | Items omitted with a true count. |
 | Doc corpus | 256 KB per file, 16 MB total | Remaining documents are not searched. |
 | LSP supplement | 3 seconds | Static answer returned with a note. |
+
+The first three limits are configurable; see [Configuration](#configuration).
 
 A snapshot that stopped at the **time budget** is served for one minute and then
 rebuilt on the next query, since the stop usually reflects a loaded machine, not
@@ -306,16 +340,45 @@ The walk skips hidden directories plus `node_modules`, `vendor`, `target`,
 `build`, `dist`, `__pycache__`, and `coverage`. Generated source is left out
 because nobody edits it by hand: `*.pb.go`, `*.min.js`, and any file whose first
 kilobyte has an `@generated` line, a `Code generated ...` line, or a `Generated
-by ... DO NOT EDIT` banner. The count appears in the `index:` line. A generated
-file that imports your code therefore does not show up as a dependent of it.
+by ... DO NOT EDIT` banner. Files over 2 MiB are skipped as almost certainly
+generated or vendored, and symbolic links are never followed, since a link can
+point outside the repository. Generated and oversized counts appear in the
+`index:` line. A generated file that imports your code therefore does not show up
+as a dependent of it.
 
 ### Concurrency
 
-The provider serializes builds behind a mutex. Queries run against an immutable
-snapshot, so after the snapshot is returned there is no locking. The markdown
-corpus and the per-directory test graph are each computed once per snapshot
-(`sync.Once`). The LSP supplement runs under its own timeout and never holds the
-provider lock. The watch goroutine is tied to the runtime's lifetime.
+Builds are serialized: one runs at a time, and callers that arrive meanwhile wait
+for it and share its result (each can still be canceled independently). Within a
+build, files are parsed by a worker pool, each worker writing only its own result
+slot, and the results are merged on one goroutine in walk order. Queries run
+against an immutable snapshot, so after it is returned there is no locking. The
+markdown corpus and the per-directory test graph are each computed once per
+snapshot. The provider lock is held only to read or publish state, never during a
+build. The LSP supplement runs under its own timeout. The watch goroutine and the
+warm-up build are tied to the session and stopped when it closes.
+
+A bug in a parser cannot take the session down: a panic while parsing one file is
+recovered, that file is indexed without symbols or imports, and the `index:` line
+says how many files failed. A panic inside the tool itself is reported as a tool
+error.
+
+### Configuration
+
+The defaults need no configuration. For a repository larger than they handle,
+raise the limits in `~/.yottacode/config.toml`:
+
+```toml
+[code_map]
+max_files = 12000          # files per build; default 5000, maximum 200000
+max_build_seconds = 45     # wall-clock per build; default 20, maximum 600
+workers = 0                # parse concurrency; 0 = one per CPU, at most 8; maximum 64
+```
+
+An index that reaches either limit says so in its `index:` line. Raising them
+trades latency for coverage: a build is paid on the first query and again after
+each change, though the parse cache keeps the repeat cost to the files that
+changed. These keys take effect only while the `code_map` experimental flag is on.
 
 ## Language support
 
@@ -357,8 +420,10 @@ than invented.
 | Symptom | Cause and fix |
 |---|---|
 | Tool not available | Flag is off. Start with `--experimental code_map`. |
-| `PARTIAL: stopped at the N-file cap` | Repository exceeds the cap. Results cover only the files indexed. Query a narrower tree or treat absence as unknown. |
-| `PARTIAL: stopped after the 20s build budget` | Build ran out of time, typically a very large tree or a heavily loaded machine. The next query after one minute retries the build. |
+| `PARTIAL: stopped at the N-file cap` | Repository exceeds the cap. Results cover only the files indexed. Raise `[code_map] max_files`, or treat absence as unknown. |
+| `PARTIAL: stopped after the 20s build budget` | Build ran out of time, typically a very large tree or a heavily loaded machine. The next query after one minute retries the build, and the parse cache means the retry only parses what the first attempt did not get to. Raise `[code_map] max_build_seconds` for a tree that is simply big. |
+| `N files failed to parse` | A parser panicked on malformed input. Those files are in the index without symbols or imports; the rest is unaffected. |
+| `N files over 2 MiB skipped` | Large files are skipped as generated or vendored. |
 | `no indexed file matches` | Only supported source and markdown files are indexed, and generated files and excluded directories are skipped. |
 | `"x.go" matches N files` | The fragment is ambiguous. Pass a longer path. |
 | Python or TypeScript file shows no dependents | Check the resolution rules in [Language support](#language-support); a tie between same-named modules, a one-segment import, or an unclaimed alias is left unresolved. |
@@ -416,7 +481,8 @@ keep it should be deleted rather than promoted.
 - A TUI surface or additional slash commands.
 - An MCP server exposing these tools. yottacode is MCP-client-only by design;
   this is permanent, not deferred.
-- Persisting the index to disk, or incremental patching, until measurement shows
-  rebuild latency is a real problem.
+- Persisting the index to disk, or patching a live index incrementally, until
+  measurement shows rebuild latency is a real problem. The in-memory parse cache
+  already makes a rebuild after an edit cost milliseconds at 2,000 files.
 - Treating heuristic or LSP call data as authoritative.
 - Rendering whole-repository graphs.

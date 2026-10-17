@@ -451,7 +451,7 @@ func TestBuildStopsAtTimeBudgetAndFlagsPartial(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		write(t, root, fmt.Sprintf("f%02d.go", i), "package main\n")
 	}
-	idx, err := Build(context.Background(), BuildOptions{Root: root, MaxDuration: 40 * time.Millisecond, Source: slowSource{per: 15 * time.Millisecond}})
+	idx, err := Build(context.Background(), BuildOptions{Root: root, MaxDuration: 40 * time.Millisecond, Workers: 1, Source: slowSource{per: 15 * time.Millisecond}})
 	if err != nil {
 		t.Fatalf("Build must return the partial index, not an error: %v", err)
 	}

@@ -55,6 +55,9 @@ type Config struct {
 	// language-server code-intelligence tools. Defaults remain built in;
 	// this only exists for Nix/devcontainer/custom-toolchain paths.
 	LSP LSPConfig `toml:"lsp"`
+	// CodeMap bounds the experimental code_impact index. Absent keeps the
+	// built-in limits (5000 files, 20 seconds).
+	CodeMap CodeMapConfig `toml:"code_map"`
 	// Experimental gates non-default features behind named opt-ins.
 	// Mirrors the --experimental CLI flag and the
 	// $YOTTACODE_EXPERIMENTAL env var. Each entry is a feature name
@@ -301,6 +304,19 @@ var validEnvVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 type LSPConfig struct {
 	Servers  map[string][]string `toml:"servers"`
 	Disabled []string            `toml:"disabled"`
+}
+
+// CodeMapConfig tunes how much of a repository the code_impact index covers. Zero
+// values keep the defaults, so the section is only needed for repositories larger
+// than the defaults handle; an index that hits either bound says so in its header.
+type CodeMapConfig struct {
+	// MaxFiles caps the files indexed per build (default 5000, max 200000).
+	MaxFiles int `toml:"max_files,omitzero"`
+	// MaxBuildSeconds caps one build's wall-clock time (default 20, max 600).
+	MaxBuildSeconds int `toml:"max_build_seconds,omitzero"`
+	// Workers is how many files are parsed concurrently (default: one per CPU,
+	// at most 8; max 64).
+	Workers int `toml:"workers,omitzero"`
 }
 
 // DefaultSubagentSessionTokenBudget bounds cumulative subagent spend per
@@ -1203,6 +1219,14 @@ func Validate(cfg Config) error {
 		if !validLSP[id] {
 			return fmt.Errorf("lsp.disabled contains unknown language %q (expected one of go, typescript, python, rust)", id)
 		}
+	}
+
+	if cm := cfg.CodeMap; cm.MaxFiles < 0 || cm.MaxFiles > 200000 {
+		return fmt.Errorf("code_map.max_files = %d out of range (0 = default, max 200000)", cm.MaxFiles)
+	} else if cm.MaxBuildSeconds < 0 || cm.MaxBuildSeconds > 600 {
+		return fmt.Errorf("code_map.max_build_seconds = %d out of range (0 = default, max 600)", cm.MaxBuildSeconds)
+	} else if cm.Workers < 0 || cm.Workers > 64 {
+		return fmt.Errorf("code_map.workers = %d out of range (0 = default, max 64)", cm.Workers)
 	}
 
 	if name := strings.TrimSpace(cfg.Theme.Name); name != "" && !themes.IsValid(name) {

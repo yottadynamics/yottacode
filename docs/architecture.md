@@ -299,9 +299,11 @@ and production-status notes.
 Behind `--experimental code_map`, the runtime builds a `codemap.CachedProvider`
 over the working directory and registers one read-only tool, `code_impact`
 (`internal/agent/codemap_tools.go`), plus a short system-prompt section. The
-provider lazily builds an in-memory import graph (Go, TypeScript/JavaScript,
-Python, Rust), invalidates it from an `fsnotify` watch, and rebuilds it whole
-on the next query. Queries run against an immutable snapshot and render a
+provider builds an in-memory import graph (Go, TypeScript/JavaScript, Python,
+Rust), in the background at session start for a project directory and otherwise on
+the first query. Files are parsed in parallel and memoized in a parse cache, an
+`fsnotify` watch marks the index stale, and the next query rebuilds it whole, re-parsing
+only the files that changed. Queries run against an immutable snapshot and render a
 provenance-tagged, byte-budgeted report. The graph uses the offline parser layer for symbols;
 LSP is used only for the optional live call-hierarchy supplement and is never required. TUI, oneshot, and ACP
 sessions share the wiring because they share `agentruntime.Builder`; subagents

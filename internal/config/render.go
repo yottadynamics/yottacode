@@ -303,7 +303,7 @@ func Save(cfg Config, path string) error {
 	return os.Rename(tmp, path)
 }
 
-// encodeTunables renders only the [context], [retrieval], [memory], [lsp],
+// encodeTunables renders only the [context], [retrieval], [memory], [lsp], [code_map],
 // [sandbox], [media], [attribution], and [experimental] sections via the BurntSushi
 // encoder. We marshal a trimmed struct so the encoder doesn't try to emit
 // [active], [[providers]], or [router]. Memory/LSP/sandbox/media/
@@ -318,6 +318,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Memory       MemoryConfig      `toml:"memory"`
 		MCP          MCPConfig         `toml:"mcp"`
 		LSP          LSPConfig         `toml:"lsp"`
+		CodeMap      CodeMapConfig     `toml:"code_map"`
 		Sandbox      SandboxConfig     `toml:"sandbox"`
 		Media        MediaConfig       `toml:"media"`
 		Attribution  AttributionConfig `toml:"attribution"`
@@ -329,6 +330,7 @@ func encodeTunables(cfg Config) (string, error) {
 		Memory:       cfg.Memory,
 		MCP:          cfg.MCP,
 		LSP:          cfg.LSP,
+		CodeMap:      cfg.CodeMap,
 		Sandbox:      cfg.Sandbox,
 		Media:        cfg.Media,
 		Attribution:  cfg.Attribution,

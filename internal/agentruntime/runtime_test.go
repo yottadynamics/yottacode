@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/cli"
+	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/experimental"
 	"github.com/yottadynamics/yottacode/internal/memory"
@@ -318,6 +320,52 @@ func TestBuild_CodeMapWatchIntegration(t *testing.T) {
 		t.Fatal("CodeMapProvider.Index returned a nil index")
 	}
 	rt.Close(context.Background()) // must not panic; stops the watch goroutine
+}
+
+// TestBuild_CodeMapWarmsUpOnlyInsideAProject: the first snapshot is built in the
+// background for a project directory, so the model's first query finds it ready,
+// but not for an arbitrary directory, where the lazy build is the better trade.
+func TestBuild_CodeMapWarmsUpOnlyInsideAProject(t *testing.T) {
+	waitReady := func(rt *Runtime, want bool, within time.Duration) bool {
+		p, ok := rt.CodeMapProvider.(*codemap.CachedProvider)
+		if !ok {
+			t.Fatalf("CodeMapProvider is %T, want *codemap.CachedProvider", rt.CodeMapProvider)
+		}
+		deadline := time.Now().Add(within)
+		for time.Now().Before(deadline) {
+			if p.Ready() == want {
+				return true
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return p.Ready() == want
+	}
+
+	project := newTestSpec(t)
+	project.ChatOptions.Experimental = []string{"code_map"}
+	if err := os.WriteFile(filepath.Join(project.Cwd, "go.mod"), []byte("module example.com/warm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project.Cwd, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := mustBuild(t, project)
+	if !waitReady(rt, true, 5*time.Second) {
+		t.Error("a project directory should be warmed in the background")
+	}
+	rt.Close(context.Background())
+
+	scratch := newTestSpec(t)
+	scratch.ChatOptions.Experimental = []string{"code_map"}
+	rt = mustBuild(t, scratch)
+	if !waitReady(rt, false, 300*time.Millisecond) {
+		t.Error("a directory with no project markers must not be warmed")
+	}
+	idx, err := rt.CodeMapProvider.Index(context.Background()) // the lazy path still works
+	if err != nil || idx == nil {
+		t.Errorf("lazy first query failed: %v", err)
+	}
+	rt.Close(context.Background())
 }
 
 func TestBuild_MCPManagerAlwaysConstructed(t *testing.T) {
