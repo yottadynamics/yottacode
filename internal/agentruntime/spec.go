@@ -87,5 +87,11 @@ type SessionSpec struct {
 	// skips resolving the pair entirely rather than surfacing a stale or
 	// misconfigured advisor pair's resolution error as a confusing
 	// warning for a session that would never use it anyway.
+	// EnableDeepResearchTool exposes deep_research to the model-callable
+	// registry. The interactive TUI starts this workflow directly from the
+	// /deep-research command; other callers keep it unavailable so an
+	// ordinary research request cannot accidentally trigger the expensive
+	// multi-agent workflow.
+	EnableDeepResearchTool   bool
 	SupportsLiveRouterToggle bool
 }

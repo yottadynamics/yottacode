@@ -282,10 +282,14 @@ func planModeSchemaFilter(planActive bool) func(string) bool {
 // It composes planModeSchemaFilter (the enter/exit_plan_mode gating) with the
 // loop_control gate: loop_control is advertised only while a /loop prose
 // iteration owns the turn, so the model can't stop a loop that isn't running.
-// Everything else passes.
+// Deep research is intentionally omitted from ordinary model turns; the TUI
+// starts it directly from the explicit /deep-research command.
 func iterationToolFilter(planActive, loopActive bool) func(string) bool {
 	plan := planModeSchemaFilter(planActive)
 	return func(name string) bool {
+		if name == DeepResearchToolName {
+			return false
+		}
 		if name == "loop_control" {
 			return loopActive
 		}
@@ -326,10 +330,8 @@ func PlanModeGate(tool Tool, argsJSON, planFile string) (string, bool) {
 		}
 		return planModeBlockMessage(name, planFile), true
 	case DeepResearchToolName:
-		// Needs no approval (the report write is its own, prompt-free
-		// contract) but it writes a file into the workspace, so the
-		// RequiresApproval-based read-only classification below would
-		// wrongly let it through.
+		// The tool is hidden from ordinary turns, but keep this explicit
+		// guard for callers that invoke it while plan mode is active.
 		return planModeBlockMessage(name, planFile), true
 	default:
 		if !tool.RequiresApproval(argsJSON) {
