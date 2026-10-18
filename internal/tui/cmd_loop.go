@@ -315,11 +315,21 @@ func (m Model) loopSubagentTokens() map[string]int64 {
 	return out
 }
 
-// loopTurnSubagentSpend returns usage added to tasks observed during this turn.
-func (m Model) loopTurnSubagentSpend(before map[string]int64) int64 {
+// loopTurnSubagentSpend returns usage added by subagent tasks created during
+// this loop turn. A task can be added after the initial snapshot while an
+// unrelated background task is still running, so task creation time is the
+// ownership boundary rather than registry presence alone.
+func (m Model) loopTurnSubagentSpend(before map[string]int64, started time.Time) int64 {
 	var spent int64
-	for id, now := range m.loopSubagentTokens() {
-		if prev, ok := before[id]; ok && now > prev {
+	if m.subagentTasks == nil {
+		return 0
+	}
+	for _, task := range m.subagentTasks.List() {
+		if task.Historical || task.Started.Before(started) {
+			continue
+		}
+		now := int64(task.UsageTokens())
+		if prev, ok := before[task.ID]; ok && now > prev {
 			spent += now - prev
 		} else if !ok {
 			spent += now
@@ -329,13 +339,17 @@ func (m Model) loopTurnSubagentSpend(before map[string]int64) int64 {
 }
 
 // loopTurnSpend combines main-thread usage with only the subagent usage that
-// belongs to this turn's task set.
-func (m Model) loopTurnSpend(mainBefore int64, subagentBefore map[string]int64) int64 {
-	spent := totalTokensFor(m.sess.TotalUsage) - mainBefore
-	if spent < 0 {
-		spent = 0
+// belongs to this loop turn. Nil sessions are valid in lightweight and failed
+// turn paths, so they contribute zero main-thread tokens rather than panicking.
+func (m Model) loopTurnSpend(mainBefore int64, subagentBefore map[string]int64, started time.Time) int64 {
+	var spent int64
+	if m.sess != nil {
+		spent = totalTokensFor(m.sess.TotalUsage) - mainBefore
+		if spent < 0 {
+			spent = 0
+		}
 	}
-	return spent + m.loopTurnSubagentSpend(subagentBefore)
+	return spent + m.loopTurnSubagentSpend(subagentBefore, started)
 }
 
 // sessionTokens is the session's running token total for diagnostics/tests.
@@ -407,6 +421,7 @@ func (m Model) fireLoopIteration(id string) (Model, tea.Cmd) {
 	// here is visible to the agent goroutine). If the turn never starts (no
 	// provider), undo it — turnEndedMsg won't fire to clear it, and the loop is
 	// about to be disarmed anyway.
+	turnStart := time.Now()
 	mainTokensBefore := int64(0)
 	if m.sess != nil {
 		mainTokensBefore = totalTokensFor(m.sess.TotalUsage)
@@ -423,6 +438,7 @@ func (m Model) fireLoopIteration(id string) (Model, tea.Cmd) {
 		nm.currentLoopTurnID = id
 		nm.loopTurnTokens = mainTokensBefore
 		nm.loopTurnSubagentTokens = turnSubagentTokens
+		nm.loopTurnStarted = turnStart
 		nm.loopTurnBudget = ls.budget
 		// The loop is already removed from the store for a bounded loop's last
 		// iteration, so remember it was a verify-gated final one to report at turn
@@ -444,7 +460,8 @@ func (m *Model) consumeLoopControl() {
 	subagentTokens := m.loopTurnSubagentTokens
 	turnBudget := m.loopTurnBudget
 	finalVerify := m.loopTurnFinalVerify
-	m.currentLoopTurnID, m.loopTurnTokens, m.loopTurnSubagentTokens, m.loopTurnBudget, m.loopTurnFinalVerify = "", 0, nil, 0, false
+	turnStarted := m.loopTurnStarted
+	m.currentLoopTurnID, m.loopTurnTokens, m.loopTurnSubagentTokens, m.loopTurnStarted, m.loopTurnBudget, m.loopTurnFinalVerify = "", 0, nil, time.Time{}, 0, false
 	stop, reason, blocked := m.cfg.LoopControl.ConsumeStopDetail()
 	gateNote := m.cfg.LoopControl.ConsumeGateNote()
 	m.cfg.LoopControl.SetTurnActive(false)
@@ -456,7 +473,7 @@ func (m *Model) consumeLoopControl() {
 	// tokens spent during this loop-owned turn count. A final bounded iteration
 	// has already been removed from m.loops, so retain its accounting separately
 	// and still emit the normal budget notice when it crosses the limit.
-	spent := m.loopTurnSpend(turnTokens, subagentTokens)
+	spent := m.loopTurnSpend(turnTokens, subagentTokens, turnStarted)
 	if !ok || !ls.active {
 		if finalVerify {
 			if turnBudget > 0 && spent >= turnBudget {

@@ -394,12 +394,18 @@ func TestLoop_BudgetCountsSubagentSpendDuringTheTurn(t *testing.T) {
 	reg := subagents.NewRegistry()
 	m.subagentTasks = reg
 	m.cfg.LoopControl = &agent.LoopControlState{}
-	reg.Add(&subagents.Task{ID: "pre", AgentType: "explore", Started: time.Now(), Status: subagents.TaskRunning})
+	preStarted := time.Now()
+	reg.Add(&subagents.Task{ID: "pre", AgentType: "explore", Started: preStarted, Status: subagents.TaskRunning})
 	reg.AddUsage("pre", &adapter.Usage{InputTokens: 700_000}) // earlier work, not this loop's
 	m, ls := armGoalLoop(t, m, "2m", "--budget", "100k", "fix", "it")
 
 	m.currentLoopTurnID, m.loopTurnTokens = ls.id, totalTokensFor(m.sess.TotalUsage)
+	m.loopTurnStarted = time.Now()
 	m.loopTurnSubagentTokens = m.loopSubagentTokens()
+	// This unrelated task is registered after the snapshot but started before
+	// the loop turn, so its usage must remain outside the loop budget.
+	reg.Add(&subagents.Task{ID: "pre-existing", AgentType: "review", Started: preStarted, Status: subagents.TaskRunning})
+	reg.AddUsage("pre-existing", &adapter.Usage{InputTokens: 900_000})
 	reg.Add(&subagents.Task{ID: "v1", AgentType: "verification", Started: time.Now(), Status: subagents.TaskRunning})
 	reg.AddUsage("v1", &adapter.Usage{InputTokens: 80_000, OutputTokens: 5_000})
 	m.sess.TotalUsage.InputTokens += 10_000 // main-thread spend in the same turn
@@ -423,6 +429,9 @@ func TestLoop_SessionTokensWithoutRegistryOrSession(t *testing.T) {
 	var nilSess Model
 	if nilSess.sessionTokens() != 0 {
 		t.Error("a model without a session reads as zero tokens")
+	}
+	if got := nilSess.loopTurnSpend(0, nil, time.Now()); got != 0 {
+		t.Fatalf("loopTurnSpend without a session = %d, want 0", got)
 	}
 }
 

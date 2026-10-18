@@ -753,9 +753,11 @@ type Model struct {
 	// (the --budget meter). Meaningful only while currentLoopTurnID is set.
 	loopTurnTokens int64
 	// loopTurnSubagentTokens snapshots live subagent usage at loop-turn start.
-	// Only tasks first seen after that boundary are charged to this loop; unrelated
-	// background tasks that happen to finish during the turn cannot drain it.
+	// Only tasks created for this turn are charged; a pre-existing background
+	// task may be added to the registry after the snapshot and must still be
+	// excluded from this loop's budget.
 	loopTurnSubagentTokens map[string]int64
+	loopTurnStarted        time.Time
 	// loopTurnBudget keeps the final bounded iteration's budget available after
 	// fireLoopIteration removes its inactive loop record.
 	loopTurnBudget int64
