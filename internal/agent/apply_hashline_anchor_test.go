@@ -200,6 +200,61 @@ func TestApplyHashlineTool_AnchorAndByteFieldsTogetherIsRejected(t *testing.T) {
 	}
 }
 
+// Models that fill every schema field send empty/zero byte-address values
+// next to an anchor. Those must be ignored, not rejected.
+func TestApplyHashlineTool_AnchorWithDefaultFilledByteFieldsIsAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "a.txt", "alpha\nbeta\n")
+	anchor := fmt.Sprintf("2#%s", anchorHashForLine(2, "beta"))
+
+	_, err := newApplyHashline(tmp).Execute(context.Background(), anchorHunkArgsJSON(t, "a.txt", map[string]any{
+		"anchor": anchor, "offset": 0, "length": 0, "hash": "", "old": "", "new": "BETA\n",
+	}))
+	if err != nil {
+		t.Fatalf("default-filled byte fields must be ignored: %v", err)
+	}
+	if got := readBack(t, tmp, "a.txt"); got != "alpha\nBETA\n" {
+		t.Errorf("file = %q", got)
+	}
+}
+
+// Models also copy the anchor's own hash into "hash". That is redundant, not a
+// second address; a DIFFERENT hash is still a conflict.
+func TestApplyHashlineTool_HashRepeatingAnchorHashIsIgnored(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "a.txt", "alpha\nbeta\n")
+	h := anchorHashForLine(2, "beta")
+
+	_, err := newApplyHashline(tmp).Execute(context.Background(), anchorHunkArgsJSON(t, "a.txt", map[string]any{
+		"anchor": "2#" + h, "hash": h, "offset": 0, "length": 0, "new": "BETA\n",
+	}))
+	if err != nil {
+		t.Fatalf("hash repeating the anchor's hash must be ignored: %v", err)
+	}
+
+	writeFile(t, tmp, "b.txt", "alpha\nbeta\n")
+	_, err = newApplyHashline(tmp).Execute(context.Background(), anchorHunkArgsJSON(t, "b.txt", map[string]any{
+		"anchor": "2#" + h, "hash": "0123456789abcdef", "new": "BETA\n",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "both anchor") {
+		t.Fatalf("a different hash must still conflict, err = %v", err)
+	}
+}
+
+func TestApplyHashlineTool_TopLevelAnchorWithDefaultFilledByteFieldsIsAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "a.txt", "alpha\nbeta\n")
+	anchor := fmt.Sprintf("1#%s", anchorHashForLine(1, "alpha"))
+	args, _ := json.Marshal(map[string]any{"path": "a.txt", "anchor": anchor, "hash": "", "offset": 0, "length": 0,
+		"hunks": []map[string]any{{"anchor": anchor, "hash": "", "offset": 0, "length": 0, "old": "", "new": "ALPHA\n"}}})
+	if _, err := newApplyHashline(tmp).Execute(context.Background(), string(args)); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got := readBack(t, tmp, "a.txt"); got != "ALPHA\nbeta\n" {
+		t.Errorf("file = %q", got)
+	}
+}
+
 func TestApplyHashlineTool_MissingBothAnchorAndHashIsRejected(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, tmp, "a.txt", "alpha\n")

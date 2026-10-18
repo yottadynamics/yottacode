@@ -28,6 +28,37 @@ the project uses semantic versioning once it's past `1.0.0`.
   that finishes without a verified stop says so, and `--verify` with no budget
   or count prints a runaway-cost note.
 
+- **Approval command layout is clearer.** Approval cards now label the operation as `Command` for shell calls, show compact primary actions (`[Y] allow once`, `[N] reject`), and keep persistent permission choices (`[S]`, `[A]`, `[D]`) scannable without repeating long policy explanations.
+
+- **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
+  (default 4) independent sub-questions, runs read-only web researchers in
+  parallel, has two verifiers independently re-check every claim, then writes a
+  cited markdown report to `deep-research-<slug>.md` in the current directory
+  and shows a short summary. The structure follows the deep-research workflow
+  in Grok's CLI.
+  - The workflow is the deterministic `deep_research` tool, not a prompt:
+    sub-agent JSON (schemas defined once in Go), verdict claim IDs and `[Sn]`
+    citation markers are validated in code, and a failed shard or synthesis
+    degrades the report to "Partial" with coverage notes. The researchers' own
+    stated uncertainties are listed but do not make a run Partial. Control
+    characters in text from sub-agents are stripped before it reaches the report
+    or the terminal.
+  - In the TUI it is one background task (a Workflows card in the dock shows
+    the phase, agents running/done and elapsed time; `/subagents` stops it) and
+    costs no model turn at either end: the TUI starts the run (with a
+    `/checkpoints` entry), prints the summary and records both in history. One
+    run is allowed per session. Plan mode, `yottacode run` and ACP use the
+    model-driven blocking path.
+  - Every result ends with a cost line: agent runs, and tokens split by agent
+    type.
+  - New builtin subagents: `research-planner`, `researcher`,
+    `research-verifier`, `research-synthesizer`. New agent-definition field
+    `max_iterations` lowers an agent's iteration budget (never raises the
+    session cap); the researcher and verifier use 30 and are not retried when
+    they hit it.
+  - `web_search` is classified read-only for subagent posture but, like
+    `fetch_url`, stays off the unattended background allowlist.
+  - See `docs/deep-research.md`.
 - **Approval prompts can save a rule for more tools and for chained
   commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
   now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb
@@ -333,6 +364,17 @@ the project uses semantic versioning once it's past `1.0.0`.
   format's image-section contract — never image bytes. See
   [`document-generation.md`](docs/document-generation.md#known-limitations)
   and [`tools.md`](docs/tools.md#read_document).
+- **Homebrew formula.** `brew install yottadynamics/yottacode/yottacode` installs
+  the published release binary on macOS from the
+  `yottadynamics/homebrew-yottacode` tap. The release workflow generates
+  `Formula/yottacode.rb` from the GoReleaser darwin archives (URL + SHA-256 per
+  architecture, never a build from HEAD) and pushes it to the tap on every
+  stable tag; pre-release tags (`-rc.N`) leave the tap untouched. Upgrade with
+  `brew upgrade yottacode`. Needs a `HOMEBREW_TAP_GITHUB_TOKEN` repository
+  secret with write access to the tap; a stable tag without it now fails
+  before the GitHub Release is published. A new `goreleaser-config` CI job
+  runs `goreleaser check` and validates the release checksum matrix on every
+  PR. See [`installation.md`](docs/installation.md#homebrew).
 
 ### Changed
 
@@ -355,6 +397,80 @@ the project uses semantic versioning once it's past `1.0.0`.
   richer-parsing tier.
 
 ### Fixed
+
+- **Edit tools fail less and recover faster.** From a session where 32 tool
+  calls errored (16 of 48 `edit_file`, 9 of 19 `edit_anchored`, 4 of 4
+  `apply_hashline`, 2 of 2 `apply_diff`):
+  - `apply_hashline` no longer rejects an `anchor` hunk because the model also
+    sent default-filled `"hash":""`, `"offset":0`, `"length":0`, or copied the
+    anchor's own hash into `hash`; those retries always failed identically. A
+    relocated anchor is reported in the result, as for `edit_anchored`.
+  - `edit_anchored` / `apply_hashline` relocate a stale anchor whose line moved
+    (within 100 lines, exactly one match; `edit_anchored` reports the move in
+    its result), and otherwise quote the current lines with fresh anchors in
+    the error instead of only a new hash.
+  - `apply_diff` rejects apply_patch-format and header-less patches before the
+    approval prompt and the error includes a unified-diff example.
+  - `edit_file` errors now list ambiguous match lines, detect likely
+    already-applied retries, show nearby current text, and name the cwd on
+    file-not-found; `read_file` gets the same cwd hint.
+  - The system prompt tells the model to re-read after an edit and not to
+    resubmit a failed edit unchanged.
+- **Edit tools preserve file integrity under real session churn.** `edit_file`
+  now uses compare-and-swap atomic writes, `edit_anchored` preserves CRLF/mixed
+  line endings and unterminated files, `apply_diff` bounds `git apply` and
+  stops retrying after cancellation or timeout, and `grep` reports its resolved
+  root and output truncation instead of silently returning incomplete evidence.
+- **ACP: clients can now select the model.** `yottacode acp` advertises a
+- **Edit tools fail less and recover faster.** From a session where 32 tool
+  calls errored (16 of 48 `edit_file`, 9 of 19 `edit_anchored`, 4 of 4
+  `apply_hashline`, 2 of 2 `apply_diff`):
+  - `apply_hashline` no longer rejects an `anchor` hunk because the model also
+    sent default-filled `"hash":""`, `"offset":0`, `"length":0`, or copied the
+    anchor's own hash into `hash`; those retries always failed identically. A
+    relocated anchor is reported in the result, as for `edit_anchored`.
+  - `edit_anchored` / `apply_hashline` relocate a stale anchor whose line moved
+    (within 100 lines, exactly one match; `edit_anchored` reports the move in
+    its result), and otherwise quote the current
+    lines with fresh anchors in the error instead of only a new hash.
+  - `apply_diff` rejects apply_patch-format and header-less patches before the
+    approval prompt (previously you approved a patch that failed immediately)
+    and the error includes a unified-diff example.
+  - `edit_file` errors now list the lines of an ambiguous match, say when
+    `new_string` is already present (a retry after success), show the actual
+    text near the closest line, and name the cwd on file-not-found; `read_file`
+    gets the same cwd hint.
+  - The system prompt tells the model to re-read after an edit and not to
+    resubmit a failed edit unchanged.
+- **ACP: clients can now select the model.** `yottacode acp` advertises a
+  `model` session config option (category `model`) listing every model from
+  the configured `[[providers]]`, and `session/set_config_option` switches the
+  session to it, adopting the owning provider's URL, key and headers. Hosts
+  such as Buzz (`buzz-acp --model <id>`, `buzz-acp models`) previously found no
+  model option and silently ran every session on the config default.
+  `session/load` restores the model the session last ran on. Session-only:
+  `config.toml` is not modified, and the option is hidden while advisor routing
+  owns the main model.
+- **ACP: permission mode and session title from the host.** `yottacode acp`
+  advertises a `mode` session config option (`default`, `acceptEdits`, `auto`,
+  `plan`, `bypassPermissions`, mapped onto the ask/code/architect/yolo session
+  modes; kebab-case spellings such as `bypass-permissions` are accepted), so
+  `buzz-acp --permission-mode` takes effect instead of being rejected as an
+  unknown option. `dontAsk` has no equivalent and is refused. A
+  `_meta.sessionTitle` on `session/new` (`buzz-acp --session-title`) now names
+  the session, suffixed with its UTC creation time (`jpmc-agent-20261009-165750`)
+  so sessions from one agent are distinguishable and resumable by name.
+- **ACP: context usage is a `usage_update`, not chat text.** Each iteration's
+  context fill (and cumulative cost, when known) is sent as a structured
+  `usage_update` notification. Previously it was spliced into the agent's reply
+  as `[context] n/m tokens` lines, which showed up in Buzz and editor chats.
+- **ACP: `initialize` no longer rejects other protocol versions.** A client
+  requesting an unsupported version now gets our latest version back, as the
+  ACP spec requires, instead of `-32602 Invalid params` (which stopped every
+  Buzz agent from starting).
+- **Sessions from Buzz are titled by the user's request.** The `/load` picker
+  showed `<base> You are an agent operating inside Buzz…` for every Buzz
+  session; the gist now comes from the message's `Content:` field.
 
 - **Interrupting a turn with Ctrl+C no longer leaves the terminal-tab
   "working" icon and the footer's `tools <name>` segment stuck on.** The

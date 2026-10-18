@@ -96,6 +96,15 @@ type Mutator interface {
 	PathsToSnapshot(cwd, argsJSON string) []string
 }
 
+// ArgsPrevalidator is an optional capability for approval-gated tools whose
+// arguments can be proven unusable without touching the filesystem. The loop
+// calls it BEFORE prompting, so the user is never asked to approve a call that
+// is certain to fail, and the model gets the error immediately. It must be
+// side-effect free and must only reject calls Execute would also reject.
+type ArgsPrevalidator interface {
+	PrevalidateArgs(argsJSON string) error
+}
+
 // ToolPathsToSnapshot exposes the Mutator capability to callers in
 // other packages (e.g. the agent loop's checkpoint hook) without
 // forcing them to import nothing-vs-something interface assertions.

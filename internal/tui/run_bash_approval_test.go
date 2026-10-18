@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -43,6 +44,9 @@ func TestRenderRunBashApproval_CompoundFormatsAllSegments(t *testing.T) {
 	if !strings.Contains(body, "&&") {
 		t.Errorf("body should label && separator: %q", body)
 	}
+	if !strings.HasPrefix(ansi.Strip(body), "$ ") {
+		t.Errorf("compound approval should start with shell prompt: %q", ansi.Strip(body))
+	}
 }
 
 func TestRenderRunBashApproval_DestructiveSegmentMarked(t *testing.T) {
@@ -50,9 +54,9 @@ func TestRenderRunBashApproval_DestructiveSegmentMarked(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	// 🚨 marker for destructive risk.
-	if !strings.Contains(body, "🚨") {
-		t.Errorf("destructive segment should get a 🚨 marker: %q", body)
+	// Fixed-width !! marker for destructive risk.
+	if !strings.Contains(body, "!!") {
+		t.Errorf("destructive segment should get a !! marker: %q", body)
 	}
 	// Reason text should be present.
 	if !strings.Contains(body, "rm with") {
@@ -108,51 +112,70 @@ func TestRenderRunBashApproval_RejectsEmptyCommand(t *testing.T) {
 	}
 }
 
-func TestRenderRunBashApproval_TruncatesLongSegment(t *testing.T) {
+func TestRenderRunBashApproval_WrapsLongSegmentWithoutLosingContent(t *testing.T) {
 	long := strings.Repeat("x", 500)
-	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
+	body, _, ok := renderRunBashApprovalWidth(`{"command":"ls && `+long+`"}`, "", 60)
 	if !ok {
 		t.Fatalf("expected ok=true")
 	}
-	if !strings.Contains(body, "…") {
-		t.Errorf("long segment should be truncated with ellipsis: %q", body)
+	if strings.Contains(body, "…") {
+		t.Errorf("long segment must wrap, not truncate: %q", body)
 	}
-}
-
-func TestRenderRunBashApproval_TruncatesUnicodeWithoutCorruption(t *testing.T) {
-	long := strings.Repeat("界", 200)
-	body, _, ok := renderRunBashApproval(`{"command":"ls && `+long+`"}`, "")
-	if !ok {
-		t.Fatalf("expected ok=true")
-	}
-	if !utf8.ValidString(body) {
-		t.Fatalf("truncation split a UTF-8 rune: %q", body)
-	}
-	if !strings.Contains(body, "…") {
-		t.Fatalf("long segment should be truncated with ellipsis: %q", body)
+	if got := strings.Count(ansi.Strip(body), "x"); got != 500 {
+		t.Errorf("wrapped body kept %d of 500 chars", got)
 	}
 	for _, line := range strings.Split(body, "\n") {
-		if w := ansi.StringWidth(line); w > 120 {
-			t.Fatalf("segment line width = %d, want within display budget: %q", w, line)
+		if w := ansi.StringWidth(line); w > 60 {
+			t.Fatalf("line width = %d, want <= 60: %q", w, line)
 		}
 	}
 }
 
-func TestTruncSegment(t *testing.T) {
-	cases := []struct {
-		in   string
-		max  int
-		want string
-	}{
-		{"abc", 5, "abc"},
-		{"abcdef", 4, "abc…"},
-		{"界界界界", 5, "界界…"},
-		{"abc", 1, "…"},
+func TestRenderRunBashApproval_WrapsUnicodeWithoutCorruption(t *testing.T) {
+	long := strings.Repeat("界", 200)
+	body, _, ok := renderRunBashApprovalWidth(`{"command":"ls && `+long+`"}`, "", 60)
+	if !ok {
+		t.Fatalf("expected ok=true")
 	}
-	for _, c := range cases {
-		got := truncSegment(c.in, c.max)
-		if got != c.want || !utf8.ValidString(got) {
-			t.Errorf("truncSegment(%q,%d) = %q, want %q", c.in, c.max, got, c.want)
+	if !utf8.ValidString(body) {
+		t.Fatalf("wrapping split a UTF-8 rune: %q", body)
+	}
+	if got := strings.Count(ansi.Strip(body), "界"); got != 200 {
+		t.Errorf("wrapped body kept %d of 200 runes", got)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if w := ansi.StringWidth(line); w > 60 {
+			t.Fatalf("line width = %d, want <= 60: %q", w, line)
+		}
+	}
+}
+
+func TestRenderRunBashApproval_ScriptRiskMarkersHaveStableWidth(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"command": "echo ok\neval $cmd\nrm -rf /tmp/x"})
+	body, _, ok := renderRunBashApproval(string(args), "")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	plain := ansi.Strip(body)
+	if !strings.Contains(plain, "! ") || !strings.Contains(plain, "!!") {
+		t.Fatalf("expected fixed-width caution and destructive markers: %q", plain)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "eval") && !strings.Contains(line, "!") && !strings.Contains(line, "⚠") {
+			t.Fatalf("caution line lost its risk marker: %q", line)
+		}
+		if strings.Contains(line, "rm -rf") && !strings.Contains(line, "!!") {
+			t.Fatalf("destructive line lost its fixed-width marker: %q", line)
+		}
+	}
+}
+
+func TestRenderRunBashApproval_ScriptRespectsWidth(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"command": "echo hi\necho " + strings.Repeat("a", 300)})
+	body, _, _ := renderRunBashApprovalWidth(string(args), "", 50)
+	for _, line := range strings.Split(body, "\n") {
+		if w := ansi.StringWidth(line); w > 50 {
+			t.Fatalf("script line width = %d, want <= 50: %q", w, line)
 		}
 	}
 }
@@ -208,6 +231,45 @@ func TestRenderRunBashApproval_FlagsGitHookWrite(t *testing.T) {
 	}
 }
 
+func TestRenderRunBashApproval_GroupsSensitiveReads(t *testing.T) {
+	body, _, ok := renderRunBashApproval(`{"command":"find ~ -maxdepth 4 -print %p 2>/dev/null | sort | head -300"}`, "/home/me/project")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !strings.Contains(body, "reads ~/.yottacode/.env, ~/.yottacode/auth") {
+		t.Fatalf("sensitive reads should be grouped, got: %q", body)
+	}
+	if strings.Count(body, "reads ") != 1 {
+		t.Fatalf("expected one grouped reads warning, got: %q", body)
+	}
+}
+
+func TestWrapApprovalWarningPreservesAllPaths(t *testing.T) {
+	got := wrapApprovalWarning("reads ~/.yottacode/.env, ~/.yottacode/auth, ~/.ssh, ~/.gnupg, ~/.aws, ~/.config/gcloud", 32)
+	for _, want := range []string{"~/.yottacode/.env,", "~/.yottacode/auth,", "~/.ssh,", "~/.gnupg,", "~/.aws,", "~/.config/gcloud"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("wrapped warning lost %q: %q", want, got)
+		}
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("warning line width = %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
+func TestGroupedSensitiveWarningsKeepsHookWarningSeparate(t *testing.T) {
+	got := groupedSensitiveWarnings([]string{"reads ~/.ssh", "reads ~/.aws", "touches .git/hooks — runs on future git operations"})
+	if len(got) != 2 {
+		t.Fatalf("warning groups = %d, want 2: %v", len(got), got)
+	}
+	if got[0] != "reads ~/.ssh, ~/.aws" {
+		t.Fatalf("grouped reads = %q", got[0])
+	}
+	if !strings.HasPrefix(got[1], "touches .git/hooks") {
+		t.Fatalf("hook warning should remain separate: %q", got[1])
+	}
+}
 func TestRenderRunBashApproval_NoWarningOnBenign(t *testing.T) {
 	body, _, ok := renderRunBashApproval(`{"command":"ls -la"}`, "/home/me/proj")
 	if !ok {
@@ -215,5 +277,67 @@ func TestRenderRunBashApproval_NoWarningOnBenign(t *testing.T) {
 	}
 	if strings.Contains(body, "reads ") || strings.Contains(body, "touches ") {
 		t.Errorf("benign command should carry no sensitive-path warning: %q", body)
+	}
+}
+
+func TestRenderRunBashApproval_MultilineScriptKeepsIndentAndGutter(t *testing.T) {
+	cmd := "python3 << 'EOF'\nfor q in qs:\n    if q:\n        print(q)\nEOF"
+	args, _ := json.Marshal(map[string]string{"command": cmd})
+	body, _, ok := renderRunBashApproval(string(args), "")
+	if !ok {
+		t.Fatalf("expected ok=true")
+	}
+	plain := ansi.Strip(body)
+	for _, want := range []string{"1 ", "5 ", "    if q:", "        print(q)"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("script view missing %q:\n%s", want, plain)
+		}
+	}
+	if strings.Contains(plain, "(;)") {
+		t.Errorf("script view should not show per-line separators:\n%s", plain)
+	}
+	if !strings.Contains(plain, "code via interpreter heredoc (line 1)") {
+		t.Errorf("flagged line should be summarized in footer:\n%s", plain)
+	}
+}
+
+func TestRenderRunBashApproval_MultilineScriptWrapsInsteadOfTruncating(t *testing.T) {
+	long := strings.Repeat("abcdefghij", 20)
+	args, _ := json.Marshal(map[string]string{"command": "echo hi\necho " + long})
+	body, _, _ := renderRunBashApproval(string(args), "")
+	plain := strings.ReplaceAll(strings.ReplaceAll(ansi.Strip(body), "\n", ""), " ", "")
+	if !strings.Contains(plain, long) || strings.Contains(plain, "…") {
+		t.Errorf("long script line should wrap without losing content: %q", plain)
+	}
+}
+
+func TestRenderRunBashApproval_MultilineScriptHasShellPrompt(t *testing.T) {
+	args, _ := json.Marshal(map[string]string{"command": "cd .\nfor q in 1 2; do\n  echo $q\ndone"})
+	body, _, ok := renderRunBashApproval(string(args), "")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if !strings.HasPrefix(ansi.Strip(body), "$ ") {
+		t.Fatalf("multiline approval should start with shell prompt, got %q", ansi.Strip(body))
+	}
+}
+
+func TestRenderRunBashApproval_LongSensitiveTokenWrapsWithoutEllipsis(t *testing.T) {
+	longPath := "/tmp/" + strings.Repeat("credential-", 20) + "secret"
+	args, _ := json.Marshal(map[string]string{"command": "cat " + longPath})
+	body, _, ok := renderRunBashApprovalWidth(string(args), "", 32)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	plain := ansi.Strip(body)
+	joined := strings.ReplaceAll(strings.ReplaceAll(plain, "\n", ""), " ", "")
+	want := strings.ReplaceAll(longPath, " ", "")
+	if strings.Contains(plain, "…") || !strings.Contains(joined, want) {
+		t.Fatalf("long command token should wrap without truncation: %q", plain)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		if ansi.StringWidth(line) > 32 {
+			t.Fatalf("line width = %d, want <= 32: %q", ansi.StringWidth(line), line)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // Bubbletea wraps each input from outside the program (keystroke, agent event)
@@ -34,18 +35,50 @@ func waitForEvent(ch <-chan agent.Event, errCh <-chan error) tea.Cmd {
 	}
 }
 
-// waitForSubagentInbox returns a tea.Cmd that blocks on the long-lived
-// subagent inbox. Background subagents emit SubagentBackgroundDone here
-// after the parent turn has already ended; the cmd surfaces them as a
-// normal agentEventMsg so handleAgentEvent renders the completion card.
-// The model re-arms this cmd after each message lands so the inbox
-// drains continuously for the life of the program.
-func waitForSubagentInbox(ch <-chan agent.SubagentBackgroundDone) tea.Cmd {
+// backgroundDoneInbox is a durable, session-scoped queue for completion events.
+// Completion producers must never block on Bubble Tea's event loop and must not
+// lose events when the model is busy in a turn or pager. The signal channel only
+// wakes the waiter; the mutex-protected queue owns the actual events.
+type backgroundDoneInbox struct {
+	mu     syncutil.Mutex
+	queue  []agent.SubagentBackgroundDone
+	signal chan struct{}
+}
+
+func newBackgroundDoneInbox() *backgroundDoneInbox {
+	return &backgroundDoneInbox{signal: make(chan struct{}, 1)}
+}
+
+func (q *backgroundDoneInbox) enqueue(ev agent.SubagentBackgroundDone) {
+	q.mu.Lock()
+	q.queue = append(q.queue, ev)
+	q.mu.Unlock()
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+}
+
+func (q *backgroundDoneInbox) dequeue() (agent.SubagentBackgroundDone, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.queue) == 0 {
+		return agent.SubagentBackgroundDone{}, false
+	}
+	ev := q.queue[0]
+	q.queue = q.queue[1:]
+	return ev, true
+}
+
+// waitForSubagentInbox waits for a durable completion event. Re-arming after
+// each event drains bursts without dropping or blocking detached producers.
+func waitForSubagentInbox(q *backgroundDoneInbox) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil
+		for {
+			if ev, ok := q.dequeue(); ok {
+				return agentEventMsg{ev: ev}
+			}
+			<-q.signal
 		}
-		return agentEventMsg{ev: ev}
 	}
 }

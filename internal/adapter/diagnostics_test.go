@@ -354,12 +354,9 @@ func TestStaticDiagnostics_OpenAIAuthShape(t *testing.T) {
 	if !res.Profile.SupportsReasoning {
 		t.Errorf("SupportsReasoning = false; openai-auth surfaces reasoning summaries")
 	}
-	// Built-in tools are NOT supported on the Codex backend's
-	// ChatGPT-account auth path. Generic buildProfile leaves them off
-	// because openai-auth isn't in the SupportsWebSearch /
-	// SupportsCodeInterpreter expressions.
-	if res.Profile.SupportsWebSearch {
-		t.Errorf("SupportsWebSearch = true; not available on Codex backend")
+	// The Codex backend supports hosted web_search, but not code_interpreter.
+	if !res.Profile.SupportsWebSearch {
+		t.Errorf("SupportsWebSearch = false; native web_search is available on Codex backend")
 	}
 	if res.Profile.SupportsCodeInterpreter {
 		t.Errorf("SupportsCodeInterpreter = true; not available on Codex backend")

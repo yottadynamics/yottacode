@@ -478,7 +478,7 @@ type Model struct {
 	// eventsCh via waitForSubagentInbox so notifications surface
 	// without waiting for the next user input. Buffer is generous
 	// (32) so a flurry of completions can't block the goroutines.
-	subagentInbox chan agent.SubagentBackgroundDone
+	subagentInbox *backgroundDoneInbox
 
 	// pendingSubagentWakes queues background completions whose spawner set
 	// notify_on_done while a turn is in flight (a wake can't interrupt a
@@ -861,6 +861,7 @@ type Model struct {
 	inspectOpen         bool
 	inspectPanel        string
 	inspectSession      *session.Session
+	inspectView         *inspectViewState
 	inspectScrollOffset int
 	inspectPickerOpen   bool
 	inspectPicker       *inspectPickerState
@@ -1344,7 +1345,7 @@ func New(parent context.Context, c Config) Model {
 		experimentalEnabled:    c.ExperimentalEnabled,
 		sandboxActive:          c.SandboxActive,
 		mcpManager:             c.MCPManager,
-		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
+		subagentInbox:          newBackgroundDoneInbox(),
 		banneredSubagentDone:   map[string]bool{},
 		customSlash:            buildCustomSlash(c.CustomCommands),
 		skillSlash:             buildSkillSlash(c.Skills),
@@ -3217,7 +3218,7 @@ func (m Model) anyOverlayOpen() bool {
 // after the parent turn ends, since a background dispatch detaches its
 // workers and nothing else would trigger a redraw until they finish.
 func (m Model) hasRunningSubagents() bool {
-	return m.subagentTasks != nil && m.subagentTasks.ActiveCount() > 0
+	return m.subagentTasks != nil && m.subagentTasks.ActiveTotalCount() > 0
 }
 
 func (m Model) skillsBusy() bool {
@@ -5529,12 +5530,34 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 		// the last worker's completion re-enters here and releases the batch.
 		return m, nil
 	}
+	// Finished deep-research runs never wake the model: their summary is
+	// printed and recorded here (see deep_research_delivery.go). Anything else
+	// in the batch still gets its model turn below.
+	var rest []agent.SubagentBackgroundDone
+	for _, w := range wakes {
+		if w.AgentType == agent.DeepResearchTaskType {
+			m.deliverDeepResearch(w)
+			continue
+		}
+		rest = append(rest, w)
+	}
+	if len(rest) == 0 {
+		return m, nil
+	}
+	wakes = rest
 	input := buildSubagentWakeMessage(wakes)
 	var label string
-	if len(wakes) == 1 {
+	switch {
+	case allShellWakes(wakes) && len(wakes) == 1:
+		label = fmt.Sprintf("↩ background shell job %s finished — acting on its result", shortTaskID(wakes[0].TaskID))
+	case allShellWakes(wakes):
+		label = fmt.Sprintf("↩ %d background shell jobs finished — acting on their results", len(wakes))
+	case anyShellWake(wakes):
+		label = fmt.Sprintf("↩ %d background tasks finished — acting on their results", len(wakes))
+	case len(wakes) == 1:
 		label = fmt.Sprintf("↩ background subagent %s (%s) finished — acting on its result",
 			wakes[0].AgentType, shortTaskID(wakes[0].TaskID))
-	} else {
+	default:
 		label = fmt.Sprintf("↩ %d background subagents finished — acting on their results", len(wakes))
 	}
 	return m.startTurnWithDisplay(input, label)
@@ -5638,9 +5661,17 @@ func (m Model) subagentCanceledByUser(taskID string) bool {
 // result so the model can act without a separate get_subagent_result call.
 func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
 	var b strings.Builder
-	if len(wakes) == 1 {
+	shellOnly := allShellWakes(wakes)
+	switch {
+	case shellOnly && len(wakes) == 1:
+		b.WriteString("A background shell job you started has finished.\n\n")
+	case shellOnly:
+		fmt.Fprintf(&b, "%d background shell jobs you started have finished.\n\n", len(wakes))
+	case anyShellWake(wakes):
+		fmt.Fprintf(&b, "%d background tasks you started have finished.\n\n", len(wakes))
+	case len(wakes) == 1:
 		b.WriteString("A background subagent you dispatched has finished.\n\n")
-	} else {
+	default:
 		fmt.Fprintf(&b, "%d background subagents you dispatched have finished.\n\n", len(wakes))
 	}
 	for i, w := range wakes {
@@ -5651,12 +5682,39 @@ func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
 		if w.Errored {
 			status = "errored"
 		}
+		if w.AgentType == agent.ShellTaskType {
+			fmt.Fprintf(&b, "Shell job: session_id %s — %s\n", w.TaskID, status)
+			fmt.Fprintf(&b, "\nResult:\n%s\n", strings.TrimRight(w.Result, "\n"))
+			continue
+		}
 		fmt.Fprintf(&b, "Subagent: %s (task %s) — %s\n", w.AgentType, shortTaskID(w.TaskID), status)
 		appendDispatchWakeMetadata(&b, w)
 		fmt.Fprintf(&b, "\nResult:\n%s\n", strings.TrimRight(w.Result, "\n"))
 	}
 	b.WriteString("\nReview the result(s) above and continue the work they were part of, or report back to the user as appropriate. If a result is empty or errored, decide whether to retry or move on.")
 	return b.String()
+}
+
+// allShellWakes reports whether every pending wake is a background shell job,
+// so the wake text can say "shell job" instead of "subagent".
+func allShellWakes(wakes []agent.SubagentBackgroundDone) bool {
+	for _, w := range wakes {
+		if w.AgentType != agent.ShellTaskType {
+			return false
+		}
+	}
+	return len(wakes) > 0
+}
+
+// anyShellWake reports whether at least one pending wake is a shell job, which
+// makes a mixed batch "tasks" rather than "subagents".
+func anyShellWake(wakes []agent.SubagentBackgroundDone) bool {
+	for _, w := range wakes {
+		if w.AgentType == agent.ShellTaskType {
+			return true
+		}
+	}
+	return false
 }
 
 func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDone) {
@@ -6445,6 +6503,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// scrollback log and hides the other agents. Detailed activity remains
 		// available in the child's transcript via Tab/Enter or /subagents.
 		m.flushPendingGroupedTools()
+	case agent.WorkflowPhase:
+		m.flushPendingGroupedTools()
+		m.appendLine(styleSubagentMeta.Render("◆ " + e.Line()))
 	case agent.SubagentDone:
 		m.flushPendingGroupedTools()
 		m.appendLine(renderSubagentDone(e))

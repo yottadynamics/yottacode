@@ -191,3 +191,57 @@ func TestEditFile_NotFoundErrorPointsAtClosestLine(t *testing.T) {
 		t.Fatalf("err = %v, want closest-line hint", err)
 	}
 }
+
+func TestEditFile_RejectsConcurrentChangeWithoutOverwriting(t *testing.T) {
+	tmp := t.TempDir()
+	path := writeFile(t, tmp, "x.txt", "alpha beta gamma")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+
+	originalReplace := replaceFileIfUnchanged
+	t.Cleanup(func() { replaceFileIfUnchanged = originalReplace })
+	replaceFileIfUnchanged = func(path string, expected, content []byte) error {
+		if err := os.WriteFile(path, []byte("concurrent change"), 0o644); err != nil {
+			t.Fatalf("concurrent write: %v", err)
+		}
+		return originalReplace(path, expected, content)
+	}
+
+	_, err := tool.Execute(context.Background(), `{"path":"x.txt","old_string":"beta","new_string":"BETA"}`)
+	if err == nil || !strings.Contains(err.Error(), "concurrent_write") {
+		t.Fatalf("err = %v, want concurrent-write error", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read file: %v", readErr)
+	}
+	if string(got) != "concurrent change" {
+		t.Errorf("file = %q, want concurrent content", string(got))
+	}
+}
+
+func TestEditFile_TolerantMatchRejectsConcurrentChangeWithoutOverwriting(t *testing.T) {
+	tmp := t.TempDir()
+	path := writeFile(t, tmp, "doc.md", "alpha  \nbeta\ngamma\n")
+	tool := &EditFileTool{Cwd: NewCwdRef(tmp), WriteOpts: WritePathOptions{Cwd: NewCwdRef(tmp)}}
+
+	originalReplace := replaceFileIfUnchanged
+	t.Cleanup(func() { replaceFileIfUnchanged = originalReplace })
+	replaceFileIfUnchanged = func(path string, expected, content []byte) error {
+		if err := os.WriteFile(path, []byte("concurrent change\n"), 0o644); err != nil {
+			t.Fatalf("concurrent write: %v", err)
+		}
+		return originalReplace(path, expected, content)
+	}
+
+	_, err := tool.Execute(context.Background(), `{"path":"doc.md","old_string":"alpha\nbeta","new_string":"ALPHA\nBETA"}`)
+	if err == nil || !strings.Contains(err.Error(), "concurrent_write") {
+		t.Fatalf("err = %v, want concurrent-write error", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read file: %v", readErr)
+	}
+	if string(got) != "concurrent change\n" {
+		t.Errorf("file = %q, want concurrent content", string(got))
+	}
+}

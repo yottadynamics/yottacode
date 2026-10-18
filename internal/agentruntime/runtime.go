@@ -183,7 +183,7 @@ func (rt *Runtime) Close(ctx context.Context) {
 			tick := time.NewTicker(50 * time.Millisecond)
 			defer tick.Stop()
 			draining := true
-			for draining && rt.SubagentTasks.ActiveCount() > 0 {
+			for draining && rt.SubagentTasks.ActiveTotalCount() > 0 {
 				select {
 				case <-ctx.Done():
 					draining = false
@@ -356,6 +356,9 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	rt.RouterAdapters = routerAdapters
 	rt.Model = opts.Model
 	rt.ChatOptions = opts
+	if rt.Session != nil {
+		rt.Session.Provider = opts.Provider
+	}
 	// Mirrors fileCfg.Router.RoutingAuto() only when the pair actually
 	// resolved — persisted mode="auto" with an unresolved pair must report
 	// live routing as off, not claim a toggle that silently does nothing
@@ -532,7 +535,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(&agent.GitPushTool{Cwd: cwdRef, GH: ghClient})
 	reg.Register(&agent.GHPRUpdateTool{Cwd: cwdRef, GH: ghClient, Footer: prFooter})
 	reg.Register(&agent.GHPRAddCommentTool{Cwd: cwdRef, GH: ghClient})
-	if !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
+	if ad.Profile().Provider == adapter.ProviderOpenAIAuth || !hasBuiltin(ad.Profile().EnabledBuiltinTools, adapter.BuiltinToolWebSearch) {
+		// Keep the local fallback registered for openai-auth; its adapter
+		// omits this function in native mode and reintroduces it only when
+		// the Codex backend rejects hosted web_search.
 		reg.Register(&agent.WebSearchTool{})
 	}
 
@@ -610,8 +616,21 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		MutationLocks:          mutationLocks,
 	}
 	reg.Register(agentTool)
+	// Background shell jobs ride on the same task registry and completion
+	// callback as background subagents, so they only exist where those do
+	// (interactive TUI and ACP; oneshot has nowhere to deliver a completion).
+	if spec.SupportsBackgroundDispatch {
+		jobs := agent.NewShellJobs(agentTool)
+		if t, ok := reg.Get("run_bash"); ok {
+			if rb, ok := t.(*agent.RunBashTool); ok {
+				rb.Jobs = jobs
+			}
+		}
+		reg.Register(&agent.ProcessTool{Jobs: jobs})
+	}
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 	rt.AgentTool = agentTool
+	reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})
 
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{

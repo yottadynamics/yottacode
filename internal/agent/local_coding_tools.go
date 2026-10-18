@@ -59,23 +59,25 @@ func (t *DeleteFileTool) Execute(ctx context.Context, argsJSON string) (string, 
 		return "", fmt.Errorf("delete_file: path is required")
 	}
 	p := resolvePath(t.Cwd.Get(), a.Path)
-	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("delete_file: %w", err)
-	}
-	info, err := os.Stat(p)
-	if err != nil {
-		return "", fmt.Errorf("delete_file: %w", err)
-	}
-	if info.IsDir() {
+	return withEditPathLock(p, func() (string, error) {
+		if err := ValidateWritePath(p, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("delete_file: %w", err)
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			return "", fmt.Errorf("delete_file: %w", err)
+		}
+		if info.IsDir() {
+			if err := os.Remove(p); err != nil {
+				return "", fmt.Errorf("delete_file: %w", err)
+			}
+			return fmt.Sprintf("deleted directory %s", p), nil
+		}
 		if err := os.Remove(p); err != nil {
 			return "", fmt.Errorf("delete_file: %w", err)
 		}
-		return fmt.Sprintf("deleted directory %s", p), nil
-	}
-	if err := os.Remove(p); err != nil {
-		return "", fmt.Errorf("delete_file: %w", err)
-	}
-	return fmt.Sprintf("deleted file %s", p), nil
+		return fmt.Sprintf("deleted file %s", p), nil
+	})
 }
 
 type MoveFileTool struct {
@@ -141,19 +143,21 @@ func (t *MoveFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	src := resolvePath(t.Cwd.Get(), a.Src)
 	dst := resolvePath(t.Cwd.Get(), a.Dst)
 	// Both source (we're removing it) and destination get validated.
-	if err := ValidateWritePath(src, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("move_file: source: %w", err)
-	}
-	if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("move_file: destination: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", fmt.Errorf("move_file: mkdir: %w", err)
-	}
-	if err := os.Rename(src, dst); err != nil {
-		return "", fmt.Errorf("move_file: %w", err)
-	}
-	return fmt.Sprintf("moved %s to %s", src, dst), nil
+	return withEditPathLocks([]string{src, dst}, func() (string, error) {
+		if err := ValidateWritePath(src, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("move_file: source: %w", err)
+		}
+		if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("move_file: destination: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return "", fmt.Errorf("move_file: mkdir: %w", err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return "", fmt.Errorf("move_file: %w", err)
+		}
+		return fmt.Sprintf("moved %s to %s", src, dst), nil
+	})
 }
 
 type MkdirTool struct {
@@ -276,37 +280,39 @@ func (t *CopyFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	// back door that reads ~/.ssh/id_rsa into a readable destination.
 	// ValidateReadPath also resolves symlinks, so a symlinked source is
 	// caught too.
-	if err := ValidateReadPath(src, t.DenyReadPaths); err != nil {
-		return "", fmt.Errorf("copy_file: source: %w", err)
-	}
-	if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("copy_file: destination: %w", err)
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return "", fmt.Errorf("copy_file: %w", err)
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("copy_file: source %s is a directory", src)
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", fmt.Errorf("copy_file: mkdir: %w", err)
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return "", fmt.Errorf("copy_file: %w", err)
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return "", fmt.Errorf("copy_file: %w", err)
-	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return "", fmt.Errorf("copy_file: %w", err)
-	}
-	if err := out.Chmod(info.Mode().Perm()); err != nil {
-		return "", fmt.Errorf("copy_file: chmod: %w", err)
-	}
-	return fmt.Sprintf("copied %s to %s", src, dst), nil
+	return withEditPathLocks([]string{src, dst}, func() (string, error) {
+		if err := ValidateReadPath(src, t.DenyReadPaths); err != nil {
+			return "", fmt.Errorf("copy_file: source: %w", err)
+		}
+		if err := ValidateWritePath(dst, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("copy_file: destination: %w", err)
+		}
+		info, err := os.Stat(src)
+		if err != nil {
+			return "", fmt.Errorf("copy_file: %w", err)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("copy_file: source %s is a directory", src)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return "", fmt.Errorf("copy_file: mkdir: %w", err)
+		}
+		in, err := os.Open(src)
+		if err != nil {
+			return "", fmt.Errorf("copy_file: %w", err)
+		}
+		defer in.Close()
+		out, err := os.Create(dst)
+		if err != nil {
+			return "", fmt.Errorf("copy_file: %w", err)
+		}
+		defer out.Close()
+		if _, err := io.Copy(out, in); err != nil {
+			return "", fmt.Errorf("copy_file: %w", err)
+		}
+		if err := out.Chmod(info.Mode().Perm()); err != nil {
+			return "", fmt.Errorf("copy_file: chmod: %w", err)
+		}
+		return fmt.Sprintf("copied %s to %s", src, dst), nil
+	})
 }

@@ -107,7 +107,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`code_map_diagram`](#code_map_diagram) | conditional | Return a Mermaid import dependency diagram, optionally focused around one file; requires approval only when `to_file` is set |
 | [`pr_readiness_context`](#pr_readiness_context) | none | Gather a local PR readiness snapshot before opening or updating a PR |
 | [`fetch_url`](#fetch_url) | none | Fetch a single HTTP(S) URL and return capped textual content |
-| [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c` |
+| [`run_bash`](#run_bash) | required | Shell command via `/bin/sh -c`; foreground with a timeout, or a background job |
+| [`process`](#process) | none | Poll, wait on, read the log of, or kill a background shell job (TUI and ACP only) |
 | [`git`](#git) | varies | Unified git invocation; read-only auto-runs, mutations prompt |
 | [`todo_write`](#todo_write) | none | Maintain the agent's working task plan, rendered as a card |
 | [`enter_plan_mode`](#enter_plan_mode) | required | Only callable OUTSIDE plan mode; requests the read-only planning state via a [Y]/[N] card |
@@ -751,17 +752,15 @@ Full overwrite. Creates parent directories as needed.
 Always prompts for approval. The preview shows the path and a 200-char
 content snippet.
 
-## edit_file
-
-Surgical string replacement. Fails when `old_string` matches zero or
-more-than-one place (uniqueness check), unless `replace_all=true`.
+The preferred workflow is `read_file(path, anchors=true)` followed by one batched `apply_hashline` or `edit_anchored` call. Copy the exact `line#hash` anchor or the complete JSON `receipt` from the read result; do not reconstruct a multi-line `old_string` when a receipt is available. `apply_hashline` uses one strict addressing mode per hunk: line anchor or receipt/byte span, never both. Direct edit calls serialize same-file operations through a canonical-path queue; loop-dispatched calls also use the existing mutation claims. `edit_file` remains a compatibility path for exact string replacement, and syntax/LSP operations are preferred for structural or semantic changes.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `path` | string | — | Must exist |
-| `old_string` | string | — | Must be non-empty and != `new_string` |
+| `old_string` | string | — | Must be non-empty and != `new_string` unless `receipt` is supplied |
 | `new_string` | string | — | The replacement |
 | `replace_all` | bool | `false` | Disable uniqueness check |
+| `receipt` | object | — | Complete receipt from an anchored read; validates the exact byte span and allows `old_string` to be omitted |
 
 Always prompts for approval. The TUI's approval modal renders a colored
 diff (red `−` / green `+`) so you see exactly what's about to change.
@@ -785,6 +784,8 @@ Supported `op` values:
 Anchors should be passed as full `line#hash` references, for example `42#a8f13c2b`. The tool re-reads the file and rejects stale or ambiguous anchors before writing, so it is the preferred path for drift-sensitive block edits that would be fragile with `edit_file` or a stale diff. Missing-anchor and stale-anchor failures are recoverable: re-read the target block with `anchors=true`, then retry with the current required `anchor` or `start_anchor`/`end_anchor` values.
 
 The standard approval modal offers allow once, allow for this session, always allow, deny, and always deny when their derived permission rules are available. For `edit_anchored`, these choices use the same `Edit(...)` permission namespace as `edit_file` and `apply_hashline`, so an existing `Edit(pattern)` rule can allow, ask, or deny all three edit paths consistently. Permission approval never bypasses stale-anchor, overlap, or no-op validation.
+
+Anchor hashes include the line number, so an earlier edit that shifts lines makes later anchors from the same read stale. When an anchor's line number no longer matches, the tool looks within 100 lines for exactly one line whose text hashes to that anchor under its original line number and uses it, reporting `original→current` line numbers in the result; a repeated line never relocates. Relocation matches on text, so if the anchored line itself was rewritten and an identical line exists elsewhere nearby, the edit lands on that line; re-read when unsure. If nothing relocates, the stale-anchor error quotes the current lines around the anchor with fresh `line#hash` tokens so the retry needs no extra read. `apply_hashline` anchor hunks use the same resolution, and empty or zero `offset`/`length`/`hash`/`old` values sent next to an `anchor` are ignored.
 
 Like `apply_hashline`, the target file is checked against a 64 MiB size limit before it is read (`file_too_large` if over).
 
@@ -849,7 +850,11 @@ touched file is run through the same write-path validator
 internals, paths outside cwd, and symlinks are refused before
 `git apply` runs. Before path validation, the tool rejects common
 model-authored wrappers such as markdown fences and `apply_patch`-style
-`*** Begin Patch` blocks with typed malformed-patch errors. After
+`*** Begin Patch` blocks with typed malformed-patch errors; the error includes a
+minimal unified-diff example. These structural checks also run before the
+approval prompt, so a patch that can never apply is bounced to the model
+without asking you to approve it (other tools can opt in via the
+`ArgsPrevalidator` interface). After
 validation, common model-authored defects such as miscounted `@@` hunk
 headers and whitespace drift in context lines are tolerated while
 applying. Malformed patch syntax (`corrupt patch`, bare `@@`, invalid
@@ -2013,9 +2018,55 @@ Run a shell command via `/bin/sh -c` in the session's cwd.
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `command` | string | — | Passed verbatim to `/bin/sh -c` |
+| `timeout_ms` | integer | `180000` | Deadline for a foreground command; zero or negative selects the default. Above `600000` (10 min) the command is promoted to a background job (see below) |
+| `background` | boolean | `false` | Start a background job and return a `session_id` at once. Only offered where background jobs exist (TUI, ACP) |
+| `notify_on_complete` | boolean | `false` | Background only: re-prompt the model with the exit code and output tail when the job exits. Setting it on a foreground call is an error |
 
 Always prompts for approval. Output is `exit=<code>\n--- stdout ---\n…\n--- stderr ---\n…`,
 each stream capped at 256 KiB; truncation is announced in the result.
+
+### Foreground timeout
+
+When the deadline passes, the whole process group is killed (so backgrounded
+children don't survive) and the call returns a normal result — `exit=124`
+(as GNU `timeout`), `run_bash: timed out after <duration>…`, plus whatever
+stdout/stderr was captured — so the model can retry with a narrower command or
+a larger `timeout_ms`. Pressing Esc/Ctrl+C is a cancel, not a timeout, and is
+reported as before. Commands that block indefinitely, such as `grep -R`
+reaching a named pipe with no writer, are bounded by this deadline; prefer the
+`grep` and `glob` tools for searching.
+
+### Background jobs
+
+`background: true` runs the command as a job whose lifetime is the **session**,
+not the turn: Esc ends the turn but does not kill it. The call returns
+`session_id`, `pid`, and whether you will be notified. Jobs go through the same
+approval, hardline/privilege checks, cwd handling and sandbox (host or Podman) as
+a foreground command; approval is per start.
+
+A `timeout_ms` above the 10 minute foreground cap is not refused or clamped: the
+command is **promoted** to a background job with `notify_on_complete`, and the
+result tells the model not to re-run it. Where background jobs are not available
+(oneshot, dispatch workers) it falls back to the clamped foreground timeout.
+
+- **Completion.** With `notify_on_complete` the TUI banners the exit and wakes
+  the model with the exit code and the last 2000 characters of output. Without
+  it the job is silent until polled. If the model already collected the outcome
+  with `process` `wait`/`poll`/`kill`, no wake is sent.
+- **Dock and stop.** Each job is a task in the subagent registry (type `shell`):
+  it appears in the dock and `/subagents`, and `/subagents stop` kills it. Jobs do
+  not count against the subagent concurrency caps.
+- **Limits.** 64 tracked jobs (the oldest finished job is evicted; a start is
+  refused when all 64 are running). Finished jobs stay pollable for 30 minutes.
+  Output is a rolling 256 KiB buffer per job, stdout and stderr interleaved; older
+  bytes are dropped and reported.
+- **Lifetime.** Jobs are killed when the session closes and are not resumed with
+  a saved session. Jobs belong to the parent session: subagents (foreground,
+  background or dispatch workers) get a foreground-only `run_bash` and no
+  `process` tool.
+- **Kill.** Kill reuses the sandbox cancel path: SIGKILL to the process group on
+  the host, the marker-based in-container kill under Podman. Podman's documented
+  double-fork limitation applies (see [sandbox.md](sandbox.md)).
 
 After approval, host `run_bash` detects when inherited `HOME`, `TMPDIR`, or XDG cache/config/data/state variables point inside the current checkout. In that polluted-env case it redirects those variables to yottacode-owned scratch paths under `~/.yottacode/host-shell/<workspace>/` before running the command. This keeps tools that follow freedesktop defaults from leaking repo-root `.local/`, `.cache/`, or `.config/` directories. If a command intentionally needs the real home directory, pass the required path explicitly instead of relying on inherited `HOME`.
 
@@ -2028,6 +2079,30 @@ isolation: run yottacode itself inside a container or devcontainer
 (covers every tool, all-or-nothing), or enable the command sandbox
 (`[sandbox] backend = "podman"`) to route supported command execution through
 lazy rootless Podman profile containers instead — see [sandbox.md](sandbox.md).
+
+## process
+
+Manage background shell jobs started with `run_bash(background=true)`. Only
+registered where background jobs exist (interactive TUI and ACP). It acts only on
+jobs this session started, so it never prompts.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `action` | string | — | `poll`, `wait`, `log` or `kill` |
+| `session_id` | string | — | From the `run_bash` start result; an unambiguous prefix of at least 4 characters works |
+| `timeout_ms` | integer | `60000` | `wait` only; clamped to `300000`. Re-issue `wait` to keep waiting |
+| `lines` | integer | `200` | `log` only; clamped to `2000` |
+
+- `poll` returns status plus the output produced since the previous `poll`/`wait`,
+  and never blocks.
+- `wait` blocks until the job exits, the timeout elapses, or the turn is
+  cancelled, then reports like `poll`. A caller blocked in `wait` receives the
+  completion itself, so `notify_on_complete` does not fire a second time.
+- `log` returns the last N lines of retained output without moving the poll
+  cursor.
+- `kill` stops the job and reports its final state.
+
+An unknown or expired `session_id` is a normal tool result, not an error.
 
 ## git
 
