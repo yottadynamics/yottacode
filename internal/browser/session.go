@@ -723,8 +723,39 @@ func (s *session) click(ctx context.Context, sel string) error {
 	win, bounds, boundsErr := browser.GetWindowForTarget().WithTargetID(p.id).Do(cdp.WithExecutor(s.browserCtx, s.browser))
 	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s innerWH=%dx%d rect=%s diagErr=%v windowID=%v bounds=%+v boundsErr=%v\n",
 		time.Now().Format(time.RFC3339Nano), sel, p.id, winW, winH, rectJSON, diagErr, win, bounds, boundsErr)
-	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
-		return classifySelectorErr(err)
+	// Headed Chrome under Xvfb can report a visible element before its
+	// renderer has settled the input coordinates. Re-resolve the target and
+	// retry the native click briefly so handoff clicks are not lost at that
+	// boundary.
+	var clickErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		var rect struct {
+			Width  float64 `json:"w"`
+			Height float64 `json:"h"`
+		}
+		readyCtx, readyCancel := context.WithTimeout(c, 2*time.Second)
+		readyErr := chromedp.Run(readyCtx, chromedp.Evaluate(fmt.Sprintf(`(() => { const e = document.querySelector(%q); if (!e) return null; const r = e.getBoundingClientRect(); return {w:r.width,h:r.height}; })()`, sel), &rect))
+		readyCancel()
+		if readyErr == nil && rect.Width > 0 && rect.Height > 0 {
+			clickErr = chromedp.Run(c, chromedp.Click(sel))
+			if clickErr == nil {
+				break
+			}
+		} else if readyErr != nil {
+			clickErr = readyErr
+		} else {
+			clickErr = fmt.Errorf("selector %q has no usable layout", sel)
+		}
+		if attempt < 2 {
+			select {
+			case <-c.Done():
+				return c.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	if clickErr != nil {
+		return classifySelectorErr(clickErr)
 	}
 	endTicks, endOK := debugCPUTicks(s.pid)
 	ticksMsg := "n/a"
