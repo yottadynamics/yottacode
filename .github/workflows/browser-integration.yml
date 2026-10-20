@@ -18,10 +18,14 @@ on:
       - "internal/agent/browser_tools*.go"
       - ".github/workflows/browser-integration.yml"
   pull_request:
-    paths:
-      - "internal/browser/**"
-      - "internal/agent/browser_tools*.go"
-      - ".github/workflows/browser-integration.yml"
+    types: [opened, synchronize, reopened]
+  merge_group:
+
+# Keep only the newest run for each PR. This prevents obsolete browser runs
+# from competing with the commit currently shown by the PR checks UI.
+concurrency:
+  group: browser-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -35,6 +39,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Print tested revisions
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "workflow_sha=$GITHUB_SHA"
+          echo "pr_head_sha=${{ github.event.pull_request.head.sha }}"
+          echo "pr_base_sha=${{ github.event.pull_request.base.sha }}"
+          git rev-parse HEAD
 
       - name: Set up Go
         uses: actions/setup-go@v5

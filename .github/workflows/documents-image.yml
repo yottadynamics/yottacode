@@ -12,6 +12,7 @@ name: Documents image
 on:
   workflow_dispatch: {}
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - infra/documents.Containerfile
       - internal/documents/pyhelpers/**
@@ -29,6 +30,10 @@ on:
     # Weekly rebuild for upstream pandoc/poppler/weasyprint CVE patches — not
     # tied to any yottacode CLI release.
     - cron: '0 6 * * 1'
+
+concurrency:
+  group: documents-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

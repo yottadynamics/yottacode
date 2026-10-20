@@ -11,6 +11,13 @@ on:
   # targeted PRs (stacked work like fix/* against feature/*) need
   # the same Linux + macOS verification before merge.
   pull_request:
+    types: [opened, synchronize, reopened]
+  merge_group:
+
+# Cancel obsolete PR runs so required checks converge on the newest commit.
+concurrency:
+  group: go-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -24,6 +31,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Print tested revisions
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "workflow_sha=$GITHUB_SHA"
+          echo "pr_head_sha=${{ github.event.pull_request.head.sha }}"
+          echo "pr_base_sha=${{ github.event.pull_request.base.sha }}"
+          git rev-parse HEAD
 
       - name: Set up Go
         uses: actions/setup-go@v5
