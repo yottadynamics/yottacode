@@ -774,15 +774,41 @@ func (s *session) click(ctx context.Context, sel string) error {
 	return nil
 }
 func (s *session) typeText(ctx context.Context, sel, text string, submit bool) error {
-	a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
-	if submit {
-		a = append(a, chromedp.SendKeys(sel, "\r"))
-	}
 	pageCtx := s.activePage().ctx
 	cctx, cancel := actionContext(pageCtx, ctx)
 	defer cancel()
-	if err := chromedp.Run(cctx, a...); err != nil {
-		return classifySelectorErr(err)
+
+	// Headed Chrome under Xvfb can acknowledge Focus/SendKeys before the
+	// renderer commits the input value. Confirm the value before returning so a
+	// following click cannot race an undelivered keyboard event.
+	var typeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
+		if submit {
+			a = append(a, chromedp.SendKeys(sel, "\r"))
+		}
+		if typeErr = chromedp.Run(cctx, a...); typeErr != nil {
+			break
+		}
+		if text == "" {
+			return nil
+		}
+		predicate := fmt.Sprintf(`(() => { const e = document.querySelector(%q); return !!e && e.value === %q; })()`, sel, text)
+		if err := chromedp.Run(cctx, chromedp.Poll(predicate, nil)); err == nil {
+			return nil
+		} else {
+			typeErr = err
+		}
+		if attempt < 2 {
+			select {
+			case <-cctx.Done():
+				return cctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	if typeErr != nil {
+		return classifySelectorErr(typeErr)
 	}
 	return nil
 }
