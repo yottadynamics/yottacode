@@ -814,26 +814,27 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 }
 func (s *session) pageCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.pages) }
 func (s *session) followNewPage(before int, ctx context.Context) {
-	deadline := time.NewTimer(newTabDetectWindow)
-	defer deadline.Stop()
+	// A click must not be held hostage by platform-specific target creation.
+	// Bound both discovery and metadata refresh by a child context so a
+	// headed macOS window that reuses its target cannot hang the action.
+	waitCtx, cancel := context.WithTimeout(ctx, newTabDetectWindow)
+	defer cancel()
 	for {
 		if s.pageCount() > before {
 			s.mu.Lock()
 			s.active = len(s.pages) - 1
 			p := s.pages[s.active]
 			s.mu.Unlock()
-			refreshCtx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
+			refreshCtx, refreshCancel := context.WithTimeout(waitCtx, 500*time.Millisecond)
 			var url string
 			if chromedp.Run(refreshCtx, chromedp.Location(&url)) == nil {
 				p.setURL(url)
 			}
-			cancel()
+			refreshCancel()
 			return
 		}
 		select {
-		case <-deadline.C:
-			return
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			return
 		case <-time.After(10 * time.Millisecond):
 		}
