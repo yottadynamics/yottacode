@@ -144,6 +144,7 @@ type session struct {
 	browserCtx      context.Context
 	browserCancel   context.CancelFunc
 	browser         *chromedp.Browser
+	headed          bool
 	mu              syncutil.Mutex
 	pages           []*trackedPage
 	active          int
@@ -252,7 +253,7 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		cancel()
 		return nil, fmt.Errorf("%w: browser startup timed out", ErrLaunchFailed)
 	}
-	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, downloads: make(map[string]*downloadWaiter)}
+	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, headed: !headless, downloads: make(map[string]*downloadWaiter)}
 	if s.browser != nil && s.browser.Process() != nil {
 		s.pid = s.browser.Process().Pid
 	}
@@ -615,6 +616,12 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 		return NavigateResult{}, err
 	}
 	p.setURL(url)
+	if s.headed {
+		// A navigation can trigger another asynchronous OS window-manager resize
+		// after the headed session's initial startup stabilization. Wait again
+		// before returning control so the next type/click sees the real viewport.
+		waitMaximizedViewport(p.ctx, 2*time.Second)
+	}
 	return NavigateResult{url, title}, nil
 }
 func (s *session) waitNetworkIdle(ctx context.Context, quiet time.Duration) error {
