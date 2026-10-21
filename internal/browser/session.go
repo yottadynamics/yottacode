@@ -795,6 +795,13 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 		}
 		predicate := fmt.Sprintf(`(() => { const e = document.querySelector(%q); return !!e && e.value === %q; })()`, sel, text)
 		if err := chromedp.Run(cctx, chromedp.Poll(predicate, nil)); err == nil {
+			// Let the renderer process the input task and a paint cycle before
+			// the next native mouse event. This matters after headed handoff,
+			// where SendKeys can commit the value before hit testing settles.
+			frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+			if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err != nil {
+				return classifySelectorErr(err)
+			}
 			return nil
 		} else {
 			typeErr = err
