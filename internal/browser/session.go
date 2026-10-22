@@ -822,23 +822,33 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 func (s *session) pageCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.pages) }
 func (s *session) followNewPage(before int, ctx context.Context) {
 	// A click must not be held hostage by platform-specific target creation.
-	// Bound both discovery and metadata refresh by a child context so a
-	// headed macOS window that reuses its target cannot hang the action.
+	// TargetCreated commonly arrives with an empty URL, so poll Chrome's
+	// browser-level target registry until the new target has navigated.
 	waitCtx, cancel := context.WithTimeout(ctx, newTabDetectWindow)
 	defer cancel()
 	for {
-		if s.pageCount() > before {
-			s.mu.Lock()
-			s.active = len(s.pages) - 1
-			p := s.pages[s.active]
-			s.mu.Unlock()
-			refreshCtx, refreshCancel := context.WithTimeout(waitCtx, 500*time.Millisecond)
-			var url string
-			if chromedp.Run(refreshCtx, chromedp.Location(&url)) == nil {
-				p.setURL(url)
+		s.mu.Lock()
+		var p *trackedPage
+		if len(s.pages) > before {
+			p = s.pages[len(s.pages)-1]
+		}
+		s.mu.Unlock()
+		if p != nil {
+			infos, _ := target.GetTargets().Do(cdp.WithExecutor(waitCtx, s.browser))
+			for _, info := range infos {
+				if info != nil && info.TargetID == p.id && info.URL != "" && info.URL != "about:blank" {
+					p.setURL(info.URL)
+					s.mu.Lock()
+					for i, candidate := range s.pages {
+						if candidate == p {
+							s.active = i
+							break
+						}
+					}
+					s.mu.Unlock()
+					return
+				}
 			}
-			refreshCancel()
-			return
 		}
 		select {
 		case <-waitCtx.Done():
