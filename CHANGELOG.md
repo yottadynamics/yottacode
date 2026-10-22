@@ -18,7 +18,13 @@ the project uses semantic versioning once it's past `1.0.0`.
   for docx and pdf.
 
 ### Added
-
+worktree-dispatch-ga-prep
+- **`[dispatch] max_workers` lowers the per-call subtask cap, and `integrate`
+  calls are serialized.** `dispatch` stays experimental. The new setting can
+  only reduce the built-in ceiling of 8. Concurrent `integrate` calls now
+  queue instead of racing in one integration worktree. A test pins that
+  integrate never touches a dirty user checkout.
+=======
 - **`ask_user_question` tool.** The agent can now ask you 1-4 multiple-choice
   questions in a picker instead of ending its turn with a prose question.
   Each question offers 2-4 options (one can be pre-selected as the

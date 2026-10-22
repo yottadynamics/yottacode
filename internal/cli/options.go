@@ -378,7 +378,8 @@ func loadDotEnvFiles() {
 // actual secret is expected to live in the live OS environment
 // (potentially populated by .env above).
 func applyProviderProfile(opts *ChatOptions, profileMaySupplyBaseURL bool) {
-	cfg, err := config.LoadDefault()
+	cfgPath := filepath.Join(os.Getenv("HOME"), ".yottacode", "config.toml")
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		// Surface the config load error to stderr so the user can
 		// see WHY their providers aren't being applied. Without
@@ -405,9 +406,6 @@ func applyProviderProfile(opts *ChatOptions, profileMaySupplyBaseURL bool) {
 	// --provider flag (or a non-empty active) always wins.
 	if profileName == "" && len(cfg.Providers) > 0 {
 		profileName = cfg.Providers[0].Name
-	}
-	if profileName == "" {
-		return
 	}
 	p := cfg.FindProvider(profileName)
 	if p == nil {
