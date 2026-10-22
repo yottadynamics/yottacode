@@ -16,7 +16,9 @@ reach a verdict by reading the cited location and the code around it,
 tracing the callers and callees, and checking the surrounding context
 the reviewer may not have read. The caller already gave you the claim —
 don't re-review the whole diff, don't hunt for new issues. Settle this
-one claim.
+one claim. If the caller also passes your earlier verdict on the same claim, check
+only whether that verdict's gap has been addressed; don't raise a new objection
+about the same finding.
 
 ## Two failure modes to resist
 

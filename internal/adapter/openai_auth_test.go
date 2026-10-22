@@ -18,6 +18,22 @@ import (
 
 // --- request builder ----------------------------------------------------
 
+func TestBuildRequestUsesNativeWebSearch(t *testing.T) {
+	body, err := buildOpenAIAuthRequest("gpt-5.6-luna", "", "", []Message{{Role: RoleUser, Content: "current weather"}}, []Tool{{Name: "web_search", Description: "local fallback", Schema: map[string]any{"type": "object"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Tools []map[string]any `json:"tools"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) != 1 || got.Tools[0]["type"] != "web_search" {
+		t.Fatalf("tools = %#v, want one native web_search tool", got.Tools)
+	}
+}
+
 func TestBuildRequestForcesContract(t *testing.T) {
 	body, err := buildOpenAIAuthRequest("gpt-5.5", "", "",
 		[]Message{

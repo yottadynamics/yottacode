@@ -10,9 +10,47 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
+
+// hangingPandocSandbox answers availability probes normally but makes the
+// real pandoc invocation hang, to exercise documentCommandTimeout.
+type hangingPandocSandbox struct{ fakeSandbox }
+
+func (h *hangingPandocSandbox) Command(ctx context.Context, command, cwd string) *exec.Cmd {
+	if strings.HasPrefix(command, "pandoc ") {
+		return exec.CommandContext(ctx, "/bin/sh", "-c", "exec sleep 30")
+	}
+	return h.fakeSandbox.Command(ctx, command, cwd)
+}
+
+func TestCreateDocumentPandocTimesOut(t *testing.T) {
+	old := documentCommandTimeout
+	documentCommandTimeout = 300 * time.Millisecond
+	defer func() { documentCommandTimeout = old }()
+
+	tmp := t.TempDir()
+	tool := &CreateDocumentTool{
+		Cwd:                      NewCwdRef(tmp),
+		WriteOpts:                WritePathOptions{Cwd: NewCwdRef(tmp)},
+		Sandbox:                  &hangingPandocSandbox{fakeSandbox{label: "[podman-sandbox]"}},
+		SubprocessFormatsEnabled: true,
+	}
+	args := `{"format":"docx","output_path":"out.docx","content":{"blocks":[{"type":"paragraph","text":"hi"}]}}`
+	start := time.Now()
+	_, err := tool.Execute(context.Background(), args)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("timeout did not kill the subprocess promptly: %v", time.Since(start))
+	}
+	if _, statErr := os.Stat(filepath.Join(tmp, "out.docx")); statErr == nil {
+		t.Fatal("no output file should be placed after a timeout")
+	}
+}
 
 // fakeSandbox lets tests control command-availability detection without a
 // real podman container or a real pandoc install. Every command it builds

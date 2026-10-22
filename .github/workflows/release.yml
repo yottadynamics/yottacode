@@ -23,8 +23,31 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           cache: true
+
+      - name: Prepare Homebrew tap on stable tags
+        # Validate the tap and token before GoReleaser publishes the GitHub
+        # Release. The tap is provisioned separately, so a missing or
+        # inaccessible tap must fail before any release becomes visible.
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "$HOMEBREW_TAP_GITHUB_TOKEN" ]; then
+            echo "::error::HOMEBREW_TAP_GITHUB_TOKEN is not set; it must have contents:write on yottadynamics/homebrew-yottacode"
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::stable release tags must use vMAJOR.MINOR.PATCH; got $GITHUB_REF_NAME"
+            exit 1
+          fi
+          tap_dir="$RUNNER_TEMP/homebrew-yottacode"
+          git clone --branch main "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/yottadynamics/homebrew-yottacode.git" "$tap_dir"
+          test -d "$tap_dir/Formula"
+          echo "HOMEBREW_TAP_DIR=$tap_dir" >> "$GITHUB_ENV"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
@@ -34,3 +57,31 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open Homebrew formula pull request
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME#v}"
+          branch="release/yottacode-${GITHUB_REF_NAME}"
+          tap_dir="$RUNNER_TEMP/homebrew-yottacode"
+          git -C "$tap_dir" checkout -b "$branch"
+          bash .github/scripts/generate-homebrew-formula.sh "$version" dist/SHA256SUMS "$tap_dir/Formula/yottacode.rb"
+          git -C "$tap_dir" config user.name YottaDynamics
+          git -C "$tap_dir" config user.email hello@yottadynamics.com
+          git -C "$tap_dir" add Formula/yottacode.rb
+          if git -C "$tap_dir" diff --cached --quiet; then
+            echo "Homebrew formula is already current on main"
+            exit 0
+          fi
+          git -C "$tap_dir" commit -m "yottacode ${GITHUB_REF_NAME}"
+          git -C "$tap_dir" push origin "HEAD:$branch"
+          gh pr create \
+            --repo yottadynamics/homebrew-yottacode \
+            --base main \
+            --head "$branch" \
+            --title "Update yottacode to ${GITHUB_REF_NAME}" \
+            --body "Update the generated yottacode formula for ${GITHUB_REF_NAME}. The formula was generated from the release archives and SHA-256 checksums by the yottacode release workflow."

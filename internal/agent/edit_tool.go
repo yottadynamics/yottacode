@@ -3,10 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 
+	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
 )
 
@@ -34,15 +38,33 @@ func (t *EditFileTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":        map[string]any{"type": "string", "description": "File to edit (absolute or cwd-relative)"},
-			"old_string":  map[string]any{"type": "string", "description": "Text that currently exists in the file"},
+			"old_string":  map[string]any{"type": "string", "description": "Text that currently exists in the file; optional when receipt is supplied"},
 			"new_string":  map[string]any{"type": "string", "description": "Replacement text (may be empty to delete)"},
 			"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence (default: false)"},
+			"receipt":     map[string]any{"type": "object", "description": "Exact receipt returned by an anchored read; avoids reconstructing old_string from displayed text"},
 		},
-		"required": []string{"path", "old_string", "new_string"},
+		"required": []string{"path", "new_string"},
 	}
 }
 
 func (t *EditFileTool) RequiresApproval(string) bool { return true }
+
+// PrevalidateArgs rejects malformed edit calls before permission evaluation or
+// approval. Missing paths must never produce an approval prompt or a misleading
+// mutation error after the user accepts it.
+func (t *EditFileTool) PrevalidateArgs(argsJSON string) error {
+	var a editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return fmt.Errorf("edit_file: path is required")
+	}
+	if a.OldString == "" && len(a.Receipt) == 0 {
+		return fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
+	}
+	return nil
+}
 
 // PathsToSnapshot reports the target file so /checkpoints can restore
 // the pre-edit contents on rewind.
@@ -65,33 +87,94 @@ func (t *EditFileTool) PreviewCall(argsJSON string) string {
 }
 
 type editArgs struct {
-	Path       string `json:"path"`
-	OldString  string `json:"old_string"`
-	NewString  string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all"`
+	Path       string          `json:"path"`
+	OldString  string          `json:"old_string"`
+	NewString  string          `json:"new_string"`
+	ReplaceAll bool            `json:"replace_all"`
+	Receipt    json.RawMessage `json:"receipt"`
 }
 
+var replaceFileIfUnchanged = hashline.ReplaceFileIfUnchanged
+
+func (t *EditFileTool) applyReceiptWithCwd(a *editArgs, cwd string) (editReceipt, error) {
+	if len(a.Receipt) == 0 || string(a.Receipt) == "null" {
+		return editReceipt{}, nil
+	}
+	receipt, err := parseEditReceipt(a.Receipt)
+	if err != nil {
+		return editReceipt{}, err
+	}
+	if receipt.Path != "" && resolvePath(cwd, receipt.Path) != resolvePath(cwd, a.Path) {
+		return editReceipt{}, fmt.Errorf("receipt path %q does not match edit path %q", receipt.Path, a.Path)
+	}
+	if a.OldString != "" && a.OldString != receipt.Old {
+		return editReceipt{}, fmt.Errorf("old_string conflicts with receipt old text")
+	}
+	a.OldString = receipt.Old
+	return receipt, nil
+}
 func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var preview editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
+		return "", fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, preview.Path)
+	return withEditPathLock(p, func() (string, error) {
+		return t.executeUnlocked(ctx, argsJSON, p, cwd)
+	})
+}
+
+func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string, resolvedPath, resolvedCwd string) (string, error) {
 	var a editArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	if a.OldString == "" && len(a.Receipt) == 0 {
+		return "", fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
+	}
+	receipt, err := t.applyReceiptWithCwd(&a, resolvedCwd)
+	if err != nil {
+		return "", fmt.Errorf("edit_file: %w", err)
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("edit_file: path is required")
 	}
 	if a.OldString == "" {
-		return "", fmt.Errorf("edit_file: old_string must not be empty (would match everywhere)")
+		return "", fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
 	}
 	if a.OldString == a.NewString {
 		return "", fmt.Errorf("edit_file: old_string and new_string are byte-for-byte identical, so this call cannot make progress and resubmitting it unchanged will fail the same way every time. This is not a stale-file problem — no file was even read yet. Call read_file on the target to see its current exact content, then call edit_file again with a new_string that actually differs from old_string")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvedPath
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
 	contents, err := os.ReadFile(p)
 	if err != nil {
-		return "", fmt.Errorf("edit_file: %w", err)
+		return "", fmt.Errorf("edit_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
+	}
+	if receipt.Hash != "" {
+		applyOffset := receipt.Offset
+		observedMatches := receipt.Offset >= 0 && receipt.Offset+receipt.Length <= len(contents) && string(contents[receipt.Offset:receipt.Offset+receipt.Length]) == receipt.Old
+		if !observedMatches {
+			// A preceding insertion/deletion can shift an otherwise unchanged target.
+			// Rebase exactly once only when the original bytes occur at one unique
+			// location; changed or ambiguous targets remain hard failures.
+			matches := strings.Count(string(contents), receipt.Old)
+			if matches != 1 {
+				return "", fmt.Errorf("edit_file: stale_receipt: the receipt span changed since the read; re-read the target")
+			}
+			applyOffset = strings.Index(string(contents), receipt.Old)
+		}
+		outBytes := make([]byte, 0, len(contents)-receipt.Length+len(a.NewString))
+		outBytes = append(outBytes, contents[:applyOffset]...)
+		outBytes = append(outBytes, a.NewString...)
+		outBytes = append(outBytes, contents[applyOffset+receipt.Length:]...)
+		if err := replaceFileIfUnchanged(p, contents, outBytes); err != nil {
+			return "", fmt.Errorf("edit_file: write: %w", err)
+		}
+		return t.editResult(ctx, p, string(outBytes), "edited %s: 1 receipt replacement")
 	}
 	src := string(contents)
 	count := strings.Count(src, a.OldString)
@@ -105,7 +188,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		if !a.ReplaceAll {
 			if start, end, mcount := editTolerantLineMatch(src, a.OldString); mcount == 1 {
 				out := src[:start] + a.NewString + src[end:]
-				if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+				if err := replaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
 					return "", fmt.Errorf("edit_file: write: %w", err)
 				}
 				return t.editResult(ctx, p, out, "edited %s: 1 replacement (matched ignoring trailing whitespace / line endings)")
@@ -113,10 +196,15 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 				return "", fmt.Errorf("edit_file: old_string is not present exactly, and a whitespace-insensitive match is ambiguous (%d candidates) in %s — re-read the file and copy the exact text, or add surrounding lines to old_string for a unique match", mcount, p)
 			}
 		}
+		if len(strings.TrimSpace(a.NewString)) >= editAlreadyAppliedMinLen && strings.Contains(src, a.NewString) {
+			// Common retry-after-success loop: the edit already landed, so the
+			// old text is legitimately gone.
+			return "", fmt.Errorf("edit_file: old_string not found in %s, but new_string is already present — this edit was probably already applied. Re-read the file to confirm before retrying", p)
+		}
 		return "", editNotFoundErr(p, src, a.OldString)
 	}
 	if count > 1 && !a.ReplaceAll {
-		return "", fmt.Errorf("edit_file: old_string appears %d times in %s — set replace_all=true to apply, or refine old_string for a unique match", count, p)
+		return "", fmt.Errorf("edit_file: old_string appears %d times in %s (at lines %s) — set replace_all=true to apply, or add surrounding lines to old_string for a unique match", count, p, editMatchLines(src, a.OldString))
 	}
 	var out string
 	var n int
@@ -127,7 +215,7 @@ func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 		out = strings.Replace(src, a.OldString, a.NewString, 1)
 		n = 1
 	}
-	if err := os.WriteFile(p, []byte(out), 0o644); err != nil {
+	if err := replaceFileIfUnchanged(p, contents, []byte(out)); err != nil {
 		return "", fmt.Errorf("edit_file: write: %w", err)
 	}
 	return t.editResult(ctx, p, out, fmt.Sprintf("edited %%s: %d replacement(s)", n))
@@ -199,14 +287,68 @@ func editTolerantLineMatch(src, old string) (start, end, count int) {
 	return start, end, 1
 }
 
+// editAlreadyAppliedMinLen is the shortest new_string (ignoring surrounding
+// whitespace) for which "already present" is a meaningful signal; a short
+// string like "}" appears in almost any file.
+const editAlreadyAppliedMinLen = 12
+
+// withMissingPathHint appends cwd context to a file-not-found error. Most
+// not-found failures are a stale path (a removed worktree, a guessed
+// filename) and the model otherwise retries the same path.
+func withMissingPathHint(err error, cwd, rawPath string) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w (path %q is resolved against cwd %s; use glob or list_dir to locate the file)", err, rawPath, cwd)
+	}
+	return err
+}
+
+// editMatchLines returns the 1-based line numbers where old starts in src,
+// capped so a very common string cannot flood the error.
+func editMatchLines(src, old string) string {
+	const maxListed = 8
+	var lines []string
+	total := 0
+	for i := 0; ; {
+		j := strings.Index(src[i:], old)
+		if j < 0 {
+			break
+		}
+		total++
+		if len(lines) < maxListed {
+			lines = append(lines, strconv.Itoa(1+strings.Count(src[:i+j], "\n")))
+		}
+		i += j + len(old)
+	}
+	out := strings.Join(lines, ", ")
+	if total > maxListed {
+		out += fmt.Sprintf(", … (%d more)", total-maxListed)
+	}
+	return out
+}
+
 // editNotFoundErr builds the "old_string not found" error, pointing the
 // model at the closest actual line so it can self-correct on the next turn
 // instead of retrying the same wrong text.
 func editNotFoundErr(path, src, old string) error {
 	if line, num := editClosestLine(src, old); line != "" {
-		return fmt.Errorf("edit_file: old_string not found in %s — the closest line is %d: %q. Re-read the file and copy its exact current text (including whitespace) into old_string", path, num, line)
+		return fmt.Errorf("edit_file: old_string not found in %s — the closest line is %d: %q. Current text there:%s\nCopy the exact current text (including whitespace) into old_string", path, num, line, editNumberedWindow(src, num, 3))
 	}
 	return fmt.Errorf("edit_file: old_string not found in %s — re-read the file with read_file and copy its exact current text into old_string", path)
+}
+
+// editNumberedWindow renders n lines of src starting at 1-based line start as
+// "\n  N\ttext", each truncated, so a not-found error shows what is really there.
+func editNumberedWindow(src string, start, n int) string {
+	srcLines := strings.Split(src, "\n")
+	var b strings.Builder
+	for i := start - 1; i < start-1+n && i < len(srcLines); i++ {
+		l := strings.TrimRight(srcLines[i], "\r")
+		if len(l) > 160 {
+			l = strings.ToValidUTF8(l[:160], "") + "…"
+		}
+		fmt.Fprintf(&b, "\n  %d\t%s", i+1, l)
+	}
+	return b.String()
 }
 
 // editClosestLine returns the source line most similar to the first non-blank

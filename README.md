@@ -40,6 +40,12 @@ Install on Linux or macOS:
 curl -fsSL https://yottacode.ai/cli/install.sh | bash
 ```
 
+Or with Homebrew:
+
+```bash
+brew install yottadynamics/yottacode/yottacode
+```
+
 Run setup once:
 
 ```bash
@@ -194,7 +200,7 @@ Browse the full documentation online at **[yottacode.ai/docs](https://yottacode.
 | [`docs/tui-slash-commands.md`](docs/tui-slash-commands.md) | TUI command reference |
 | [`docs/cli.md`](docs/cli.md) | CLI command reference |
 | [`docs/run-recipes.md`](docs/run-recipes.md) | `yottacode run` scripting and CI recipes |
-| [`docs/architecture.md`](docs/architecture.md) | Internals |
+| [`docs/architecture.md`](docs/architecture.md) | System architecture, runtime flow, safety layers, and extension seams |
 | [`docs/development.md`](docs/development.md) | Contribution workflow |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues |
 | [`docs/faq.md`](docs/faq.md) | Frequently asked questions |

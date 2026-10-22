@@ -37,6 +37,9 @@ func TestLoopControl_StopDuringLoopTurn(t *testing.T) {
 	if iterationToolFilter(false, true)("exit_plan_mode") {
 		t.Error("exit_plan_mode should still be hidden outside plan mode")
 	}
+	if iterationToolFilter(false, true)(DeepResearchToolName) {
+		t.Error("deep_research should be hidden from ordinary model turns")
+	}
 	if !iterationToolFilter(false, true)("read_file") {
 		t.Error("ordinary tools should always pass")
 	}

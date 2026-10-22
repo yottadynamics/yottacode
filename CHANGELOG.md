@@ -6,14 +6,40 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
-### Added
+### Fixed
 
+- **Document tools hardening ahead of GA confidence.** `read_document` on
+  `.xlsx` now caps total decompressed size (20x the read cap) instead of only
+  gating the compressed file size, so a zip bomb errors rather than exhausting
+  memory. Every document subprocess (pandoc, weasyprint, pdftotext/pdfinfo,
+  python helpers) now has a 2-minute deadline and reports a clear timeout
+  error instead of hanging until cancelled. New `Documents integration` CI
+  workflow runs real pandoc/weasyprint/poppler create-then-read round trips
+  for docx and pdf.
+
+### Added
 worktree-dispatch-ga-prep
 - **`[dispatch] max_workers` lowers the per-call subtask cap, and `integrate`
   calls are serialized.** `dispatch` stays experimental. The new setting can
   only reduce the built-in ceiling of 8. Concurrent `integrate` calls now
   queue instead of racing in one integration worktree. A test pins that
   integrate never touches a dirty user checkout.
+=======
+- **`ask_user_question` tool.** The agent can now ask you 1-4 multiple-choice
+  questions in a picker instead of ending its turn with a prose question.
+  Each question offers 2-4 options (one can be pre-selected as the
+  recommended default) plus a free-text "Other"; multi-select questions are
+  supported. It never needs approval, so yolo/auto mode can't skip it. In
+  `/plan` mode it unlocks once the plan file has content. Subagents and
+  dispatch workers can't use it; `yottacode run` auto-answers from the
+  recommended defaults (or fails with a clear message if there are none);
+  ACP fails closed. The picker marks the recommended option `★ recommended`,
+  numbers options for `1`-`9` quick pick, lets you attach a note (`n`) or skip
+  a question (`s`), keeps a fixed size across tabs, and asks for a second Esc
+  before discarding all answers. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
+
+- **Approval command layout is clearer.** Approval cards now label the operation as `Command` for shell calls, show compact primary actions (`[Y] allow once`, `[N] reject`), and keep persistent permission choices (`[S]`, `[A]`, `[D]`) scannable without repeating long policy explanations.
+
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
   (default 4) independent sub-questions, runs read-only web researchers in
   parallel, has two verifiers independently re-check every claim, then writes a
@@ -348,8 +374,38 @@ worktree-dispatch-ga-prep
   format's image-section contract — never image bytes. See
   [`document-generation.md`](docs/document-generation.md#known-limitations)
   and [`tools.md`](docs/tools.md#read_document).
+- **Homebrew formula.** `brew install yottadynamics/yottacode/yottacode` installs
+  the published release binary on macOS from the
+  `yottadynamics/homebrew-yottacode` tap. The release workflow generates
+  `Formula/yottacode.rb` from the GoReleaser darwin archives (URL + SHA-256 per
+  architecture, never a build from HEAD) and pushes it to the tap on every
+  stable tag; pre-release tags (`-rc.N`) leave the tap untouched. Upgrade with
+  `brew upgrade yottacode`. Needs a `HOMEBREW_TAP_GITHUB_TOKEN` repository
+  secret with write access to the tap; a stable tag without it now fails
+  before the GitHub Release is published. A new `goreleaser-config` CI job
+  runs `goreleaser check` and validates the release checksum matrix on every
+  PR. See [`installation.md`](docs/installation.md#homebrew).
 
 ### Changed
+
+- **Built-in subagent prompts tightened.** `Explore` scales depth to the
+  caller's thoroughness level and reports "not found" instead of widening
+  past the workspace; `Plan` works in four passes and gives each critical
+  file a reason; `general-purpose` does what was asked and reports anything
+  blocked or unverified. `implement`, `test` and `docs` now stop and name the
+  file and change needed when blocked by a file they don't own, rather than
+  editing around it. `review` stays on the change (pre-existing issues are
+  tagged `[pre-existing]`) and defaults to at most 10 findings as
+  `file:line — severity — scenario`; a caller-specified format still wins.
+  `Explore`, `review` and `verification` treat file contents, command output
+  and fetched pages as data, not instructions.
+  An opt-in live eval (`YOTTACODE_SUBAGENT_EVAL_MODEL`) checks that a local
+  model follows the `review`, `Explore` and `implement` policies.
+  `verification` now takes the previous FAIL findings on a re-check (a new FAIL
+  needs a real defect or unmet requirement, not a preference) and checks the
+  caller's "files changed" against the real diff. `implement` and `test` gain a
+  "no test theater" rule: no hard-coded expectations, re-implemented units or
+  skipped tests, while faking a clock, network or I/O boundary stays fine.
 
 - **Approval prompts show `~` instead of the home directory** in the
   command being approved (e.g. `git -C ~/go/src/...`).
@@ -370,6 +426,80 @@ worktree-dispatch-ga-prep
   richer-parsing tier.
 
 ### Fixed
+
+- **Edit tools fail less and recover faster.** From a session where 32 tool
+  calls errored (16 of 48 `edit_file`, 9 of 19 `edit_anchored`, 4 of 4
+  `apply_hashline`, 2 of 2 `apply_diff`):
+  - `apply_hashline` no longer rejects an `anchor` hunk because the model also
+    sent default-filled `"hash":""`, `"offset":0`, `"length":0`, or copied the
+    anchor's own hash into `hash`; those retries always failed identically. A
+    relocated anchor is reported in the result, as for `edit_anchored`.
+  - `edit_anchored` / `apply_hashline` relocate a stale anchor whose line moved
+    (within 100 lines, exactly one match; `edit_anchored` reports the move in
+    its result), and otherwise quote the current lines with fresh anchors in
+    the error instead of only a new hash.
+  - `apply_diff` rejects apply_patch-format and header-less patches before the
+    approval prompt and the error includes a unified-diff example.
+  - `edit_file` errors now list ambiguous match lines, detect likely
+    already-applied retries, show nearby current text, and name the cwd on
+    file-not-found; `read_file` gets the same cwd hint.
+  - The system prompt tells the model to re-read after an edit and not to
+    resubmit a failed edit unchanged.
+- **Edit tools preserve file integrity under real session churn.** `edit_file`
+  now uses compare-and-swap atomic writes, `edit_anchored` preserves CRLF/mixed
+  line endings and unterminated files, `apply_diff` bounds `git apply` and
+  stops retrying after cancellation or timeout, and `grep` reports its resolved
+  root and output truncation instead of silently returning incomplete evidence.
+- **ACP: clients can now select the model.** `yottacode acp` advertises a
+- **Edit tools fail less and recover faster.** From a session where 32 tool
+  calls errored (16 of 48 `edit_file`, 9 of 19 `edit_anchored`, 4 of 4
+  `apply_hashline`, 2 of 2 `apply_diff`):
+  - `apply_hashline` no longer rejects an `anchor` hunk because the model also
+    sent default-filled `"hash":""`, `"offset":0`, `"length":0`, or copied the
+    anchor's own hash into `hash`; those retries always failed identically. A
+    relocated anchor is reported in the result, as for `edit_anchored`.
+  - `edit_anchored` / `apply_hashline` relocate a stale anchor whose line moved
+    (within 100 lines, exactly one match; `edit_anchored` reports the move in
+    its result), and otherwise quote the current
+    lines with fresh anchors in the error instead of only a new hash.
+  - `apply_diff` rejects apply_patch-format and header-less patches before the
+    approval prompt (previously you approved a patch that failed immediately)
+    and the error includes a unified-diff example.
+  - `edit_file` errors now list the lines of an ambiguous match, say when
+    `new_string` is already present (a retry after success), show the actual
+    text near the closest line, and name the cwd on file-not-found; `read_file`
+    gets the same cwd hint.
+  - The system prompt tells the model to re-read after an edit and not to
+    resubmit a failed edit unchanged.
+- **ACP: clients can now select the model.** `yottacode acp` advertises a
+  `model` session config option (category `model`) listing every model from
+  the configured `[[providers]]`, and `session/set_config_option` switches the
+  session to it, adopting the owning provider's URL, key and headers. Hosts
+  such as Buzz (`buzz-acp --model <id>`, `buzz-acp models`) previously found no
+  model option and silently ran every session on the config default.
+  `session/load` restores the model the session last ran on. Session-only:
+  `config.toml` is not modified, and the option is hidden while advisor routing
+  owns the main model.
+- **ACP: permission mode and session title from the host.** `yottacode acp`
+  advertises a `mode` session config option (`default`, `acceptEdits`, `auto`,
+  `plan`, `bypassPermissions`, mapped onto the ask/code/architect/yolo session
+  modes; kebab-case spellings such as `bypass-permissions` are accepted), so
+  `buzz-acp --permission-mode` takes effect instead of being rejected as an
+  unknown option. `dontAsk` has no equivalent and is refused. A
+  `_meta.sessionTitle` on `session/new` (`buzz-acp --session-title`) now names
+  the session, suffixed with its UTC creation time (`jpmc-agent-20261009-165750`)
+  so sessions from one agent are distinguishable and resumable by name.
+- **ACP: context usage is a `usage_update`, not chat text.** Each iteration's
+  context fill (and cumulative cost, when known) is sent as a structured
+  `usage_update` notification. Previously it was spliced into the agent's reply
+  as `[context] n/m tokens` lines, which showed up in Buzz and editor chats.
+- **ACP: `initialize` no longer rejects other protocol versions.** A client
+  requesting an unsupported version now gets our latest version back, as the
+  ACP spec requires, instead of `-32602 Invalid params` (which stopped every
+  Buzz agent from starting).
+- **Sessions from Buzz are titled by the user's request.** The `/load` picker
+  showed `<base> You are an agent operating inside Buzz…` for every Buzz
+  session; the gist now comes from the message's `Content:` field.
 
 - **Interrupting a turn with Ctrl+C no longer leaves the terminal-tab
   "working" icon and the footer's `tools <name>` segment stuck on.** The

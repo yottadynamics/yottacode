@@ -478,7 +478,7 @@ type Model struct {
 	// eventsCh via waitForSubagentInbox so notifications surface
 	// without waiting for the next user input. Buffer is generous
 	// (32) so a flurry of completions can't block the goroutines.
-	subagentInbox chan agent.SubagentBackgroundDone
+	subagentInbox *backgroundDoneInbox
 
 	// pendingSubagentWakes queues background completions whose spawner set
 	// notify_on_done while a turn is in flight (a wake can't interrupt a
@@ -799,6 +799,17 @@ type Model struct {
 	approvalDenyAlwaysOK    bool
 	approvalDerivedDenyRule string
 
+	// ask_user_question modal state. awaitingQuestion mirrors
+	// awaitingApproval/awaitingPathTrust in every gate that blocks
+	// other UI while a modal owns input. questionReq is the event as
+	// it arrived (Reply is the pointer the key handler fills in before
+	// sendDecision); questionPicker is the interactive state (current
+	// tab, per-question selections, free-text buffer) the key handler
+	// mutates and the renderer reads.
+	awaitingQuestion bool
+	questionReq      agent.QuestionNeeded
+	questionPicker   questionPickerState
+
 	// Inline path-trust elevation modal state (Prompt 2 in
 	// yottacode-roadmap/folder-trust.md). When awaitingPathTrust is
 	// true, the regular approvalTool flow is bypassed: the user is
@@ -844,6 +855,7 @@ type Model struct {
 	inspectOpen         bool
 	inspectPanel        string
 	inspectSession      *session.Session
+	inspectView         *inspectViewState
 	inspectScrollOffset int
 	inspectPickerOpen   bool
 	inspectPicker       *inspectPickerState
@@ -1320,7 +1332,7 @@ func New(parent context.Context, c Config) Model {
 		experimentalEnabled:    c.ExperimentalEnabled,
 		sandboxActive:          c.SandboxActive,
 		mcpManager:             c.MCPManager,
-		subagentInbox:          make(chan agent.SubagentBackgroundDone, 32),
+		subagentInbox:          newBackgroundDoneInbox(),
 		banneredSubagentDone:   map[string]bool{},
 		customSlash:            buildCustomSlash(c.CustomCommands),
 		skillSlash:             buildSkillSlash(c.Skills),
@@ -1367,6 +1379,9 @@ func (m *Model) clearPendingDecisionUI() {
 	m.approvalDerivedDenyRule = ""
 	m.awaitingPathTrust = false
 	m.pathTrustReq = agent.PathTrustElevationNeeded{}
+	m.awaitingQuestion = false
+	m.questionReq = agent.QuestionNeeded{}
+	m.questionPicker = questionPickerState{}
 }
 
 func (m *Model) sendDecision(d agent.Decision) bool {
@@ -1850,12 +1865,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.dockFocused {
 			return m.updateDockFocus(msg)
 		}
-		if !m.awaitingApproval && !m.awaitingPathTrust && msg.Code == tea.KeyTab && msg.Mod == 0 && !m.paletteOpen && !m.filePaletteOpen && m.hasRunningSubagents() {
+		if !m.awaitingApproval && !m.awaitingPathTrust && !m.awaitingQuestion && msg.Code == tea.KeyTab && msg.Mod == 0 && !m.paletteOpen && !m.filePaletteOpen && m.hasRunningSubagents() {
 			m.dockFocused = true
 			m.dockCursor = 0
 			return m, nil
 		}
-		if !m.awaitingApproval && !m.awaitingPathTrust && msg.Code == tea.KeyTab && msg.Mod == tea.ModShift {
+		if !m.awaitingApproval && !m.awaitingPathTrust && !m.awaitingQuestion && msg.Code == tea.KeyTab && msg.Mod == tea.ModShift {
 			if m.paletteOpen || m.filePaletteOpen {
 				return m, nil
 			}
@@ -1871,7 +1886,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// /commands and @files while the model is thinking. Handled
 		// before the mid-turn textarea block so Up/Down/Tab/Esc reach
 		// the palette instead of the textarea.
-		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.paletteOpen {
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && !m.awaitingQuestion && m.paletteOpen {
 			switch msg.Code {
 			case tea.KeyUp:
 				if m.paletteIndex > 0 {
@@ -1907,7 +1922,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Non-navigation keys (Enter, typing) fall through to
 			// the mid-turn handler below.
 		}
-		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && m.filePaletteOpen {
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && !m.awaitingQuestion && m.filePaletteOpen {
 			switch msg.Code {
 			case tea.KeyUp:
 				if m.filePaletteIndex > 0 {
@@ -1943,7 +1958,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust {
+		if m.turnActive && !m.awaitingApproval && !m.awaitingPathTrust && !m.awaitingQuestion {
 			switch msg.String() {
 			case "up":
 				// Up while the active-turn textarea is empty is the edit handle for
@@ -2359,6 +2374,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.awaitingQuestion {
+			return m.updateQuestionPicker(msg)
+		}
+
 		if m.paletteOpen {
 			switch msg.Code {
 			case tea.KeyUp:
@@ -2659,6 +2678,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than folding them into KeyPressMsg like v1's Paste-flagged
 		// runes, so each of these overlays needs its own paste hook
 		// alongside its existing key hook.
+		if m.awaitingQuestion {
+			return updateQuestionPickerPaste(m, msg)
+		}
 		if m.providerPickerOpen && m.providerPicker != nil {
 			return updateProviderPickerPaste(m, msg)
 		}
@@ -3106,6 +3128,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.embedCurrentSessionAsync()
 		}
 		switch {
+		case msg.pruned:
+			m.lastContextSummary = fmt.Sprintf("auto pruned %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
+			m.appendLine(styleAuto.Render(SysMsg(SysContext, "context", "pruned stale tool output", m.contextReductionLabel(msg.tokensBefore, m.contextTokens), "full history saved", snapshotResumeHint(msg.snapshotPath))))
 		case !converged:
 			culprit, culpritTok := m.dominantContextBucket()
 			snap := snapshotResumeHint(msg.snapshotPath)
@@ -3188,7 +3213,7 @@ func (m Model) anyOverlayOpen() bool {
 // after the parent turn ends, since a background dispatch detaches its
 // workers and nothing else would trigger a redraw until they finish.
 func (m Model) hasRunningSubagents() bool {
-	return m.subagentTasks != nil && m.subagentTasks.ActiveCount() > 0
+	return m.subagentTasks != nil && m.subagentTasks.ActiveTotalCount() > 0
 }
 
 func (m Model) skillsBusy() bool {
@@ -3330,6 +3355,8 @@ func (m Model) activePopupBody() (box string, ok bool) {
 		default:
 			return renderApprovalModal(m), true
 		}
+	case m.awaitingQuestion:
+		return popupBox(renderQuestionPicker(&m.questionPicker, m.popupWidth())), true
 	case m.loopExitConfirmOpen:
 		return popupBox(renderLoopExitConfirm(m)), true
 	case m.worktreeExitConfirmOpen:
@@ -3472,6 +3499,20 @@ func (m Model) contextualKeyHints() []string {
 	switch {
 	case m.awaitingPathTrust:
 		return []string{"1: once", "2: trust", "3: reject", "Enter: queue text"}
+	case m.awaitingQuestion:
+		if m.questionPicker.escArmed {
+			return []string{"Esc: cancel all", "Other key: keep answering"}
+		}
+		if m.questionPicker.onSubmitTab() {
+			return []string{"←/→: review", "Enter: submit", "Esc: cancel"}
+		}
+		if m.questionPicker.isEditing() {
+			return []string{"Enter: confirm", "Esc: cancel edit"}
+		}
+		if m.questionPicker.questions[m.questionPicker.activeTab].MultiSelect {
+			return []string{"←/→: question", "↑/↓: move", "Space: toggle", "1-9: toggle", "N: note", "S: skip", "Enter: next", "Esc: cancel"}
+		}
+		return []string{"←/→: question", "↑/↓: move", "Enter: select", "1-9: pick", "N: note", "S: skip", "Esc: cancel"}
 	case m.awaitingApproval && m.approvalTool == "exit_plan_mode":
 		return []string{"A: auto", "M: manual", "L: later", "K: keep planning"}
 	case m.awaitingApproval:
@@ -5053,7 +5094,7 @@ func (m Model) terminalTitle() string {
 }
 
 func (m Model) terminalTitleIcon() string {
-	if m.awaitingApproval || m.awaitingPathTrust || m.worktreeExitConfirmOpen || m.loopExitConfirmOpen {
+	if m.awaitingApproval || m.awaitingPathTrust || m.awaitingQuestion || m.worktreeExitConfirmOpen || m.loopExitConfirmOpen {
 		return "◆"
 	}
 	if m.terminalTitleHasQueuedInput() {
@@ -5517,10 +5558,17 @@ func (m Model) startSubagentWakeTurn() (tea.Model, tea.Cmd) {
 	wakes = rest
 	input := buildSubagentWakeMessage(wakes)
 	var label string
-	if len(wakes) == 1 {
+	switch {
+	case allShellWakes(wakes) && len(wakes) == 1:
+		label = fmt.Sprintf("↩ background shell job %s finished — acting on its result", shortTaskID(wakes[0].TaskID))
+	case allShellWakes(wakes):
+		label = fmt.Sprintf("↩ %d background shell jobs finished — acting on their results", len(wakes))
+	case anyShellWake(wakes):
+		label = fmt.Sprintf("↩ %d background tasks finished — acting on their results", len(wakes))
+	case len(wakes) == 1:
 		label = fmt.Sprintf("↩ background subagent %s (%s) finished — acting on its result",
 			wakes[0].AgentType, shortTaskID(wakes[0].TaskID))
-	} else {
+	default:
 		label = fmt.Sprintf("↩ %d background subagents finished — acting on their results", len(wakes))
 	}
 	return m.startTurnWithDisplay(input, label)
@@ -5624,9 +5672,17 @@ func (m Model) subagentCanceledByUser(taskID string) bool {
 // result so the model can act without a separate get_subagent_result call.
 func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
 	var b strings.Builder
-	if len(wakes) == 1 {
+	shellOnly := allShellWakes(wakes)
+	switch {
+	case shellOnly && len(wakes) == 1:
+		b.WriteString("A background shell job you started has finished.\n\n")
+	case shellOnly:
+		fmt.Fprintf(&b, "%d background shell jobs you started have finished.\n\n", len(wakes))
+	case anyShellWake(wakes):
+		fmt.Fprintf(&b, "%d background tasks you started have finished.\n\n", len(wakes))
+	case len(wakes) == 1:
 		b.WriteString("A background subagent you dispatched has finished.\n\n")
-	} else {
+	default:
 		fmt.Fprintf(&b, "%d background subagents you dispatched have finished.\n\n", len(wakes))
 	}
 	for i, w := range wakes {
@@ -5637,12 +5693,39 @@ func buildSubagentWakeMessage(wakes []agent.SubagentBackgroundDone) string {
 		if w.Errored {
 			status = "errored"
 		}
+		if w.AgentType == agent.ShellTaskType {
+			fmt.Fprintf(&b, "Shell job: session_id %s — %s\n", w.TaskID, status)
+			fmt.Fprintf(&b, "\nResult:\n%s\n", strings.TrimRight(w.Result, "\n"))
+			continue
+		}
 		fmt.Fprintf(&b, "Subagent: %s (task %s) — %s\n", w.AgentType, shortTaskID(w.TaskID), status)
 		appendDispatchWakeMetadata(&b, w)
 		fmt.Fprintf(&b, "\nResult:\n%s\n", strings.TrimRight(w.Result, "\n"))
 	}
 	b.WriteString("\nReview the result(s) above and continue the work they were part of, or report back to the user as appropriate. If a result is empty or errored, decide whether to retry or move on.")
 	return b.String()
+}
+
+// allShellWakes reports whether every pending wake is a background shell job,
+// so the wake text can say "shell job" instead of "subagent".
+func allShellWakes(wakes []agent.SubagentBackgroundDone) bool {
+	for _, w := range wakes {
+		if w.AgentType != agent.ShellTaskType {
+			return false
+		}
+	}
+	return len(wakes) > 0
+}
+
+// anyShellWake reports whether at least one pending wake is a shell job, which
+// makes a mixed batch "tasks" rather than "subagents".
+func anyShellWake(wakes []agent.SubagentBackgroundDone) bool {
+	for _, w := range wakes {
+		if w.AgentType == agent.ShellTaskType {
+			return true
+		}
+	}
+	return false
 }
 
 func appendDispatchWakeMetadata(b *strings.Builder, w agent.SubagentBackgroundDone) {
@@ -6100,6 +6183,20 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		m.awaitingPathTrust = true
 		m.pathTrustReq = e
 		return m, nil
+	case agent.QuestionNeeded:
+		// Park the request and build the interactive picker state.
+		// The keypress handler below consumes m.awaitingQuestion,
+		// mutates m.questionPicker, and on submit/cancel fills
+		// e.Reply (== m.questionReq.Reply) before sending the
+		// correlated Decision — the same "consumer writes shared
+		// state, then signals on the decisions channel" pattern
+		// EnterPlanModeTool relies on for PlanModeState.
+		m.flushPendingGroupedTools()
+		m.commitStreaming()
+		m.awaitingQuestion = true
+		m.questionReq = e
+		m.questionPicker = newQuestionPickerState(e.Questions)
+		return m, nil
 	case agent.ToolStart:
 		// Reasoning ended and a tool fires — clear the live reasoning
 		// preview so the user's view transitions cleanly. We DON'T
@@ -6320,6 +6417,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		if e.Forced {
 			kind = "force-compacted"
 		}
+		if e.Pruned {
+			kind = "pruned"
+		}
 		line := fmt.Sprintf("[context] %s mid-turn ~%s → ~%s tokens", kind, formatTokens(e.Before), formatTokens(e.After))
 		if e.SnapshotPath != "" {
 			line += " · snapshot " + abbrevHome(e.SnapshotPath)
@@ -6336,6 +6436,9 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		}
 		m.sess.RecordCompaction(e.Before, e.After, true)
 		m.appendLine(renderCompactionNoticeLine(m.contextReductionLabel(e.Before, e.After), e.SnapshotPath, e.SnapshotErr, m.width))
+		if e.Warning != nil {
+			m.appendLine(styleAuto.Render(SysMsg(SysWarning, "context", "summary skipped", e.Warning.Error())))
+		}
 		m.refreshContextTokens()
 		m.compactionSeq++
 	case agent.ErrorEvent:

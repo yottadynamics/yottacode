@@ -26,6 +26,38 @@ Useful flags and env:
 
 Re-running the installer upgrades in place: same flow, the rc edit is detected and skipped via sentinel comments.
 
+## Homebrew
+
+```bash
+brew install yottadynamics/yottacode/yottacode
+```
+
+That taps `yottadynamics/homebrew-yottacode` on first use and installs the latest stable release binary for your CPU (macOS Apple silicon and Intel). It is a Homebrew formula: Homebrew downloads the same release archive the installer script uses and checks its pinned SHA-256; it never builds from source or from `main`. The binary is linked into Homebrew's `PATH` (`$(brew --prefix)/bin`), so no rc-file edit is needed.
+
+Tap contents are generated as a formula under `Formula/yottacode.rb`.
+The release workflow validates the generated archive matrix and updates the tap
+only for stable tags.
+
+On Linux, use the installer script above.
+
+Equivalent two-step form:
+
+```bash
+brew tap yottadynamics/yottacode
+brew install yottacode
+```
+
+Upgrade and remove with the usual commands:
+
+```bash
+brew upgrade yottacode
+brew uninstall yottacode
+```
+
+Only stable releases reach the tap. Pre-release tags such as `v0.5.0-rc.2` are GitHub prereleases only; use the installer script with `VERSION=` to try one. Uninstalling leaves `~/.yottacode` (config, memory, sessions) in place.
+
+Pick one install method per machine. The installer script keeps its own copy in `$HOME/.yottacode/bin`, and whichever directory comes first on `PATH` wins.
+
 ## Updating
 
 `yottacode` checks GitHub for a newer release once per day on TUI startup. The check runs in the background after the TUI starts, is cached at `~/.yottacode/cache/update-check.json`, and runs **only** when the root interactive command launches into a real terminal — `yottacode run`, `yottacode --version`, scripts, and pipes never trigger it. GitHub, DNS, or network slowness never blocks first paint. When a newer release exists, you'll see a one-line in-session notice:
@@ -34,7 +66,7 @@ Re-running the installer upgrades in place: same flow, the rc edit is detected a
 ⚠ update · new release · 0.4.0 available · current 0.3.0 · https://github.com/yottadynamics/yottacode/releases/tag/v0.4.0
 ```
 
-To upgrade, re-run the installer or download the new release from the linked release notes.
+To upgrade, re-run the installer, run `brew upgrade yottacode` if you installed with Homebrew (the tap picks up a new stable release shortly after it is tagged), or download the new release from the linked release notes.
 
 To disable the check entirely (CI, privacy, sandboxes): `export YOTTACODE_NO_UPDATE_CHECK=1`. To force a refresh: `rm ~/.yottacode/cache/update-check.json`.
 

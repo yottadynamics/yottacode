@@ -44,7 +44,7 @@ func TestTools_Metadata(t *testing.T) {
 			wantApproval:         true,
 			previewArgsJSON:      `{"path":"x.go","old_string":"foo","new_string":"bar"}`,
 			wantPreviewSubstring: "x.go",
-			wantSchemaRequired:   []string{"path", "old_string", "new_string"},
+			wantSchemaRequired:   []string{"path", "new_string"},
 		},
 		{
 			tool:                 &ReadManyFilesTool{Cwd: NewCwdRef(cwd)},

@@ -139,7 +139,7 @@ func TestInboxEventAfterReconcileIsNoOp(t *testing.T) {
 		subagentTasks:        reg,
 		banneredSubagentDone: map[string]bool{},
 		transcript:           tr,
-		subagentInbox:        make(chan agent.SubagentBackgroundDone, 1),
+		subagentInbox:        newBackgroundDoneInbox(),
 	}
 	if !m.reconcileSubagentCompletions() {
 		t.Fatal("reconcile should banner + queue the wake first")
@@ -194,7 +194,7 @@ func TestCanceledTaskBannersButNeverWakes(t *testing.T) {
 		subagentTasks:        reg2,
 		banneredSubagentDone: map[string]bool{},
 		transcript:           &strings.Builder{},
-		subagentInbox:        make(chan agent.SubagentBackgroundDone, 1),
+		subagentInbox:        newBackgroundDoneInbox(),
 		turnActive:           true,
 	}
 	next, _ := m2.handleAgentEvent(agent.SubagentBackgroundDone{

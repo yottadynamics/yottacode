@@ -213,6 +213,14 @@ type CompactionConfig struct {
 	// ContextCompacted event and do not block compaction: provider-limit
 	// recovery must still work on a full or unavailable disk.
 	PreCompact func([]adapter.Message) (string, error)
+
+	// calib learns reported/estimated prompt-size drift (see
+	// compaction_calibrate.go). Lives on the shared config pointer so the
+	// ratio persists across iterations and turns.
+	calib tokenCalibrator
+	// warned dedupes the "cannot reduce context" warning until the request
+	// size drops back under the trigger.
+	warned atomic.Bool
 }
 
 // CheckpointWriter is the slice of the checkpoint store the agent loop
@@ -472,7 +480,7 @@ func Turn(
 		// looked well under the window.
 		if cfg.Compaction != nil && cfg.Compaction.Window > 0 {
 			_ = send(ctx, events, ContextUsage{
-				Tokens: contextwindow.EstimateTokens(*history) + toolSchemaTokens(cfg.Registry),
+				Tokens: cfg.Compaction.calib.scale(contextwindow.EstimateTokens(*history) + toolSchemaTokens(cfg.Registry)),
 				Window: cfg.Compaction.Window,
 			})
 		}
@@ -490,7 +498,11 @@ func Turn(
 		var final *adapter.Message
 		var err error
 		for {
-			final, err = streamIteration(ctx, cfg, snapshotHistory(cfg, state.history), events)
+			sent := snapshotHistory(cfg, state.history)
+			final, err = streamIteration(ctx, cfg, sent, events)
+			if err == nil && final != nil && cfg.Compaction != nil {
+				cfg.Compaction.calib.observe(final.Provider+"/"+final.Model, contextwindow.EstimateTokens(sent)+toolSchemaTokens(cfg.Registry), reportedPromptTokens(final.Usage))
+			}
 			// Provider context-limit errors are normally pre-stream HTTP
 			// rejections. Retry only when no assistant content reached the UI;
 			// otherwise a second stream would duplicate already-rendered text.
@@ -1123,12 +1135,9 @@ func executeToolCallImpl(
 	preview := tool.PreviewCall(argsJSON)
 	var approvalSource string
 
-	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny
-	// rules still beat the gate (the model never gets to call a denied
-	// tool, plan mode or not), but the gate beats the tool's own
-	// RequiresApproval policy. Returning the gate's error string as a
-	// tool result lets the model recover by switching to a read-only
-	// or plan-file alternative on the next iteration.
+	// Plan-mode gate runs BEFORE permissions evaluation: explicit deny rules
+	// still beat the gate (the model never gets to call a denied tool, plan mode
+	// or not), but the gate beats the tool's own RequiresApproval policy.
 	if cfg.PlanMode.IsActive() {
 		if msg, blocked := PlanModeGate(tool, argsJSON, cfg.PlanMode.PlanFile); blocked {
 			_ = send(ctx, events, ApprovalAuto{
@@ -1144,14 +1153,26 @@ func executeToolCallImpl(
 		verdict, verdictRule = cfg.Permissions.EvaluateWithRuleAt(cfg.Cwd.Get(), tool.Name(), argsJSON)
 	}
 
-	// Permission Deny always wins, even over plan-mode auto-allow. A
-	// user who explicitly denies write_file via permissions.json wants
-	// no writes at all, plan file included.
+	// Permission Deny always wins, even over plan-mode auto-allow. A user who
+	// explicitly denies this tool wants no execution and the normal deny audit
+	// event, regardless of malformed arguments.
 	if verdict == permissions.Deny {
 		_ = send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "deny-rule", RuleSource: verdictRule.Source,
 		})
 		return "denied by permissions.json deny rule", nil, true, "deny-rule", nil
+	}
+
+	// A call whose arguments can never succeed is bounced before any approval
+	// prompt: the user should not be asked to approve it, and the model
+	// recovers a full approval round trip sooner.
+	if pv, ok := tool.(ArgsPrevalidator); ok {
+		if perr := pv.PrevalidateArgs(argsJSON); perr != nil {
+			msg := "error: " + perr.Error()
+			_ = send(ctx, events, ToolStart{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Preview: preview, ArgsJSON: argsJSON})
+			_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
+			return msg, nil, false, "", nil
+		}
 	}
 
 	// Background policy runs before the mode chain so unattended children cannot
@@ -1205,6 +1226,12 @@ func executeToolCallImpl(
 	//   3. Auto-mode auto-allow for non-floor tools.
 	//   4. Default: permissions verdict (Allow only — Ask is handled
 	//      above) → tool's own RequiresApproval.
+	// ask_user_question is carved out of cases 1 and 3 (yolo/auto-mode)
+	// so it falls through to the no-op default path uniformly across
+	// every mode: its RequiresApproval is always false, so nothing
+	// there blocks Execute — the carve-out only avoids logging a
+	// misleading "[yolo-mode]"/"[auto-mode] auto-approved" line for a
+	// call that was never actually gated on approval.
 	switch {
 	case isPlanBoundaryTool(tool.Name()):
 		// Without this case, yolo / auto / bypass / a permissions
@@ -1224,7 +1251,7 @@ func executeToolCallImpl(
 			return content, images, d, src, rerr
 		}
 		approvalSource = "user"
-	case cfg.YoloMode.IsActive():
+	case cfg.YoloMode.IsActive() && tool.Name() != AskUserQuestionToolName:
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "yolo-mode",
 		}); err != nil {
@@ -1245,7 +1272,7 @@ func executeToolCallImpl(
 			return "", nil, false, "", err
 		}
 		approvalSource = "auto-mode-safe-bash"
-	case cfg.AutoMode.IsActive() && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
+	case cfg.AutoMode.IsActive() && tool.Name() != AskUserQuestionToolName && !IsAutoModeSafetyFloorCall(tool.Name(), argsJSON):
 		if err := send(ctx, events, ApprovalAuto{
 			ToolName: tool.Name(), Preview: preview, Source: "auto-mode",
 		}); err != nil {
@@ -1445,10 +1472,15 @@ approved:
 			return "", nil, false, approvalSource, ctx.Err()
 		}
 		msg := fmt.Sprintf("error: %v", err)
-		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true})
+		kind := EditFailureKind("")
+		if tool.Name() == "edit_file" || tool.Name() == "edit_anchored" || tool.Name() == "apply_hashline" || tool.Name() == "apply_diff" {
+			kind = ClassifyEditFailure(tool.Name(), msg)
+		}
+		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true, FailureKind: string(kind), Retryable: kind == EditFailureStale || kind == EditFailureHashMismatch})
 		return msg, nil, false, approvalSource, nil
 	}
-	if err := send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}); err != nil {
+	resultEvent := ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}
+	if err := send(ctx, events, resultEvent); err != nil {
 		// Tool ran to completion but ctx fired before we could
 		// announce its result — propagate cancel so the caller treats
 		// this slot as orphaned (synthetic result). The real `out` is

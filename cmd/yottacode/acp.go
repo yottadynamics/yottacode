@@ -38,11 +38,19 @@ hosting concurrent sessions, for embedding yottacode in editors that speak
 ACP (Zed, JetBrains, and others). This is a server, not a one-shot command
 — it runs until the client disconnects.
 
-Configuration is process-wide (no built-in defaults — must be set via
-flag or env), seeding every session's defaults:
+Process-wide defaults come from flags, env, then the active provider in
+config.toml; they seed every session:
   --model      / $YOTTACODE_MODEL      model tag
+  --provider   / $YOTTACODE_PROVIDER   provider profile from config.toml
   --base-url   / $YOTTACODE_BASE_URL   OpenAI-compatible endpoint
   --api-key    / $YOTTACODE_API_KEY    optional bearer token
+Pass --model together with --provider when the model belongs to a
+non-active provider.
+
+Clients can also change a session's model: the server advertises a "model"
+session config option (every model from the configured providers), so hosts
+such as Buzz can select one per session (buzz-acp --model <id>). That
+override is session-only and never written to config.toml.
 
 Each session's working directory and MCP servers come from the client's
 session/new request, not from CLI flags.`,

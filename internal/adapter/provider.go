@@ -228,7 +228,7 @@ func effectiveWebSearchEnabled(cfg Config, provider Provider) bool {
 		return false
 	}
 	switch provider {
-	case ProviderOpenAI, ProviderXAI:
+	case ProviderOpenAI, ProviderOpenAIAuth, ProviderXAI:
 		return true
 	case ProviderAnthropic:
 		return cfg.EnableWebSearch
@@ -245,7 +245,7 @@ func buildProfile(cfg Config, usesResponses bool) ProviderProfile {
 		UsesResponsesAPI:        usesResponses,
 		SupportsReasoning:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderXAI || provider == ProviderOllama || provider == ProviderAnthropic || provider == ProviderGemini || provider == ProviderVertex || provider == ProviderVertexAnthropic,
 		SupportsImages:          provider == ProviderAnthropic || provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderCopilot || provider == ProviderGemini || provider == ProviderXAI || provider == ProviderVertex || provider == ProviderVertexAnthropic,
-		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderXAI || provider == ProviderAnthropic,
+		SupportsWebSearch:       provider == ProviderOpenAI || provider == ProviderOpenAIAuth || provider == ProviderXAI || provider == ProviderAnthropic,
 		SupportsXSearch:         provider == ProviderXAI,
 		SupportsCodeInterpreter: provider == ProviderOpenAI || provider == ProviderXAI,
 		SupportsUsageReporting:  !isFreeOrLocal(provider, cfg.BaseURL),

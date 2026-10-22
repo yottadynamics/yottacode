@@ -1,9 +1,11 @@
 # Deep research
 
-`/deep-research <question>` answers a question that needs sourced claims
-(comparisons, investigations, "research X") and leaves a cited markdown
-report in the current directory. It is slow and token-heavy by design; use
-it instead of a quick web lookup only when the answer has to be checked.
+`/deep-research <question>` explicitly starts a sourced investigation
+(comparisons, investigations, "research X") and leaves a cited markdown report
+in the current directory. It is slow and token-heavy by design; use it instead
+of a quick web lookup only when the answer has to be checked. Ordinary model
+turns do not have access to this workflow, so a normal research request uses
+web-search tools rather than accidentally starting a multi-agent run.
 
 ```
 /deep-research Bootc and chunking for patching
@@ -162,12 +164,11 @@ also means the cost line below is the **whole** cost of the command in the TUI.
 A completion that lands while a turn is running waits for the turn to end, since
 the agent loop owns the history until then.
 
-The model-driven path is still used where the TUI can't start the run directly:
-in plan mode (the tool stays blocked), and in `yottacode run` and ACP, which
-have no dock to host a detached task — there the tool blocks inside the turn and
-each phase change is a stderr / diagnostics line. If you ask for deep research in
-plain words and the model calls the tool itself, the run is still a background
-task and its result is still delivered by the TUI, not relayed by the model.
+The explicit command is the supported entry point. The TUI starts the workflow
+itself and the model is not involved. The tool remains available only to callers
+that explicitly opt into the deep-research capability; ordinary model turns do
+not advertise it. This prevents requests for current listings, prices, or other
+quick research from accidentally launching the expensive workflow.
 
 The chat summary is the opening answer only (≤ 1500 characters) plus the file
 path; every finding, the sources and the coverage notes are in the saved file.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/catalog"
+	"github.com/yottadynamics/yottacode/internal/compaction"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/session"
@@ -40,18 +41,18 @@ const minRetainBudget = 4096
 // retention budget for the whole tail. The truncation marker keeps
 // the model aware that content was dropped rather than silently
 // shortening.
-const maxRetainedToolTokens = 4096
+const maxRetainedToolTokens = compaction.MaxRetainedToolTokens
 
 // minRetainedToolTokens is the floor below which a retained tool
 // result's budget-aware cap will not shrink further — enough to keep a
 // meaningful fragment (not just the truncation marker) visible even
 // when many oversized tool messages compete for the same budget.
-const minRetainedToolTokens = 256
+const minRetainedToolTokens = compaction.MinRetainedToolTokens
 
 // compactionMarker is appended to retained tool content that was
 // truncated by the budget. Distinct from the inline summarize-time
 // truncation marker so an audit can tell the two apart.
-const compactionMarker = "…(truncated by compaction)"
+const compactionMarker = compaction.RetainedToolMarker
 
 // summaryUserPreamble is a tiny synthetic user turn placed immediately
 // before the assistant summary in a compressed history. A history must not
@@ -90,32 +91,6 @@ const retainTurnsAfterSummary = 5
 // stalls.
 const summarizeTimeout = 5 * time.Minute
 
-// summarizationPrompt is the system message asking the model for a
-// structured four-section compression of the session so far. The
-// shape is deliberately fixed so callers can rely on the headers
-// existing even when a section is empty.
-const summarizationPrompt = `You compress an in-progress coding-agent session into a structured
-summary so the agent can keep working with bounded context.
-
-Produce EXACTLY these four sections, in this order, even if a section
-is empty (write "(none)" in that case):
-
-## Decisions made
-Finalized choices the user committed to.
-
-## Code changes
-Files touched, functions added or removed, patterns established.
-
-## Open questions
-Unresolved items the user raised.
-
-## Preferences expressed
-Style, tooling, or workflow preferences the user stated.
-
-Be concrete and terse. Omit pleasantries, restatements of the prompt,
-and exploratory tangents. Do not invent. If a section truly has
-nothing to record, write "(none)".`
-
 // summaryDoneMsg fires when a /summarize compression run finishes.
 // Carries the new history (system + summary + recent turns), the path
 // where the pre-compression snapshot was written, and any error. A
@@ -133,6 +108,9 @@ type summaryDoneMsg struct {
 	// compactionSeq is the mid-turn compaction generation captured when
 	// summarizeCmd cloned history; a changed value makes the result stale.
 	compactionSeq int
+	// pruned marks a result produced by blanking stale tool output alone,
+	// with no summary call.
+	pruned bool
 }
 
 // cmdSummarize is the /summarize handler. Kicks off summarizeCmd and
@@ -192,17 +170,42 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 	// stable view of model + fileCfg. Used to budget both the
 	// summarize input and the retained tail.
 	windowTokens := catalog.ResolveWindowForProvider(m.fileCfg.ProviderKindForModel(m.modelName), m.modelName, m.fileCfg.ContextWindowOverride(m.modelName), m.fileCfg.Context.DefaultWindow)
+	autoThr := m.fileCfg.Context.AutoThreshold
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parentCtx, summarizeTimeout)
 		defer cancel()
 
+		// Cheapest reduction first (auto only; an explicit /summarize always
+		// summarizes): blank superseded reads and stale bulk tool output. If
+		// that alone brings the request comfortably under the auto threshold
+		// (80% of it), skip the multi-minute summary call and keep the whole
+		// conversation verbatim.
+		if auto && windowTokens > 0 {
+			if pruned, _, ok := contextwindow.PruneToolOutputs(history); ok &&
+				float64(m.estimatedContextTokens(pruned)) <= 0.8*autoThr*float64(windowTokens) {
+				snapshotPath, err := writePreSummarySnapshot(sessID, history)
+				if err != nil {
+					return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err), degraded: degraded, compactionSeq: seq}
+				}
+				return summaryDoneMsg{
+					auto:          auto,
+					newMessages:   pruned,
+					snapshotPath:  snapshotPath,
+					tokensBefore:  tokensBefore,
+					compactionSeq: seq,
+					degraded:      degraded,
+					pruned:        true,
+				}
+			}
+		}
+
 		summary, fallbacks, err := runSummarization(ctx, ad, history, windowTokens)
 		if err != nil {
-			return summaryDoneMsg{auto: auto, err: err, degraded: degraded}
+			return summaryDoneMsg{auto: auto, err: err, degraded: degraded, compactionSeq: seq}
 		}
 		snapshotPath, err := writePreSummarySnapshot(sessID, history)
 		if err != nil {
-			return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err), degraded: degraded}
+			return summaryDoneMsg{auto: auto, err: fmt.Errorf("snapshot: %w", err), degraded: degraded, compactionSeq: seq}
 		}
 
 		newHistory := composeSummarizedHistory(history, summary, windowTokens)
@@ -226,36 +229,69 @@ func (m Model) summarizeCmd(auto bool) tea.Cmd {
 // inside the window. Pass 0 to disable budgeting (test paths,
 // scripted stubs).
 func runSummarization(ctx context.Context, ad agentStreamer, history []adapter.Message, windowTokens int) (string, []adapter.StreamEvent, error) {
-	body := renderHistoryForSummarization(history, windowTokens)
-	if strings.TrimSpace(body) == "" {
-		return "", nil, errors.New("history is empty")
-	}
-	messages := []adapter.Message{
-		{Role: adapter.RoleSystem, Content: summarizationPrompt},
-		{Role: adapter.RoleUser, Content: body},
-	}
-	out := ad.ChatStream(ctx, messages, nil)
-	var content strings.Builder
+	middle, prev, prevFiles := splitHistoryForSummary(history)
 	var fallbacks []adapter.StreamEvent
-	for ev := range out {
-		switch ev.Kind {
-		case adapter.EventTokenDelta:
-			content.WriteString(ev.Token)
-		case adapter.EventFallback:
-			fallbacks = append(fallbacks, ev)
-		case adapter.EventErr:
-			return "", fallbacks, ev.Err
-		case adapter.EventDone:
-			if content.Len() == 0 && ev.Final != nil {
-				content.WriteString(ev.Final.Content)
+	summary, err := compaction.Summarize(ctx, ad, compaction.Input{
+		Middle: middle, Window: windowTokens, Prev: prev, PrevFiles: prevFiles,
+	}, func(ev adapter.StreamEvent) { fallbacks = append(fallbacks, ev) })
+	if err != nil {
+		if errors.Is(err, compaction.ErrEmptyBody) {
+			return "", fallbacks, errors.New("history is empty")
+		}
+		return "", fallbacks, err
+	}
+	return summary, fallbacks, nil
+}
+
+// splitHistoryForSummary separates the summary artifacts of earlier
+// compactions from the conversation to summarize, so a second compaction
+// updates the previous summary instead of summarizing a summary:
+//   - the synthetic "[Session summary ...]" assistant message (and its
+//     preamble user turn) written by an earlier run of this path;
+//   - an in-loop progress note folded into a user message by mid-turn
+//     compaction (the original request text stays in the conversation).
+//
+// System messages are dropped (the summarizer gets its own prompt).
+func splitHistoryForSummary(history []adapter.Message) (middle []adapter.Message, prev string, files map[string]compaction.FileOp) {
+	files = map[string]compaction.FileOp{}
+	var sessionPrev, notePrev string
+	for _, m := range history {
+		switch {
+		case m.Role == adapter.RoleSystem:
+			continue
+		case m.Role == adapter.RoleUser && strings.TrimSpace(m.Content) == summaryUserPreamble:
+			continue
+		case m.Role == adapter.RoleAssistant && strings.HasPrefix(m.Content, compaction.SessionSummaryPrefix):
+			if body, f, ok := compaction.SplitSessionSummary(m.Content); ok {
+				sessionPrev = body
+				compaction.MergeFileOps(files, f)
 			}
+			continue
+		case m.Role == adapter.RoleUser && strings.Contains(m.Content, compaction.ProgressMarker):
+			base, note, f := compaction.SplitNote(m.Content)
+			notePrev = note
+			compaction.MergeFileOps(files, f)
+			if strings.TrimSpace(base) == "" || strings.TrimSpace(base) == summaryUserPreamble {
+				continue
+			}
+			m.Content = base
+		}
+		middle = append(middle, m)
+	}
+	// The session summary is the older artifact; an in-loop note (folded in
+	// after it) is newer.
+	prev = strings.TrimSpace(strings.Join(nonEmpty(sessionPrev, notePrev), "\n\n"))
+	return middle, prev, files
+}
+
+func nonEmpty(ss ...string) []string {
+	var out []string
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
 		}
 	}
-	out2 := strings.TrimSpace(content.String())
-	if out2 == "" {
-		return "", fallbacks, errors.New("model returned empty summary")
-	}
-	return ensureFourSections(out2), fallbacks, nil
+	return out
 }
 
 // agentStreamer is the slim interface the summarizer needs from the
@@ -293,107 +329,6 @@ func summarizerOrDefault(routed, fallback agentStreamer) agentStreamer {
 	return fallback
 }
 
-// renderHistoryForSummarization flattens the message history into a
-// single user message the compression model can read. Strips system
-// messages (we send our own summarization prompt) and tool-call args
-// (rarely useful for compression).
-//
-// When windowTokens > 0 the body is capped at a budget derived from
-// the model's context window, leaving room for the summarization
-// system prompt, the reserved per-turn output, and an estimation
-// margin. Oldest segments are dropped first — the summarizer cares
-// more about recent decisions and open questions than the early
-// exploratory prompts. A leading marker is inserted whenever
-// segments are dropped so the model knows the input is partial.
-func renderHistoryForSummarization(history []adapter.Message, windowTokens int) string {
-	segments := make([]string, 0, len(history))
-	for _, m := range history {
-		switch m.Role {
-		case adapter.RoleUser:
-			segments = append(segments, "USER: "+strings.TrimSpace(m.Content)+"\n\n")
-		case adapter.RoleAssistant:
-			var seg strings.Builder
-			if m.Content != "" {
-				seg.WriteString("ASSISTANT: ")
-				seg.WriteString(strings.TrimSpace(m.Content))
-				seg.WriteString("\n\n")
-			}
-			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&seg, "ASSISTANT used tool: %s\n", tc.Name)
-			}
-			if seg.Len() > 0 {
-				segments = append(segments, seg.String())
-			}
-		case adapter.RoleTool:
-			out := strings.TrimSpace(m.Content)
-			if len(out) > 400 {
-				out = out[:400] + "…(truncated)"
-			}
-			segments = append(segments, "TOOL_RESULT: "+out+"\n\n")
-		}
-	}
-
-	if windowTokens <= 0 {
-		return strings.TrimSpace(strings.Join(segments, ""))
-	}
-	budget := summarizeInputBudget(windowTokens)
-	if budget <= 0 {
-		// Window is so small even the prompt overhead doesn't fit.
-		// Return the full body and let the provider surface the
-		// error — silently producing an empty body would be worse.
-		return strings.TrimSpace(strings.Join(segments, ""))
-	}
-
-	used := 0
-	keepFromIdx := len(segments)
-	for i := len(segments) - 1; i >= 0; i-- {
-		cost := (len(segments[i]) + 3) / 4
-		if used+cost > budget && keepFromIdx < len(segments) {
-			break
-		}
-		used += cost
-		keepFromIdx = i
-	}
-	if keepFromIdx == 0 {
-		return strings.TrimSpace(strings.Join(segments, ""))
-	}
-	var b strings.Builder
-	b.WriteString("[earlier turns omitted due to compaction budget]\n\n")
-	for i := keepFromIdx; i < len(segments); i++ {
-		b.WriteString(segments[i])
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// summarizeInputBudget computes how many tokens we can spend on the
-// flattened transcript, leaving headroom for the summarization
-// system prompt, the reserved per-turn output (matched to the chat
-// adapter's default), and an estimation margin.
-func summarizeInputBudget(windowTokens int) int {
-	overhead := (len(summarizationPrompt) + 3) / 4
-	return windowTokens - overhead - int(adapter.ChatDefaultMaxTokens) - summarizeInputSafety
-}
-
-// ensureFourSections adds any missing section header so downstream
-// code can rely on the structure. The model is told to always emit
-// all four; this catches drift gracefully without rejecting an
-// otherwise-useful summary.
-func ensureFourSections(s string) string {
-	headers := []string{
-		"## Decisions made",
-		"## Code changes",
-		"## Open questions",
-		"## Preferences expressed",
-	}
-	out := s
-	for _, h := range headers {
-		if !strings.Contains(out, h) {
-			out += "\n\n" + h + "\n(none)"
-		}
-	}
-	return strings.TrimSpace(out)
-}
-
 // composeSummarizedHistory builds the new message list that replaces
 // the session: system prompt (preserved) + a synthetic assistant
 // summary message + the most recent user/assistant turns that fit
@@ -423,13 +358,15 @@ func composeSummarizedHistory(history []adapter.Message, summary string, windowT
 		}
 	}
 
+	// The synthetic preamble from an earlier compaction is not a real turn:
+	// the new summary (iteratively updated from the old one) replaces it, so
+	// retaining it would duplicate the previous summary.
 	var userIdxs []int
 	for i, m := range history {
-		if m.Role == adapter.RoleUser {
+		if m.Role == adapter.RoleUser && !strings.HasPrefix(strings.TrimSpace(m.Content), summaryUserPreamble) {
 			userIdxs = append(userIdxs, i)
 		}
 	}
-
 	// Synthetic summary message — clearly labeled as a compression
 	// artifact so the model knows it isn't its own prior reply. Turn
 	// number is included so the user can correlate to a session
@@ -798,7 +735,7 @@ func readNewestSnapshot(sessionID string) (string, error) {
 		msg := payload.Messages[i]
 		if msg.Role == adapter.RoleAssistant && strings.HasPrefix(msg.Content, "[Session summary — compressed at") {
 			// Drop the leading marker line so callers get just the
-			// four sections.
+			// summary sections.
 			body := msg.Content
 			if i := strings.Index(body, "\n\n"); i >= 0 {
 				body = body[i+2:]

@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	defaultListMax       = 100
-	defaultGlobMax       = 200
-	defaultGrepMax       = 50
-	maxGrepOutBytes      = 256 * 1024
-	defaultStructureMax  = 500
+	defaultListMax        = 100
+	defaultGlobMax        = 200
+	defaultGrepMax        = 50
+	maxGrepOutBytes       = 256 * 1024
+	defaultStructureMax   = 500
 	defaultStructureDepth = 3
 )
 
@@ -263,14 +263,15 @@ func (t *GrepTool) Execute(ctx context.Context, argsJSON string) (string, error)
 		return "", err
 	}
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &capped{buf: &stdout, max: maxGrepOutBytes}
+	outCap := &capped{buf: &stdout, max: maxGrepOutBytes}
+	cmd.Stdout = outCap
 	cmd.Stderr = &capped{buf: &stderr, max: 8 * 1024}
 	if err := cmd.Run(); err != nil {
 		// Both rg and grep return non-zero when there are no matches; that's
 		// not an error. Anything else (e.g., bad regex) we report.
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return "(no matches)\n", nil
+			return fmt.Sprintf("[search root: %s]\n(no matches)\n", root), nil
 		}
 		return "", fmt.Errorf("grep: %w; stderr=%q", err, stderr.String())
 	}
@@ -279,7 +280,10 @@ func (t *GrepTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	if len(lines) > a.MaxResults {
 		lines = append(lines[:a.MaxResults], fmt.Sprintf("…[truncated at %d matches]", a.MaxResults))
 	}
-	return strings.Join(lines, "\n") + "\n", nil
+	if outCap.truncated {
+		lines = append(lines, fmt.Sprintf("…[output truncated at %d bytes]", maxGrepOutBytes))
+	}
+	return fmt.Sprintf("[search root: %s]\n", root) + strings.Join(lines, "\n") + "\n", nil
 }
 
 func buildGrepCmd(ctx context.Context, a grepArgs, root string, deny []string) (*exec.Cmd, error) {
@@ -352,17 +356,20 @@ func grepDenyExcludes(root string, deny []string) (rgArgs, grepArgs []string) {
 
 // capped accumulates bytes up to a hard ceiling, then drops the rest.
 type capped struct {
-	buf *bytes.Buffer
-	max int
+	buf       *bytes.Buffer
+	max       int
+	truncated bool
 }
 
 func (c *capped) Write(p []byte) (int, error) {
 	rem := c.max - c.buf.Len()
 	if rem <= 0 {
+		c.truncated = true
 		return len(p), nil
 	}
 	if len(p) > rem {
 		c.buf.Write(p[:rem])
+		c.truncated = true
 		return len(p), nil
 	}
 	return c.buf.Write(p)
@@ -424,7 +431,7 @@ var skippedDirs = map[string]struct{}{
 	".svn":         {},
 	"node_modules": {},
 	"vendor":       {},
-	"target":       {},        // rust
+	"target":       {}, // rust
 	"build":        {},
 	"dist":         {},
 	".yottacode":   {},

@@ -80,11 +80,12 @@ func (t *SyntaxRangeTool) Execute(ctx context.Context, argsJSON string) (string,
 		}
 		var row string
 		if anchor.Length <= maxSyntaxRangeReceiptBytes {
-			receipt, err := json.Marshal(map[string]any{
-				"offset": anchor.Offset,
-				"length": anchor.Length,
-				"hash":   anchor.Hash,
-				"old":    string(result.Source[r.StartByte:r.EndByte]),
+			receipt, err := json.Marshal(editReceipt{
+				Offset:   anchor.Offset,
+				Length:   anchor.Length,
+				Hash:     anchor.Hash,
+				Old:      string(result.Source[r.StartByte:r.EndByte]),
+				Complete: true,
 			})
 			if err != nil {
 				return "", fmt.Errorf("syntax_range: encode receipt: %w", err)

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/edit/hashline"
 	lspci "github.com/yottadynamics/yottacode/internal/lsp"
@@ -29,25 +31,28 @@ func (t *ApplyHashlineTool) Description() string {
 
 func (t *ApplyHashlineTool) Schema() map[string]any {
 	hunkProps := map[string]any{
-		"anchor": map[string]any{"type": "string", "description": "Line-addressed alternative to offset/length/hash/old: the exact \"line#hash\" token from a read_file/read_many_files anchors=true receipt or from edit_anchored. Do not combine with offset/length/hash/old."},
-		"offset": map[string]any{"type": "integer", "description": "Byte offset from the receipt; omit if using anchor"},
-		"length": map[string]any{"type": "integer", "description": "Byte length from the receipt; must equal the byte length of old; omit if using anchor"},
-		"hash":   map[string]any{"type": "string", "description": "16 lowercase hex characters copied from the receipt; do not compute it; omit if using anchor"},
-		"old":    map[string]any{"type": "string", "description": "Exact text of the receipt's span, including the final newline when ends_with_newline=true; non-empty; omit if using anchor"},
-		"new":    map[string]any{"type": "string", "description": "Replacement text, possibly empty (empty deletes the anchored line, for an anchor hunk)"},
-		"op":     map[string]any{"type": "string", "description": "Optional documentation label such as replace/delete; an insert is a replace of adjacent text. Validation is determined by old/new/length"},
+		"anchor":  map[string]any{"type": "string", "description": "Line-addressed alternative to offset/length/hash/old: the exact \"line#hash\" token from a read_file/read_many_files anchors=true receipt or from edit_anchored. Do not combine with offset/length/hash/old; omit those fields (empty or zero values are ignored)."},
+		"offset":  map[string]any{"type": "integer", "description": "Byte offset from the receipt; omit if using anchor"},
+		"length":  map[string]any{"type": "integer", "description": "Byte length from the receipt; must equal the byte length of old; omit if using anchor"},
+		"hash":    map[string]any{"type": "string", "description": "16 lowercase hex characters copied from the receipt; do not compute it; omit if using anchor"},
+		"old":     map[string]any{"type": "string", "description": "Exact text of the receipt's span, including the final newline when ends_with_newline=true; non-empty; omit if using anchor"},
+		"receipt": map[string]any{"type": "object", "description": "Exact receipt returned by an anchored read; preferred over copying byte fields"},
+		"new":     map[string]any{"type": "string", "description": "Replacement text, possibly empty"},
+		"op":      map[string]any{"type": "string", "description": "Optional operation label"},
 	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"path":   map[string]any{"type": "string", "description": "File to edit (absolute or cwd-relative)"},
-			"anchor": hunkProps["anchor"],
-			"offset": hunkProps["offset"],
-			"length": hunkProps["length"],
-			"hash":   hunkProps["hash"],
-			"old":    hunkProps["old"],
-			"new":    hunkProps["new"],
-			"op":     hunkProps["op"],
+			"path":    map[string]any{"type": "string", "description": "File to edit (absolute or cwd-relative)"},
+			"anchor":  hunkProps["anchor"],
+			"offset":  hunkProps["offset"],
+			"length":  hunkProps["length"],
+			"hash":    hunkProps["hash"],
+			"old":     hunkProps["old"],
+			"new":     hunkProps["new"],
+			"op":      hunkProps["op"],
+			"receipt": map[string]any{"type": "object", "description": "Exact receipt returned by an anchored read; preferred over copying byte fields"},
+
 			"hunks": map[string]any{
 				"type":        "array",
 				"description": "Multiple hashline hunks, each either anchor-addressed or byte-addressed. If omitted, the top-level fields form one hunk.",
@@ -84,6 +89,18 @@ func (t *ApplyHashlineTool) PreviewCall(argsJSON string) string {
 }
 
 func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var preview applyHashlineArgs
+	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
+		return "", fmt.Errorf("apply_hashline: invalid args: %w", err)
+	}
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, preview.Path)
+	return withEditPathLock(p, func() (string, error) {
+		return t.executeUnlocked(ctx, argsJSON, p, cwd)
+	})
+}
+
+func (t *ApplyHashlineTool) executeUnlocked(ctx context.Context, argsJSON, resolvedPath, resolvedCwd string) (string, error) {
 	a, err := parseApplyHashlineArgs(argsJSON)
 	if err != nil {
 		return "", fmt.Errorf("apply_hashline: invalid args: %w", err)
@@ -91,7 +108,7 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 	if a.Path == "" {
 		return "", fmt.Errorf("apply_hashline: path is required")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvedPath
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("apply_hashline: %w", err)
 	}
@@ -102,7 +119,7 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 	// Hunk resolution needs the current file bytes: a line-anchored hunk's
 	// offset, length, and hash are all derived fresh from oldBytes rather
 	// than supplied by the model, so it can only run after the read.
-	parsed, err := a.resolveHunks(oldBytes)
+	parsed, relocated, err := a.resolveHunks(oldBytes, resolvedCwd)
 	if err != nil {
 		return "", formatHashlineApplyError(err)
 	}
@@ -117,6 +134,9 @@ func (t *ApplyHashlineTool) Execute(ctx context.Context, argsJSON string) (strin
 		return "", formatHashlineApplyError(err)
 	}
 	msg := fmt.Sprintf("applied %d hashline hunk(s) to %s\n", len(parsed), p)
+	if len(relocated) > 0 {
+		msg += fmt.Sprintf("note: stale anchor(s) relocated by matching their text (original line → current line): %s. Re-read before further edits to this file\n", strings.Join(relocated, ", "))
+	}
 	msg += boundedUnifiedDiff(p, string(oldBytes), string(out), 2, 80)
 	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, string(out)); note != "" {
 		msg += note
@@ -191,48 +211,19 @@ type applyHashlineArgs struct {
 	New        string              `json:"new"`
 	Op         string              `json:"op"`
 	LineAnchor string              `json:"anchor"`
+	Receipt    json.RawMessage     `json:"receipt"`
 	Hunks      []applyHashlineHunk `json:"hunks"`
-
-	hasOffset bool
-	hasLength bool
-	hasHash   bool
-	hasOld    bool
 }
 
 type applyHashlineHunk struct {
-	Offset     int    `json:"offset"`
-	Length     int    `json:"length"`
-	Hash       string `json:"hash"`
-	Old        string `json:"old"`
-	New        string `json:"new"`
-	Op         string `json:"op"`
-	LineAnchor string `json:"anchor"`
-
-	hasOffset bool
-	hasLength bool
-	hasHash   bool
-	hasOld    bool
-}
-
-// UnmarshalJSON preserves whether byte-addressed fields were supplied. This
-// matters because zero is a valid offset and length, but an explicitly supplied
-// zero is still contradictory when a line anchor is also present.
-func (h *applyHashlineHunk) UnmarshalJSON(data []byte) error {
-	type plain applyHashlineHunk
-	var decoded plain
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	*h = applyHashlineHunk(decoded)
-	_, h.hasOffset = fields["offset"]
-	_, h.hasLength = fields["length"]
-	_, h.hasHash = fields["hash"]
-	_, h.hasOld = fields["old"]
-	return nil
+	Offset     int             `json:"offset"`
+	Length     int             `json:"length"`
+	Hash       string          `json:"hash"`
+	Old        string          `json:"old"`
+	Receipt    json.RawMessage `json:"receipt"`
+	New        string          `json:"new"`
+	Op         string          `json:"op"`
+	LineAnchor string          `json:"anchor"`
 }
 
 func parseApplyHashlineArgs(argsJSON string) (applyHashlineArgs, error) {
@@ -254,34 +245,60 @@ func parseApplyHashlineArgs(argsJSON string) (applyHashlineArgs, error) {
 // malformed token) is wrapped as a recoverable hashline.ApplyError so it
 // reaches the model with the same "re-read and retry" guidance a stale byte
 // offset gets.
-func (a applyHashlineArgs) resolveHunks(src []byte) ([]hashline.Hunk, error) {
+func (a applyHashlineArgs) resolveHunks(src []byte, cwd string) ([]hashline.Hunk, []string, error) {
 	raw := a.Hunks
 	if len(raw) == 0 {
-		if a.Hash == "" && a.LineAnchor == "" {
-			return nil, fmt.Errorf("either hunks, a top-level anchor, or top-level offset/length/hash/old is required")
+		if a.Receipt != nil && a.LineAnchor == "" && a.Hash == "" {
+			receipt, err := parseEditReceipt(a.Receipt)
+			if err != nil {
+				return nil, nil, err
+			}
+			a.Offset, a.Length, a.Hash, a.Old = receipt.Offset, receipt.Length, receipt.Hash, receipt.Old
 		}
-		raw = []applyHashlineHunk{{Offset: a.Offset, Length: a.Length, Hash: a.Hash, Old: a.Old, New: a.New, Op: a.Op, LineAnchor: a.LineAnchor, hasOffset: a.Offset != 0, hasLength: a.Length != 0, hasHash: a.Hash != "", hasOld: a.Old != ""}}
+		if a.Hash == "" && a.LineAnchor == "" {
+			return nil, nil, fmt.Errorf("either hunks, a top-level anchor, a receipt, or top-level offset/length/hash/old is required")
+		}
+		raw = []applyHashlineHunk{{Offset: a.Offset, Length: a.Length, Hash: a.Hash, Old: a.Old, New: a.New, Op: a.Op, LineAnchor: a.LineAnchor}}
+	}
+	for i := range raw {
+		if len(raw[i].Receipt) > 0 {
+			if raw[i].LineAnchor != "" || raw[i].Hash != "" || raw[i].Offset != 0 || raw[i].Length != 0 || raw[i].Old != "" {
+				return nil, nil, fmt.Errorf("hunk %d specifies receipt together with another addressing mode", i)
+			}
+			receipt, err := parseEditReceipt(raw[i].Receipt)
+			if err != nil {
+				return nil, nil, fmt.Errorf("hunk %d: %w", i, err)
+			}
+			if receipt.Path != "" && filepath.Clean(resolvePath(cwd, receipt.Path)) != filepath.Clean(resolvePath(cwd, a.Path)) {
+				return nil, nil, fmt.Errorf("hunk %d receipt path %q does not match edit path %q", i, receipt.Path, a.Path)
+			}
+			raw[i].Offset, raw[i].Length, raw[i].Hash, raw[i].Old = receipt.Offset, receipt.Length, receipt.Hash, receipt.Old
+		}
 	}
 	out := make([]hashline.Hunk, 0, len(raw))
+	var relocated []string
 	for i, h := range raw {
 		if h.Op != "" {
 			switch h.Op {
 			case "replace", "insert", "delete":
 			default:
-				return nil, fmt.Errorf("hunk %d op must be replace, insert, or delete", i)
+				return nil, nil, fmt.Errorf("hunk %d op must be replace, insert, or delete", i)
 			}
 		}
 		switch {
-		case h.LineAnchor != "" && (h.hasOffset || h.hasLength || h.hasHash || h.hasOld || hasByteAddressFields(h)):
-			return nil, fmt.Errorf("hunk %d specifies both anchor and offset/length/hash/old; use one addressing mode", i)
+		case h.LineAnchor != "" && hasByteAddressFields(h):
+			return nil, nil, fmt.Errorf("hunk %d specifies both anchor and offset/length/hash/old; use one addressing mode", i)
 		case h.LineAnchor != "":
-			offset, length, err := resolveLineAnchor(src, h.LineAnchor)
+			offset, length, moved, err := resolveLineAnchorDetail(src, h.LineAnchor)
 			if err != nil {
-				return nil, &hashline.ApplyError{Kind: hashline.ErrStaleAnchor, Message: fmt.Sprintf("hunk %d: %s", i, err.Error())}
+				return nil, nil, &hashline.ApplyError{Kind: hashline.ErrStaleAnchor, Message: fmt.Sprintf("hunk %d: %s", i, err.Error())}
+			}
+			if moved != "" {
+				relocated = append(relocated, moved)
 			}
 			anchor, err := hashline.HashSpan(src, offset, length)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			anchor.Path = a.Path
 			out = append(out, hashline.Hunk{
@@ -296,19 +313,28 @@ func (a applyHashlineArgs) resolveHunks(src []byte) ([]hashline.Hunk, error) {
 				New:    []byte(h.New),
 			})
 		default:
-			return nil, fmt.Errorf("hunk %d requires either anchor or hash", i)
+			return nil, nil, fmt.Errorf("hunk %d requires either anchor or hash", i)
 		}
 	}
-	return out, nil
+	return out, relocated, nil
 }
 
-// hasByteAddressFields reports whether a hunk contains any byte-addressed
-// field. Zero is meaningful for offset and length, so presence must be tracked
-// separately if callers need to distinguish omitted from explicitly supplied
-// zero; the JSON shape currently uses zero values and therefore rejects only
-// fields that would affect addressing or content validation.
+// hasByteAddressFields reports whether a hunk carries a meaningful
+// byte-addressed field. Empty/zero values are treated as omitted: models that
+// fill every schema field send "hash":"", "offset":0, "length":0 alongside an
+// anchor, and rejecting those only produces a retry loop that fails the same
+// way. A non-zero value is a genuine second addressing mode and still errors.
+//
+// A hash that merely repeats the anchor's own hash part ("18#931072d3" with
+// "hash":"931072d3") is also ignored: models copy the anchor's hash into the
+// byte-address field, it carries no second address, and rejecting it only
+// makes them retry the identical call.
 func hasByteAddressFields(h applyHashlineHunk) bool {
-	return h.Offset != 0 || h.Length != 0 || h.Hash != "" || h.Old != ""
+	hash := h.Hash
+	if _, anchorHash, ok := strings.Cut(h.LineAnchor, "#"); ok && hash == anchorHash {
+		hash = ""
+	}
+	return h.Offset != 0 || h.Length != 0 || hash != "" || h.Old != ""
 }
 func formatHashlineApplyError(err error) error {
 	var applyErr *hashline.ApplyError
