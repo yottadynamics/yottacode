@@ -181,6 +181,16 @@ still a valid, actionable result — see
 [`tools.md#read_document`](tools.md#read_document) for the full argument
 reference.
 
+## Limits and verification
+
+- Every subprocess (`pandoc`, `weasyprint`, `pdftotext`, `pdfinfo`, python
+  helpers) is killed after 2 minutes and reported as a timeout.
+- `.xlsx` reads cap total decompressed size, and each XML part, at 20x the
+  read cap (`max_bytes`, 5 MiB default), on top of the compressed-size gate.
+- CI (`.github/workflows/documents-integration.yml`) runs real docx/pdf
+  create-then-read round trips against installed pandoc/weasyprint/poppler.
+  Locally: `go test -tags integration ./internal/documents/... ./internal/agent/ -run 'PDF|DocumentRoundTrip'`.
+
 ## Known limitations
 
 - Parsing fidelity varies by format:

@@ -95,6 +95,24 @@ func TestBuild_CoreToolsRegistered(t *testing.T) {
 	}
 }
 
+// TestBuild_DeepResearchIsOptIn verifies ordinary sessions do not expose the
+// expensive deep-research workflow to the model. The TUI enables it only
+// because its /deep-research command starts the workflow explicitly.
+func TestBuild_DeepResearchIsOptIn(t *testing.T) {
+	spec := newTestSpec(t)
+	rt := mustBuild(t, spec)
+	if _, ok := rt.Registry.Get(agent.DeepResearchToolName); ok {
+		t.Fatal("deep_research must be unavailable by default")
+	}
+
+	spec = newTestSpec(t)
+	spec.EnableDeepResearchTool = true
+	rt = mustBuild(t, spec)
+	if _, ok := rt.Registry.Get(agent.DeepResearchToolName); !ok {
+		t.Fatal("deep_research must be available when explicitly enabled")
+	}
+}
+
 func TestBuild_CodeMapPromptMatchesToolGate(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		spec := newTestSpec(t)

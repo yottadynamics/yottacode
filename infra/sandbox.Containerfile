@@ -19,7 +19,7 @@
 # Base image: UBI 9.8, matching yottacode's sandbox hardening baseline. The Go
 # toolchain is copied from the official Go image so the version can track go.mod
 # exactly instead of depending on whatever UBI repos currently package.
-ARG GO_VERSION=1.26.6
+ARG GO_VERSION=1.26.9
 ARG UBI_IMAGE=registry.access.redhat.com/ubi9/ubi:9.8-1785906690
 
 FROM docker.io/library/golang:${GO_VERSION} AS go-toolchain

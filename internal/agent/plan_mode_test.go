@@ -147,6 +147,53 @@ func TestPlanModeGate_NoPlanFileBlocksAllWrites(t *testing.T) {
 	}
 }
 
+func TestPlanModeGate_BlocksAskUserQuestionUntilPlanHasContent(t *testing.T) {
+	tmp := t.TempDir()
+	tool := &mockTool{name: AskUserQuestionToolName, requiresApproval: false}
+
+	// No plan file resolved yet.
+	if _, blocked := PlanModeGate(tool, `{}`, ""); !blocked {
+		t.Errorf("expected ask_user_question to be blocked with no plan file")
+	}
+
+	// Plan file resolved but doesn't exist on disk yet.
+	missing := filepath.Join(tmp, "plans", "missing.md")
+	if _, blocked := PlanModeGate(tool, `{}`, missing); !blocked {
+		t.Errorf("expected ask_user_question to be blocked when the plan file doesn't exist")
+	}
+
+	// Plan file exists but is empty.
+	empty := filepath.Join(tmp, "plans", "empty.md")
+	if err := os.MkdirAll(filepath.Dir(empty), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	msg, blocked := PlanModeGate(tool, `{}`, empty)
+	if !blocked {
+		t.Errorf("expected ask_user_question to be blocked with an empty plan file")
+	}
+	if !strings.Contains(msg, "ask_user_question") {
+		t.Errorf("block message should name the tool; got %q", msg)
+	}
+}
+
+func TestPlanModeGate_AllowsAskUserQuestionOncePlanHasContent(t *testing.T) {
+	tmp := t.TempDir()
+	planFile := filepath.Join(tmp, "plans", "drafted.md")
+	if err := os.MkdirAll(filepath.Dir(planFile), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(planFile, []byte("# Plan\n\nsome content"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tool := &mockTool{name: AskUserQuestionToolName, requiresApproval: false}
+	if _, blocked := PlanModeGate(tool, `{}`, planFile); blocked {
+		t.Errorf("expected ask_user_question to be allowed once the plan file has content")
+	}
+}
+
 func TestListPlans_NewestFirst(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("YOTTACODE_HOME", tmp)

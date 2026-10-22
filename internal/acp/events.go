@@ -185,7 +185,14 @@ func emitUpdate(ctx context.Context, conn *coderacp.AgentSideConnection, session
 		if e.Err != nil {
 			return diag("[context] compaction failed%s: %s\n", forcedSuffix(e.Forced), truncateOneLine(e.Err.Error(), 160))
 		}
-		return diag("[context] compacted %d → %d tokens%s\n", e.Before, e.After, forcedSuffix(e.Forced))
+		kind := "compacted"
+		if e.Pruned {
+			kind = "pruned"
+		}
+		if e.Warning != nil {
+			return diag("[context] %s %d → %d tokens%s (summary skipped: %s)\n", kind, e.Before, e.After, forcedSuffix(e.Forced), truncateOneLine(e.Warning.Error(), 160))
+		}
+		return diag("[context] %s %d → %d tokens%s\n", kind, e.Before, e.After, forcedSuffix(e.Forced))
 	case agent.AssistantMessage:
 		// The event is intentionally not surfaced as a second ACP text chunk;
 		// the stream already delivered the assistant content and the saved

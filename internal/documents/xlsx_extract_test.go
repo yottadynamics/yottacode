@@ -1,7 +1,9 @@
 package documents
 
 import (
+	"archive/zip"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -444,5 +446,51 @@ func TestXLSXExtractorRejectsOversizedFile(t *testing.T) {
 	_, err := e.Extract(context.Background(), ExtractRequest{Path: path, MaxBytes: 10})
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected a size-cap error, got %v", err)
+	}
+}
+
+// TestXLSXExtractorRejectsDecompressionBomb is the regression test for the
+// compressed-size-only gate: a tiny file whose sheet part inflates far past
+// the read cap must error rather than be fully decompressed into memory.
+func TestXLSXExtractorRejectsDecompressionBomb(t *testing.T) {
+	dir := t.TempDir()
+	src := writeXLSXFixture(t, dir, SheetModel{Sheets: []Sheet{{Name: "S", Rows: [][]Cell{{{Value: "a"}}}}}})
+
+	zr, err := zip.OpenReader(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	bombPath := filepath.Join(dir, "bomb.xlsx")
+	out, err := os.Create(bombPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+	for _, f := range zr.File {
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		if f.Name == "xl/worksheets/sheet1.xml" {
+			// Valid XML with a ~64 MiB comment: deflates to a few KiB.
+			s := string(b)
+			i := strings.Index(s, "<sheetData")
+			b = []byte(s[:i] + "<!--" + strings.Repeat("A", 64<<20) + "-->" + s[i:])
+		}
+		w.Write(b)
+	}
+	zw.Close()
+	out.Close()
+
+	if info, _ := os.Stat(bombPath); info.Size() > 1<<20 {
+		t.Fatalf("fixture not compressed enough to be a bomb: %d bytes", info.Size())
+	}
+	_, err = (&XLSXExtractor{}).Extract(context.Background(), ExtractRequest{Path: bombPath, MaxBytes: 1 << 20})
+	if err == nil {
+		t.Fatal("expected decompression-limit error, got nil")
 	}
 }

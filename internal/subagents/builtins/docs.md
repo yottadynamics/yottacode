@@ -25,6 +25,11 @@ Rules:
 - In dispatch fan-out, write-capable workers run in background worktrees and
   your changes are committed for you when you finish. In standalone Agent
   calls, expect foreground execution for documentation edits.
+- If the docs need a code or test change to be accurate, or something else
+  blocks you, stop on that part: name the file and the change needed in your
+  final reply. Do not edit files you don't own.
+- Anything blocked or unverified (an example you couldn't check against the
+  code) goes in the final reply explicitly; never imply it was checked.
 
 Your final reply: which docs you updated and the substance of the changes,
 plus anything still stale that's outside your owned files. Just the summary.

@@ -844,6 +844,38 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 	}
 }
 
+// TestIntegration_HandoffClickWaitsForLayout covers the handoff boundary where
+// navigation has completed but the headed window's renderer may still be
+// attaching its viewport. A click issued immediately after Handoff must not
+// race that layout setup or be lost; the fixture's handler provides the
+// observable result without adding a timing sleep to the test.
+func TestIntegration_HandoffClickWaitsForLayout(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+	srv := newFixtureServer(t)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	if _, err := m.Handoff(ctx); err != nil {
+		t.Fatalf("Handoff: %v", err)
+	}
+
+	// Do not insert a sleep or a readiness wait here: this is the regression
+	// boundary. Click must itself tolerate the headed page's settling layout.
+	if err := m.Click(ctx, "#go"); err != nil {
+		t.Fatalf("Click immediately after Handoff: %v", err)
+	}
+	if err := m.Wait(ctx, "#out", "clicked:", false, 10*time.Second); err != nil {
+		t.Fatalf("click result after Handoff: %v", err)
+	}
+}
+
 // TestIntegration_HandoffStaysIsolatedAndDoesNotShareCookies pins what the
 // handoff window is and isn't. It IS still an isolated yottacode browser (a
 // yottacode-browser-* temp profile, never a real Chrome profile), and it

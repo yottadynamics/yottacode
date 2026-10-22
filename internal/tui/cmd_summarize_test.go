@@ -11,6 +11,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
+	"github.com/yottadynamics/yottacode/internal/compaction"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
@@ -113,14 +114,9 @@ func (s *scriptedAdapter) ChatStream(_ context.Context, _ []adapter.Message, _ [
 	return out
 }
 
-func TestEnsureFourSections_AddsMissingHeaders(t *testing.T) {
-	got := ensureFourSections("## Decisions made\nuser shipped X")
-	for _, h := range []string{
-		"## Decisions made",
-		"## Code changes",
-		"## Open questions",
-		"## Preferences expressed",
-	} {
+func TestEnsureSections_AddsMissingHeaders(t *testing.T) {
+	got := compaction.EnsureSections("## Decisions made\nuser shipped X")
+	for _, h := range compaction.SectionHeaders {
 		if !strings.Contains(got, h) {
 			t.Errorf("missing header %q in output: %s", h, got)
 		}
@@ -515,7 +511,7 @@ func TestRunSummarization_BudgetsInputAgainstWindow(t *testing.T) {
 	// inside the budget so the provider doesn't 400.
 	body := msgs[1].Content
 	bodyTokens := (len(body) + 3) / 4
-	budget := summarizeInputBudget(32_000)
+	budget := compaction.InputBudget(32_000)
 	if bodyTokens > budget+500 { // small slack for the dropped-marker line
 		t.Errorf("summarize input not budgeted: bodyTokens=%d budget=%d", bodyTokens, budget)
 	}

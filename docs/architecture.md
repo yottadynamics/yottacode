@@ -1,40 +1,254 @@
 # Architecture
 
-`yottacode` is deliberately small and layered: one agent loop, one event
-channel, two user interfaces, and a set of structured tools.
+This document explains how yottacode turns a user request into a controlled, observable coding workflow. It is intended for contributors, integrators, and operators who need to understand the boundaries between the CLI, runtime, tools, model providers, persistence, and safety controls.
+
+> **Scope:** This describes the current pre-1.0 architecture. Package names and extension seams are more stable than every internal implementation detail.
+
+The architecture is deliberately small and layered: one shared agent loop, three
+execution frontends, a typed tool registry, provider adapters, local
+persistence, and explicit safety gates. The source diagram is maintained at
+[`docs/diagrams/src/yottacode-architecture.mmd`](diagrams/src/yottacode-architecture.mmd).
+
+## System overview
+
+```text
+                              ┌──────────────────────┐
+                              │      Engineer        │
+                              └──────────┬───────────┘
+                                         │
+                              ┌──────────▼───────────┐
+                              │    cmd/yottacode     │
+                              │      Cobra CLI       │
+                              └──────────┬───────────┘
+                                         │
+                         ┌───────────────┼───────────────┐
+                         │               │               │
+              ┌──────────▼─────────┐ ┌───▼────────────┐ ┌─▼──────────────┐
+              │   TUI frontend     │ │ Single Run     │ │ ACP server     │
+              │ internal/tui       │ │ CI/CD          │ │ yottacode acp  │
+              │ interactive        │ │ yottacode run  │ │ stdio protocol │
+              └──────────┬─────────┘ └────┬───────────┘ └──────┬─────────┘
+                         │                │                    │
+                         └────────────────┼────────────────────┘
+                                          ▼
+                              ┌──────────────────────┐
+                              │  internal/agentruntime│
+                              │  shared session build │
+                              │  registry + adapters  │
+                              └──────────┬───────────┘
+                                         ▼
+                              ┌──────────────────────┐
+                              │   internal/agent      │
+                              │      agent.Turn      │
+                              └───────┬──────┬───────┘
+                                      │      │
+                           typed events│      │provider requests
+                                      ▼      ▼
+                              ┌───────────────┐  ┌─────────────────┐
+                              │ frontend      │  │ internal/adapter│
+                              │ event sinks   │  │ provider router │
+                              └───────────────┘  └────────┬────────┘
+                                                         │
+                                              ┌──────────▼──────────┐
+                                              │ Model provider APIs │
+                                              │ OpenAI · Anthropic  │
+                                              │ Gemini · xAI · etc. │
+                                              └─────────────────────┘
+
+                              agent.Turn also calls:
+                              ┌──────────────────────────────┐
+                              │ Tool registry + policy gates │
+                              └──────────────┬───────────────┘
+                                             │
+                              ┌──────────────▼───────────────┐
+                              │ Repository tools              │
+                              │ filesystem · Git · GitHub     │
+                              │ shell                          │
+                              └──────────────┬───────────────┘
+                                             │
+                              ┌──────────────▼───────────────┐
+                              │ Semantic and integration tools│
+                              │ LSP · documents · browser · MCP│
+                              └──────────────┬───────────────┘
+                                             │
+                              ┌──────────────▼───────────────┐
+                              │ Local state                    │
+                              │ sessions · memory · recall    │
+                              │ checkpoints                    │
+                              └────────────────────────────────┘
+```
+
+## Agent runtime deep dive
+
+The system diagram shows where the agent runtime sits. This diagram focuses on
+what happens inside one `agent.Turn`: context is assembled, the provider streams
+an answer, tool calls pass through policy and approval gates, results return to
+the model, and the loop continues until completion or interruption. TUI and ACP
+consume typed events; `yottacode run` consumes the same events for stdout/stderr
+or JSON output.
+
+```text
+                 ┌──────────────────────┐
+                 │      User prompt     │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │  Assemble turn      │
+                 │  context + history  │
+                 │  memory + tool schemas│
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │ Build provider       │
+                 │ request              │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │ internal/adapter     │
+                 │ stream model reply   │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │ Tool calls present?  │
+                 └───────┬────────┬─────┘
+                         │ no     │ yes
+                         │        ▼
+                         │  ┌──────────────────────┐
+                         │  │ Emit preview events  │
+                         │  │ collect tool calls   │
+                         │  └──────────┬───────────┘
+                         │             ▼
+                         │  ┌──────────────────────┐
+                         │  │ Mode + permission    │
+                         │  │ gates                 │
+                         │  └──────────┬───────────┘
+                         │             ▼
+                         │  ┌──────────────────────┐
+                         │  │ Path/tool validation  │
+                         │  └──────────┬───────────┘
+                         │             ▼
+                         │  ┌──────────────────────┐
+                         │  │ Approval required?    │
+                         │  └───────┬────────┬─────┘
+                         │           │ no     │ yes
+                         │           │        ▼
+                         │           │  ┌──────────────────┐
+                         │           │  │ User/policy      │
+                         │           │  │ approval         │
+                         │           │  └──────┬─────┬─────┘
+                         │           │         │ no  │ yes
+                         │           │         ▼     │
+                         │           │  ┌──────────┐ │
+                         │           │  │ Rejected │ │
+                         │           │  │ result   │ │
+                         │           │  └────┬─────┘ │
+                         │           └───────┴───────┘
+                         │                   ▼
+                         │        ┌──────────────────────┐
+                         │        │ Execute tool call    │
+                         │        └──────────┬───────────┘
+                         │                   ▼
+                         │        ┌──────────────────────┐
+                         │        │ Bounded tool result  │
+                         │        │ + lifecycle events   │
+                         │        └──────────┬───────────┘
+                         │                   ▼
+                         │        ┌──────────────────────┐
+                         │        │ Append tool calls and │
+                         │        │ results to history   │
+                         │        └──────────┬───────────┘
+                         │                   │
+                         │                   └──────────────┐
+                         │                                  │ continue
+                         │                                  ▼
+                         │                       back to context assembly
+                         │
+                         ▼
+                 ┌──────────────────────┐
+                 │ Final assistant      │
+                 │ response + events    │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │ Persist session,     │
+                 │ usage, checkpoint,  │
+                 │ and recall data     │
+                 └──────────┬───────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │      Turn complete   │
+                 └──────────────────────┘
+
+                 Cancellation path:
+                 tool interruption → synthetic tool results
+                 → provider-valid history → TurnInterrupted event
+```
+
+### Runtime invariants
+
+- Provider adapters stream data; they do not execute tools.
+- The runtime authorizes every model-emitted tool call before execution.
+- Tool results are bounded and appended in provider-valid order.
+- Cancellation repairs incomplete tool-call history before the next request.
+- TUI, oneshot, and ACP consumers receive events; they do not own agent decisions.
+- ACP hosts multiple independent sessions in one long-lived process, while TUI
+  and oneshot each host one session per process.
+- Foreground subagents return through the parent turn, while background work is
+  isolated and reports completion asynchronously.
 
 ## Core Data Flow
 
 ```text
-                ┌──────────────────────┐
-                │   User Input         │
-                │  (CLI or TUI)        │
-                └──────────┬───────────┘
-                           │
-                ┌──────────▼───────────┐
-                │    TUI / Oneshot     │
-                │   (Consumer)         │
-                └──────────┬───────────┘
-          events ◄──────── │ decisions │
-                           ▼
-                ┌──────────▼───────────┐
-                │   agent.Turn         │
-                │  (Main Loop)         │
-                │  ┌───────────────┐  │
-                │  │ Tool Registry │◄─┘
-                │  └───────────────┘  │
-                │          │           │
-                │          ▼           │
-                │    Adapter Stream    │
-                └──────────────────────┘
-                           │
-                ┌──────────▼───────────┐
-                │  Model Provider API  │
-                │  (OpenAI-compatible) │
-                └──────────────────────┘
+                 ┌──────────────────────┐
+                 │      Engineer        │
+                 └──────────┬───────────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          │                 │                 │
+   ┌──────▼───────┐  ┌──────▼────────┐  ┌─────▼─────────┐
+   │ TUI frontend │  │ Single Run    │  │ ACP server    │
+   │ interactive  │  │ yottacode run │  │ stdio client  │
+   └──────┬───────┘  └──────┬────────┘  └─────┬─────────┘
+          │                 │                 │
+          └─────────────────┼─────────────────┘
+                            ▼
+                 ┌──────────────────────┐
+                 │   agent.Turn         │
+                 │   shared loop         │
+                 └───────┬───────┬──────┘
+                         │       │
+              typed events       │ provider stream
+                         │       ▼
+                         │  ┌───────────────┐
+                         │  │ internal/     │
+                         │  │ adapter       │
+                         │  └───────┬───────┘
+                         │          ▼
+                         │  ┌───────────────┐
+                         │  │ Model provider│
+                         │  │ API           │
+                         │  └───────────────┘
+                         ▼
+                 frontend-specific sinks
+                 TUI · stdout/stderr · ACP updates
 ```
 
-## Package Layout
+## Architectural principles
+
+### Local-first, provider-agnostic execution
+
+yottacode owns workflow state, tool execution, approvals, and persistence locally. The model provider supplies streamed decisions and content; it does not own the repository workflow. Provider-specific behavior stays in `internal/adapter`, so the runtime depends on a common streaming contract.
+
+This lets the same workflow use hosted providers, local Ollama models, and other compatible endpoints while keeping provider diagnostics, model catalogs, routing, and retry behavior out of the UI and agent loop.
+
+### One runtime, multiple frontends
+
+`internal/agent.Turn` is the execution center. The TUI, oneshot runner, and ACP server prepare configuration, submit user turns, and consume typed events; none reimplements the tool loop. The TUI focuses on transcript rendering and approvals, oneshot keeps stdout machine-consumable and sends operational detail to stderr, and ACP translates the same runtime events into protocol notifications and permission requests.
+
+### Structured tools instead of unrestricted model access
+
+The model selects from registered tools with typed schemas rather than receiving an implicit shell or filesystem capability. Each tool declares approval behavior, and the runtime applies policy before execution. The registry is the main capability boundary for repository tools, GitHub, memory, plans, subagents, skills, browser automation, and MCP.
+
 
 ```text
 cmd/yottacode/                cobra root command + run subcommand
@@ -48,20 +262,51 @@ internal/
   recall/                     SQLite + FTS5 indexing for /recall
   tui/                        Bubble Tea interface, approval UI, slash commands
   oneshot/                    non-interactive `yottacode run` consumer
+  acp/                        Agent Client Protocol server and session bridge
+  agentruntime/               shared session/runtime construction
   version/                    version string
 ```
+
+## Request and turn lifecycle
+
+### Startup
+
+A session starts through `cmd/yottacode` and `internal/cli`:
+
+1. Parse CLI flags and environment variables.
+2. Resolve the working directory, trust state, configuration, model, and optional feature flags.
+3. Select the execution frontend: the root command starts the TUI, `run` starts the single-run consumer, and `acp` starts a long-lived stdio protocol server.
+4. Build the shared runtime through `internal/agentruntime`, including the provider adapter, permissions, tool registry, LSP, MCP, memory, recall, skills, subagents, and compaction.
+5. The TUI and oneshot create their session from the process cwd; ACP creates multiple sessions from each `session/new` request and keeps their cwd/configuration isolated.
+6. Start the selected frontend and hand user turns to `agent.Turn`.
+
+The three frontends have different lifecycle contracts:
+
+- **TUI:** one interactive session per process, with Bubble Tea rendering and interactive approvals.
+- **Single Run CI/CD:** one prompt from an argument or stdin, clean answer output on stdout, operational output on stderr, then exit.
+- **ACP:** a long-lived Agent Client Protocol server over stdio that can host concurrent sessions and translates runtime events into ACP updates.
+
+### A model turn
+
+A turn appends the user message, assembles runtime context, streams a provider response, validates and authorizes any tool calls, executes tools, appends provider-valid results, and iterates until a final response, interruption, or iteration cap. Session, usage, and checkpoint state are persisted at the turn boundary.
+
+The adapter is deliberately below the turn loop: `agent.Turn` knows about messages, tool calls, events, cancellation, and iteration boundaries, but not provider-specific HTTP or message formats.
+
+### Event flow
+
+The runtime emits typed events for streamed content, reasoning, tool lifecycle, approvals, subagents, interruptions, iteration caps, completion, and errors. The TUI renders these as transcript rows, cards, status, and modals; oneshot separates final answer content on stdout from operational detail on stderr; ACP translates the events into protocol updates.
 
 ## Core Runtime Model
 
 `internal/agent.Turn` is the only part of the system that talks to the model
-and executes tools. Everything else either prepares its inputs or consumes its
-events.
+and executes tools. The TUI, oneshot runner, and ACP server prepare inputs or
+consume its events; they do not reimplement the tool loop.
 
 ```text
 user input
    |
    v
-consumer (tui or oneshot)
+consumer (tui, oneshot, or ACP)
    |                 ^
    | events          | decisions
    v                 |
@@ -71,12 +316,12 @@ agent.Turn --------------------> tool registry
 adapter stream
 ```
 
-This split is the reason the TUI and `yottacode run` can share nearly all of
-the execution stack.
+This split is the reason the TUI, `yottacode run`, and ACP can share nearly all
+of the execution stack.
 
 ## Event Flow
 
-The agent emits typed events such as:
+The runtime emits typed events such as:
 
 - streamed assistant content
 - streamed reasoning updates
@@ -85,9 +330,11 @@ The agent emits typed events such as:
 - iteration-cap warnings
 - terminal completion or error events
 
-Consumers decide how to render those events. The Bubble Tea UI turns them into
-transcript rows, status changes, and approval modals. The one-shot runner sends
-answer content to stdout and operational detail to stderr.
+Consumers decide how to render or transport those events. The Bubble Tea UI
+turns them into transcript rows, status changes, and approval modals. The
+one-shot runner sends answer content to stdout and operational detail to stderr.
+The ACP server maps them to `session/update` notifications and bridges approval
+requests through ACP permission requests.
 
 Assistant content that arrives before a tool call is provisional. If the final
 assistant message contains tool calls, the loop drops that pre-tool text from
@@ -177,8 +424,7 @@ on top of the base approval flow:
   `MaxIterations`. State lives on `agent.AutoModeState`.
 - **Yolo mode overlay** — drops permission prompts on *all* tools (no
   safety floor) and removes the iteration cap entirely. Entered via
-  `--yolo` at startup or `/yolo` mid-session (mirroring Claude
-  Code's startup flag, with a mid-session toggle added). Sits on
+  `--yolo` at startup or `/yolo` mid-session. Sits on
   top of whichever mode is active; the banner shows the mode label
   with a `⚠ yolo mode` suffix (the standalone banner reads
   `⚠ yolo mode`). State lives on `agent.YoloModeState`.
@@ -221,7 +467,7 @@ same path; Esc/Ctrl+C still drop it instead of sending.
 
 **Esc** and **Ctrl+C** are the explicit "stop without sending"
 surface: they cancel the turn and drop any queued message, but leave
-the textarea contents alone. Esc mirrors Claude Code's cancel feel;
+the textarea contents alone. Esc is the explicit cancel gesture;
 Ctrl+C keeps the terminal-native semantics.
 
 **Synthetic `tool_result` policy.** Mid-turn cancellation must

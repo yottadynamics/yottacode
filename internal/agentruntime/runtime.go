@@ -561,6 +561,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	reg.Register(&agent.EnterPlanModeTool{State: planMode})
 	loopControlTool := &agent.LoopControlTool{State: loopControl}
 	reg.Register(loopControlTool)
+	reg.Register(&agent.AskUserQuestionTool{})
 
 	validSubagentTools := reg.Names()
 	validSubagentTools[agent.ConsultAdvisorToolName] = true
@@ -630,8 +631,9 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	}
 	reg.Register(&agent.GetSubagentResultTool{Tasks: subagentTasks})
 	rt.AgentTool = agentTool
-	reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})
-
+	if spec.EnableDeepResearchTool {
+		reg.Register(&agent.DeepResearchTool{Agent: agentTool, Cwd: cwdRef})
+	}
 	dispatchEnabled := expSet.IsEnabled(experimental.Dispatch)
 	reg.Register(&agent.DispatchTool{
 		Agent:                  agentTool,

@@ -151,13 +151,15 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 		// /advisor on flips routing live mid-session — the pair must be
 		// pre-resolved at startup for that to work.
 		SupportsLiveRouterToggle: true,
+		// The TUI handles /deep-research directly, so keep the expensive
+		// workflow out of the ordinary model-callable tool set.
+		EnableDeepResearchTool: true,
 	}
 	rt, err := agentruntime.NewBuilder().Build(ctx, spec)
 	if err != nil {
 		return err
 	}
 	sessionID = rt.Session.ID
-
 
 	// `--summarized` (only meaningful when resuming): replace the loaded
 	// transcript with a structured summary injected into the system

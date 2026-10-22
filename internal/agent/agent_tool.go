@@ -1226,7 +1226,9 @@ func (t *AgentTool) runChild(
 			emitActivity(fmt.Sprintf("auto-denied out-of-workspace write to %s (unattended worker is sandboxed; it cannot escape its worktree)", e.Path))
 		case ContextCompacted:
 			if e.Err != nil {
-				emitActivity("context compaction skipped (summary failed) — continuing")
+				emitActivity(fmt.Sprintf("context compaction skipped (%s) — continuing", e.Err))
+			} else if e.Pruned {
+				emitActivity(fmt.Sprintf("pruned stale tool output ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
 			} else {
 				t.Tasks.IncrementCompactionCount(taskID)
 				emitActivity(fmt.Sprintf("compacted context ~%dK → ~%dK tokens", e.Before/1000, e.After/1000))
@@ -1472,10 +1474,11 @@ func (t namedApprovalTool) Execute(context.Context, string) (string, error) {
 }
 
 // buildChildRegistry clones the parent registry into a new one, stripping the
-// delegation tools (recursion guard) and the plan-mode boundary tools
+// delegation tools (recursion guard), the plan-mode boundary tools
 // (children inherit the parent's plan-mode state by pointer; only the
 // top-level loop may transition it — a child flipping the shared mode
 // mid-flight would yank the parent's gates out from under it), and
+// ask_user_question (an unattended child has no human to answer it), and
 // applying the agent config's tools allowlist when one is set. The
 // recursion guard is unconditional — even a config that names Agent/dispatch
 // in its allowlist cannot reintroduce it.
@@ -1483,7 +1486,7 @@ func (t *AgentTool) buildChildRegistry(cfg *subagents.AgentConfig) *Registry {
 	out := NewRegistry()
 	for _, tool := range t.ParentRegistry.Tools() {
 		name := tool.Name()
-		if isDelegationTool(name) || isPlanBoundaryTool(name) {
+		if isDelegationTool(name) || isPlanBoundaryTool(name) || name == AskUserQuestionToolName {
 			continue
 		}
 		if !cfg.ToolAllowed(name) {
