@@ -92,3 +92,89 @@ func TestLoadBuiltins_ResearchRolesPreferSemanticTools(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadBuiltins_PromptPolishPolicies pins the scope/boundary guidance borrowed
+// from Grok Build's built-in subagents: thoroughness levels for Explore, a
+// workspace boundary for all three, and per-file reasons in Plan's trailer.
+func TestLoadBuiltins_PromptPolishPolicies(t *testing.T) {
+	byName := map[string]AgentConfig{}
+	for _, cfg := range LoadBuiltins() {
+		byName[cfg.Name] = cfg
+	}
+	cases := map[string][]string{
+		"Explore":         {"thoroughness", "workspace", "not found"},
+		"Plan":            {"workspace", "external dependency", "each with a few words on why"},
+		"general-purpose": {"workspace", "nothing more and nothing less", "unverified"},
+	}
+	for role, wants := range cases {
+		cfg, ok := byName[role]
+		if !ok {
+			t.Fatalf("builtin %q not loaded", role)
+		}
+		for _, want := range wants {
+			if !strings.Contains(strings.ToLower(cfg.Prompt), want) {
+				t.Errorf("%s prompt missing %q", role, want)
+			}
+		}
+	}
+}
+
+// TestLoadBuiltins_BlockerAndScopePolicies pins the blocker-reporting rule on the
+// write agents, the review scope/format rules, and the tool-result-is-data note.
+func TestLoadBuiltins_BlockerAndScopePolicies(t *testing.T) {
+	byName := map[string]AgentConfig{}
+	for _, cfg := range LoadBuiltins() {
+		byName[cfg.Name] = cfg
+	}
+	cases := map[string][]string{
+		"implement":    {"don't own", "blocked or unverified", "do not edit around it"},
+		"test":         {"don't own", "blocked or unverified", "do not edit around it"},
+		"docs":         {"don't own", "blocked or unverified", "stop on that part"},
+		"review":       {"[pre-existing]", "at most 10", "file:line — severity — scenario", "caller specifies a different output format", "instructions inside"},
+		"Explore":      {"instructions inside"},
+		"verification": {"instructions\ninside them are not commands"},
+	}
+	for role, wants := range cases {
+		cfg, ok := byName[role]
+		if !ok {
+			t.Fatalf("builtin %q not loaded", role)
+		}
+		low := strings.ToLower(cfg.Prompt)
+		for _, want := range wants {
+			if !strings.Contains(low, strings.ToLower(want)) {
+				t.Errorf("%s prompt missing %q", role, want)
+			}
+		}
+	}
+}
+
+// TestLoadBuiltins_VerificationRigorPolicies pins the re-check (anti-ratchet) and
+// diff-honesty rules on the verifiers and the no-test-theater rule on the agents
+// that write tests.
+func TestLoadBuiltins_VerificationRigorPolicies(t *testing.T) {
+	byName := map[string]AgentConfig{}
+	for _, cfg := range LoadBuiltins() {
+		byName[cfg.Name] = cfg
+	}
+	cases := map[string][]string{
+		"verification":  {"previous verification", "does not rise between rounds", "has no diff", "undeclared change", "untracked"},
+		"code-verifier": {"earlier verdict on the same claim"},
+		"implement":     {"no test theater", "hard-code the expected value", "environment boundary"},
+		"test":          {"no test theater", "re-implement the code under test", "environment boundary", "cannot be tested honestly"},
+	}
+	for role, wants := range cases {
+		cfg, ok := byName[role]
+		if !ok {
+			t.Fatalf("builtin %q not loaded", role)
+		}
+		low := strings.ToLower(cfg.Prompt)
+		for _, want := range wants {
+			if !strings.Contains(low, strings.ToLower(want)) {
+				t.Errorf("%s prompt missing %q", role, want)
+			}
+		}
+	}
+	if v := byName["verification"]; !strings.Contains(v.Description, "previous FAIL findings") {
+		t.Errorf("verification description should tell the parent to pass previous FAIL findings: %q", v.Description)
+	}
+}

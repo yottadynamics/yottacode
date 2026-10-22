@@ -110,20 +110,19 @@ func (t *ReadFileTool) Execute(ctx context.Context, argsJSON string) (string, er
 	return res.Content, err
 }
 
-func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, error) {
+func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs, p string) (string, error) {
 	startLine := max(a.Offset, 1)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = defaultReadLines
 	}
 
-	p := resolvePath(t.Cwd.Get(), a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("read_file: %w", err)
 	}
 	f, _, err := openRegularFile(p)
 	if err != nil {
-		return "", fmt.Errorf("read_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
+		return "", fmt.Errorf("read_file: %w", withMissingPathHint(err, filepath.Dir(p), a.Path))
 	}
 	defer f.Close()
 
@@ -148,7 +147,7 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		if err != nil {
 			return "", fmt.Errorf("read_file: %w", err)
 		}
-		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t\n", a.Path, startByte, len(selectedBytes), receipt.Hash, spanEndsWithNewline(selectedBytes))
+		fmt.Fprintf(&sb, "# hashline path=%s offset=%d length=%d hash=%s ends_with_newline=%t v=1 complete=%t receipt=%s\n", a.Path, startByte, len(selectedBytes), receipt.Hash, spanEndsWithNewline(selectedBytes), !truncated, inlineEditReceipt(editReceipt{Path: a.Path, Offset: startByte, Length: len(selectedBytes), Hash: receipt.Hash, Old: string(selectedBytes), EndsWithNewline: spanEndsWithNewline(selectedBytes), Complete: !truncated}))
 	}
 	for i, line := range anchored {
 		if a.Anchors {
@@ -164,6 +163,24 @@ func (t *ReadFileTool) readText(ctx context.Context, a readFileArgs) (string, er
 		sb.WriteString("…[truncated]")
 	}
 	return sb.String(), nil
+}
+
+const maxInlineEditReceiptBytes = 8 * 1024
+
+func inlineEditReceipt(receipt editReceipt) string {
+	if len(receipt.Old) > maxInlineEditReceiptBytes {
+		receipt.Old = ""
+		receipt.Complete = false
+	}
+	return mustJSONEditReceipt(receipt)
+}
+
+func mustJSONEditReceipt(receipt editReceipt) string {
+	data, err := json.Marshal(receipt)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
 }
 
 // readLineWindow streams r and returns the lines in
@@ -303,6 +320,7 @@ func imageMediaType(path string) (string, bool) {
 }
 
 func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (MultimodalResult, error) {
+	cwd := t.Cwd.Get()
 	var a readFileArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: invalid args: %w", err)
@@ -311,14 +329,14 @@ func (t *ReadFileTool) ExecuteMultimodal(ctx context.Context, argsJSON string) (
 		return MultimodalResult{}, fmt.Errorf("read_file: path is required")
 	}
 
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvePath(cwd, a.Path)
 	if err := ValidateReadPath(p, t.DenyReadPaths); err != nil {
 		return MultimodalResult{}, fmt.Errorf("read_file: %w", err)
 	}
 
 	mediaType, isImage := imageMediaType(p)
 	if !isImage {
-		text, err := t.readText(ctx, a)
+		text, err := t.readText(ctx, a, p)
 		return MultimodalResult{Content: text}, err
 	}
 
@@ -421,19 +439,22 @@ func (t *WriteFileTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if a.Path == "" {
 		return "", fmt.Errorf("write_file: path is required")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
-	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
-		return "", fmt.Errorf("write_file: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", fmt.Errorf("write_file: mkdir: %w", err)
-	}
-	if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
-		return "", fmt.Errorf("write_file: %w", err)
-	}
-	msg := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p)
-	if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, a.Content); note != "" {
-		msg += "\n" + note
-	}
-	return msg, nil
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, a.Path)
+	return withEditPathLock(p, func() (string, error) {
+		if err := ValidateWritePath(p, t.WriteOpts); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return "", fmt.Errorf("write_file: mkdir: %w", err)
+		}
+		if err := os.WriteFile(p, []byte(a.Content), 0o644); err != nil {
+			return "", fmt.Errorf("write_file: %w", err)
+		}
+		msg := fmt.Sprintf("wrote %d bytes to %s", len(a.Content), p)
+		if note := notifyLSPFileChanged(ctx, t.Cwd, t.LSPManager, t.LSPServers, p, a.Content); note != "" {
+			msg += "\n" + note
+		}
+		return msg, nil
+	})
 }

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 
@@ -235,6 +236,12 @@ func (idx *Index) Search(query string, limit int) ([]Hit, error) {
 	if query == "" {
 		return nil, errors.New("recall: empty query")
 	}
+	// Reject syntax-only input before raw FTS5 parsing. In particular, "*" is a
+	// valid FTS5 match-all expression, but punctuation-only user input should
+	// not unexpectedly return the entire index.
+	if sanitizeFTS5(query) == "" {
+		return nil, nil
+	}
 	if limit <= 0 {
 		limit = 10
 	}
@@ -243,26 +250,24 @@ func (idx *Index) Search(query string, limit int) ([]Hit, error) {
 		return hits, nil
 	}
 	sanitized := sanitizeFTS5(query)
-	if sanitized == "" || sanitized == query {
+	if sanitized == query {
 		return nil, fmt.Errorf("recall: search: %w", err)
 	}
 	return idx.searchRaw(sanitized, limit)
 }
 
-// sanitizeFTS5 strips characters that have meaning in FTS5 query syntax
-// (operators, quotes, column scoping). Replaces them with spaces so the
-// remaining tokens still match.
+// sanitizeFTS5 turns a free-form query into a safe FTS5 expression: it splits
+// on anything that isn't a letter, digit or underscore and quotes each token,
+// so punctuation ("4.22", "oc-mirror", "a/b") and bare operators (NOT, OR)
+// are matched literally instead of parsed. Tokens are implicitly ANDed.
 func sanitizeFTS5(q string) string {
-	var b strings.Builder
-	for _, r := range q {
-		switch r {
-		case '"', '(', ')', '*', '+', '-', ':', '!', '^', '\'':
-			b.WriteRune(' ')
-		default:
-			b.WriteRune(r)
-		}
+	toks := strings.FieldsFunc(q, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	})
+	for i, t := range toks {
+		toks[i] = `"` + t + `"`
 	}
-	return strings.TrimSpace(b.String())
+	return strings.Join(toks, " ")
 }
 
 func (idx *Index) searchRaw(query string, limit int) ([]Hit, error) {

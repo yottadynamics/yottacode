@@ -10,6 +10,7 @@ name: Sandbox image
 on:
   workflow_dispatch: {}
   pull_request:
+    types: [opened, synchronize, reopened]
     paths:
       - infra/sandbox.Containerfile
       - scripts/smoke/sandbox-image.sh
@@ -23,6 +24,10 @@ on:
       - .github/workflows/sandbox-image.yml
   schedule:
     - cron: '0 7 * * 1'
+
+concurrency:
+  group: sandbox-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

@@ -432,3 +432,33 @@ func TestIndexSession_OrphanCleanupLeavesOtherSessions(t *testing.T) {
 		t.Errorf("shrinking sess-a disturbed sess-b: got %v, want [0 1]", got)
 	}
 }
+
+func TestIndex_PunctuatedQueryDoesNotError(t *testing.T) {
+	idx := newIndex(t)
+	idx.IndexSession(fakeSession("a", "mirror openshift 4.22 images with oc-mirror"))
+	for _, q := range []string{"openshift 4.22 release images oc-mirror", "oc-mirror v2.0", "a/b, c"} {
+		if _, err := idx.Search(q, 10); err != nil {
+			t.Errorf("Search(%q) error: %v", q, err)
+		}
+	}
+	hits, err := idx.Search("openshift 4.22 oc-mirror", 10)
+	if err != nil || len(hits) != 1 {
+		t.Errorf("want 1 hit, got %d err=%v", len(hits), err)
+	}
+	for _, q := range []string{"...", "-", `"`, "(", "*"} {
+		hits, err := idx.Search(q, 10)
+		if err != nil || len(hits) != 0 {
+			t.Errorf("Search(%q) = %d hits, err=%v; want no hits and no error", q, len(hits), err)
+		}
+	}
+}
+
+func TestIndex_EdgeQueries(t *testing.T) {
+	idx := newIndex(t)
+	idx.IndexSession(fakeSession("a", "café AND notes: it's \"quoted\" (parens) NEAR"))
+	for _, q := range []string{"...", "-", `"`, "(", "AND", "NOT", "NEAR(", "café", "it's", "col:val", "*", "OR OR", "^x", "a\x00b"} {
+		if _, err := idx.Search(q, 10); err != nil {
+			t.Errorf("Search(%q) error: %v", q, err)
+		}
+	}
+}

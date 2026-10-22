@@ -333,6 +333,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 					updateErr = err
 				}
 			}
+		case agent.QuestionNeeded:
+			d := requestUserQuestion(e)
+			select {
+			case decisions <- d:
+			default:
+			}
 		default:
 			if msg, ok := ev.(agent.AssistantMessage); ok {
 				if note := correctWindow(s.rt, msg.Message.Usage, false); note != "" && updateErr == nil {

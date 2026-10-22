@@ -38,15 +38,33 @@ func (t *EditFileTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"path":        map[string]any{"type": "string", "description": "File to edit (absolute or cwd-relative)"},
-			"old_string":  map[string]any{"type": "string", "description": "Text that currently exists in the file"},
+			"old_string":  map[string]any{"type": "string", "description": "Text that currently exists in the file; optional when receipt is supplied"},
 			"new_string":  map[string]any{"type": "string", "description": "Replacement text (may be empty to delete)"},
 			"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence (default: false)"},
+			"receipt":     map[string]any{"type": "object", "description": "Exact receipt returned by an anchored read; avoids reconstructing old_string from displayed text"},
 		},
-		"required": []string{"path", "old_string", "new_string"},
+		"required": []string{"path", "new_string"},
 	}
 }
 
 func (t *EditFileTool) RequiresApproval(string) bool { return true }
+
+// PrevalidateArgs rejects malformed edit calls before permission evaluation or
+// approval. Missing paths must never produce an approval prompt or a misleading
+// mutation error after the user accepts it.
+func (t *EditFileTool) PrevalidateArgs(argsJSON string) error {
+	var a editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return fmt.Errorf("edit_file: path is required")
+	}
+	if a.OldString == "" && len(a.Receipt) == 0 {
+		return fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
+	}
+	return nil
+}
 
 // PathsToSnapshot reports the target file so /checkpoints can restore
 // the pre-edit contents on rewind.
@@ -69,35 +87,94 @@ func (t *EditFileTool) PreviewCall(argsJSON string) string {
 }
 
 type editArgs struct {
-	Path       string `json:"path"`
-	OldString  string `json:"old_string"`
-	NewString  string `json:"new_string"`
-	ReplaceAll bool   `json:"replace_all"`
+	Path       string          `json:"path"`
+	OldString  string          `json:"old_string"`
+	NewString  string          `json:"new_string"`
+	ReplaceAll bool            `json:"replace_all"`
+	Receipt    json.RawMessage `json:"receipt"`
 }
 
 var replaceFileIfUnchanged = hashline.ReplaceFileIfUnchanged
 
+func (t *EditFileTool) applyReceiptWithCwd(a *editArgs, cwd string) (editReceipt, error) {
+	if len(a.Receipt) == 0 || string(a.Receipt) == "null" {
+		return editReceipt{}, nil
+	}
+	receipt, err := parseEditReceipt(a.Receipt)
+	if err != nil {
+		return editReceipt{}, err
+	}
+	if receipt.Path != "" && resolvePath(cwd, receipt.Path) != resolvePath(cwd, a.Path) {
+		return editReceipt{}, fmt.Errorf("receipt path %q does not match edit path %q", receipt.Path, a.Path)
+	}
+	if a.OldString != "" && a.OldString != receipt.Old {
+		return editReceipt{}, fmt.Errorf("old_string conflicts with receipt old text")
+	}
+	a.OldString = receipt.Old
+	return receipt, nil
+}
 func (t *EditFileTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	var preview editArgs
+	if err := json.Unmarshal([]byte(argsJSON), &preview); err != nil {
+		return "", fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	cwd := t.Cwd.Get()
+	p := resolvePath(cwd, preview.Path)
+	return withEditPathLock(p, func() (string, error) {
+		return t.executeUnlocked(ctx, argsJSON, p, cwd)
+	})
+}
+
+func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string, resolvedPath, resolvedCwd string) (string, error) {
 	var a editArgs
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("edit_file: invalid args: %w", err)
+	}
+	if a.OldString == "" && len(a.Receipt) == 0 {
+		return "", fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
+	}
+	receipt, err := t.applyReceiptWithCwd(&a, resolvedCwd)
+	if err != nil {
+		return "", fmt.Errorf("edit_file: %w", err)
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("edit_file: path is required")
 	}
 	if a.OldString == "" {
-		return "", fmt.Errorf("edit_file: old_string must not be empty (would match everywhere)")
+		return "", fmt.Errorf("edit_file: old_string is required unless receipt is supplied")
 	}
 	if a.OldString == a.NewString {
 		return "", fmt.Errorf("edit_file: old_string and new_string are byte-for-byte identical, so this call cannot make progress and resubmitting it unchanged will fail the same way every time. This is not a stale-file problem — no file was even read yet. Call read_file on the target to see its current exact content, then call edit_file again with a new_string that actually differs from old_string")
 	}
-	p := resolvePath(t.Cwd.Get(), a.Path)
+	p := resolvedPath
 	if err := ValidateWritePath(p, t.WriteOpts); err != nil {
 		return "", fmt.Errorf("edit_file: %w", err)
 	}
 	contents, err := os.ReadFile(p)
 	if err != nil {
 		return "", fmt.Errorf("edit_file: %w", withMissingPathHint(err, t.Cwd.Get(), a.Path))
+	}
+	if receipt.Hash != "" {
+		applyOffset := receipt.Offset
+		observedMatches := receipt.Offset >= 0 && receipt.Offset+receipt.Length <= len(contents) && string(contents[receipt.Offset:receipt.Offset+receipt.Length]) == receipt.Old
+		if !observedMatches {
+			// A preceding insertion/deletion can shift an otherwise unchanged target.
+			// Rebase exactly once only when the original bytes occur at one unique
+			// location; changed or ambiguous targets remain hard failures.
+			matches := strings.Count(string(contents), receipt.Old)
+			if matches != 1 {
+				return "", fmt.Errorf("edit_file: stale_receipt: the receipt span changed since the read; re-read the target")
+			}
+			applyOffset = strings.Index(string(contents), receipt.Old)
+		}
+		outBytes := make([]byte, 0, len(contents)-receipt.Length+len(a.NewString))
+		outBytes = append(outBytes, contents[:applyOffset]...)
+		outBytes = append(outBytes, a.NewString...)
+		outBytes = append(outBytes, contents[applyOffset+receipt.Length:]...)
+		if err := replaceFileIfUnchanged(p, contents, outBytes); err != nil {
+			return "", fmt.Errorf("edit_file: write: %w", err)
+		}
+		return t.editResult(ctx, p, string(outBytes), "edited %s: 1 receipt replacement")
 	}
 	src := string(contents)
 	count := strings.Count(src, a.OldString)

@@ -455,6 +455,8 @@ func placeOutputFile(src, dst string, overwrite bool) error {
 }
 
 func (t *CreateDocumentTool) generateViaPandoc(ctx context.Context, a createDocumentArgs, output, cwd string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, documentCommandTimeout)
+	defer cancel()
 	if len(a.Content.Blocks) == 0 {
 		return "", fmt.Errorf("create_document: content.blocks is required for format=%s", a.Format)
 	}
@@ -508,6 +510,12 @@ func (t *CreateDocumentTool) generateViaPandoc(ctx context.Context, a createDocu
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
 	if err := c.Run(); err != nil {
+		if terr := documentTimeoutErr(ctx, "pandoc"); terr != nil {
+			return "", terr
+		}
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("create_document: pandoc: %w", ctx.Err())
+		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			note := ""
 			if exitErr.ExitCode() == podmanInfraExitCode && isPodmanSandboxLabel(LabelForProfile(sb, SandboxProfileDocuments)) {
@@ -552,6 +560,8 @@ func (t *CreateDocumentTool) resolvePyHelperScript(script documents.PyHelperScri
 // exactly like an image block's path (ValidateReadPath + the credential
 // deny-list) — this tool's second-ever read path after images.
 func (t *CreateDocumentTool) generateDocxFromTemplate(ctx context.Context, a createDocumentArgs, output, cwd string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, documentCommandTimeout)
+	defer cancel()
 	templatePath := resolvePath(cwd, a.Template)
 	if err := ValidateReadPath(templatePath, t.DenyReadPaths); err != nil {
 		return "", fmt.Errorf("create_document: template: %w", err)
@@ -600,6 +610,12 @@ func (t *CreateDocumentTool) generateDocxFromTemplate(ctx context.Context, a cre
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
 	if err := c.Run(); err != nil {
+		if terr := documentTimeoutErr(ctx, "docx template fill"); terr != nil {
+			return "", terr
+		}
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("create_document: docx template fill: %w", ctx.Err())
+		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			note := ""
 			if exitErr.ExitCode() == podmanInfraExitCode && isPodmanSandboxLabel(LabelForProfile(sb, SandboxProfileDocuments)) {
@@ -722,6 +738,12 @@ func checkCommandAvailable(ctx context.Context, sb Sandbox, cwd, name string) er
 	err := c.Run()
 	if err == nil {
 		return nil
+	}
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("create_document: %s probe timed out after %s: %w", name, documentCommandTimeout, ctx.Err())
+		}
+		return fmt.Errorf("create_document: %s probe canceled: %w", name, ctx.Err())
 	}
 	out := stdout.String() + stderr.String()
 	where := LabelForProfile(sb, SandboxProfileDocuments)

@@ -144,6 +144,7 @@ type session struct {
 	browserCtx      context.Context
 	browserCancel   context.CancelFunc
 	browser         *chromedp.Browser
+	headed          bool
 	mu              syncutil.Mutex
 	pages           []*trackedPage
 	active          int
@@ -252,7 +253,7 @@ func launchSessionMode(ctx context.Context, bin, profile string, headless bool) 
 		cancel()
 		return nil, fmt.Errorf("%w: browser startup timed out", ErrLaunchFailed)
 	}
-	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, downloads: make(map[string]*downloadWaiter)}
+	s := &session{allocCtx: allocCtx, cancel: cancel, browserCtx: bc, browserCancel: browserCancel, browser: chromedp.FromContext(bc).Browser, headed: !headless, downloads: make(map[string]*downloadWaiter)}
 	if s.browser != nil && s.browser.Process() != nil {
 		s.pid = s.browser.Process().Pid
 	}
@@ -615,6 +616,12 @@ func (s *session) navigate(ctx context.Context, u, w string) (NavigateResult, er
 		return NavigateResult{}, err
 	}
 	p.setURL(url)
+	if s.headed {
+		// A navigation can trigger another asynchronous OS window-manager resize
+		// after the headed session's initial startup stabilization. Wait again
+		// before returning control so the next type/click sees the real viewport.
+		waitMaximizedViewport(p.ctx, 2*time.Second)
+	}
 	return NavigateResult{url, title}, nil
 }
 func (s *session) waitNetworkIdle(ctx context.Context, quiet time.Duration) error {
@@ -723,8 +730,39 @@ func (s *session) click(ctx context.Context, sel string) error {
 	win, bounds, boundsErr := browser.GetWindowForTarget().WithTargetID(p.id).Do(cdp.WithExecutor(s.browserCtx, s.browser))
 	fmt.Fprintf(os.Stderr, "DEBUG %s click start sel=%q activeID=%s innerWH=%dx%d rect=%s diagErr=%v windowID=%v bounds=%+v boundsErr=%v\n",
 		time.Now().Format(time.RFC3339Nano), sel, p.id, winW, winH, rectJSON, diagErr, win, bounds, boundsErr)
-	if err := chromedp.Run(c, chromedp.Click(sel)); err != nil {
-		return classifySelectorErr(err)
+	// Headed Chrome under Xvfb can report a visible element before its
+	// renderer has settled the input coordinates. Re-resolve the target and
+	// retry the native click briefly so handoff clicks are not lost at that
+	// boundary.
+	var clickErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		var rect struct {
+			Width  float64 `json:"w"`
+			Height float64 `json:"h"`
+		}
+		readyCtx, readyCancel := context.WithTimeout(c, 2*time.Second)
+		readyErr := chromedp.Run(readyCtx, chromedp.Evaluate(fmt.Sprintf(`(() => { const e = document.querySelector(%q); if (!e) return null; const r = e.getBoundingClientRect(); return {w:r.width,h:r.height}; })()`, sel), &rect))
+		readyCancel()
+		if readyErr == nil && rect.Width > 0 && rect.Height > 0 {
+			clickErr = chromedp.Run(c, chromedp.Click(sel))
+			if clickErr == nil {
+				break
+			}
+		} else if readyErr != nil {
+			clickErr = readyErr
+		} else {
+			clickErr = fmt.Errorf("selector %q has no usable layout", sel)
+		}
+		if attempt < 2 {
+			select {
+			case <-c.Done():
+				return c.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	if clickErr != nil {
+		return classifySelectorErr(clickErr)
 	}
 	endTicks, endOK := debugCPUTicks(s.pid)
 	ticksMsg := "n/a"
@@ -736,40 +774,84 @@ func (s *session) click(ctx context.Context, sel string) error {
 	return nil
 }
 func (s *session) typeText(ctx context.Context, sel, text string, submit bool) error {
-	a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
-	if submit {
-		a = append(a, chromedp.SendKeys(sel, "\r"))
-	}
 	pageCtx := s.activePage().ctx
 	cctx, cancel := actionContext(pageCtx, ctx)
 	defer cancel()
-	if err := chromedp.Run(cctx, a...); err != nil {
-		return classifySelectorErr(err)
+
+	// Headed Chrome under Xvfb can acknowledge Focus/SendKeys before the
+	// renderer commits the input value. Confirm the value before returning so a
+	// following click cannot race an undelivered keyboard event.
+	var typeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		a := []chromedp.Action{chromedp.Focus(sel), chromedp.SendKeys(sel, text)}
+		if submit {
+			a = append(a, chromedp.SendKeys(sel, "\r"))
+		}
+		if typeErr = chromedp.Run(cctx, a...); typeErr != nil {
+			break
+		}
+		if text == "" {
+			return nil
+		}
+		predicate := fmt.Sprintf(`(() => { const e = document.querySelector(%q); return !!e && e.value === %q; })()`, sel, text)
+		if err := chromedp.Run(cctx, chromedp.Poll(predicate, nil)); err == nil {
+			// Let the renderer process the input task and a paint cycle before
+			// the next native mouse event. This matters after headed handoff,
+			// where SendKeys can commit the value before hit testing settles.
+			frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+			if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err != nil {
+				return classifySelectorErr(err)
+			}
+			return nil
+		} else {
+			typeErr = err
+		}
+		if attempt < 2 {
+			select {
+			case <-cctx.Done():
+				return cctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	if typeErr != nil {
+		return classifySelectorErr(typeErr)
 	}
 	return nil
 }
 func (s *session) pageCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.pages) }
 func (s *session) followNewPage(before int, ctx context.Context) {
-	deadline := time.NewTimer(newTabDetectWindow)
-	defer deadline.Stop()
+	// A click must not be held hostage by platform-specific target creation.
+	// TargetCreated commonly arrives with an empty URL, so poll Chrome's
+	// browser-level target registry until the new target has navigated.
+	waitCtx, cancel := context.WithTimeout(ctx, newTabDetectWindow)
+	defer cancel()
 	for {
-		if s.pageCount() > before {
-			s.mu.Lock()
-			s.active = len(s.pages) - 1
-			p := s.pages[s.active]
-			s.mu.Unlock()
-			refreshCtx, cancel := context.WithTimeout(p.ctx, 2*time.Second)
-			var url string
-			if chromedp.Run(refreshCtx, chromedp.Location(&url)) == nil {
-				p.setURL(url)
+		s.mu.Lock()
+		var p *trackedPage
+		if len(s.pages) > before {
+			p = s.pages[len(s.pages)-1]
+		}
+		s.mu.Unlock()
+		if p != nil {
+			infos, _ := target.GetTargets().Do(cdp.WithExecutor(waitCtx, s.browser))
+			for _, info := range infos {
+				if info != nil && info.TargetID == p.id && info.URL != "" && info.URL != "about:blank" {
+					p.setURL(info.URL)
+					s.mu.Lock()
+					for i, candidate := range s.pages {
+						if candidate == p {
+							s.active = i
+							break
+						}
+					}
+					s.mu.Unlock()
+					return
+				}
 			}
-			cancel()
-			return
 		}
 		select {
-		case <-deadline.C:
-			return
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			return
 		case <-time.After(10 * time.Millisecond):
 		}

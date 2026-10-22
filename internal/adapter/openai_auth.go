@@ -128,10 +128,8 @@ func newOpenAIAuthAdapterFor(cfg Config, src *openaiauth.TokenSource, endpoint s
 // (which calls the generic builder) lines up with the runtime
 // adapter's profile automatically.
 //
-// Provider-native built-in tools (web_search, code_interpreter) are
-// not available on the Codex backend's ChatGPT-account auth path.
-// The generic builder leaves them off because openai-auth isn't in
-// the SupportsWebSearch / SupportsCodeInterpreter expressions.
+// The Codex backend supports provider-native web_search. Code interpreter
+// remains unavailable on this ChatGPT-account auth path.
 func buildOpenAIAuthProfile(cfg Config) ProviderProfile {
 	return buildProfile(cfg, true)
 }
@@ -148,15 +146,37 @@ func (a *openAIAuthAdapter) ChatStream(ctx context.Context, messages []Message, 
 }
 
 func (a *openAIAuthAdapter) runOnce(ctx context.Context, messages []Message, tools []Tool, out chan<- StreamEvent) {
-	body, err := buildOpenAIAuthRequest(a.model, a.cfg.ReasoningEffort, a.cfg.CacheKey, messages, tools)
+	hasSearch := hasOpenAIAuthWebSearch(tools)
+	body, err := buildOpenAIAuthRequestMode(a.model, a.cfg.ReasoningEffort, a.cfg.CacheKey, messages, tools, true)
 	if err != nil {
 		out <- StreamEvent{Kind: EventErr, Err: fmt.Errorf("openai-auth: build request: %w", err)}
 		return
 	}
 	resp, err := a.sendWithRetry(ctx, body)
+	if err != nil && hasSearch {
+		// The private Codex backend can accept the native tool shape while
+		// still failing for a particular account/model. Retry once with the
+		// local function tool; the runtime registers that tool for this
+		// provider so the model can continue without hosted search.
+		fallbackBody, buildErr := buildOpenAIAuthRequestMode(a.model, a.cfg.ReasoningEffort, a.cfg.CacheKey, messages, tools, false)
+		if buildErr == nil {
+			resp, err = a.sendWithRetry(ctx, fallbackBody)
+		}
+	}
 	if err != nil {
 		out <- StreamEvent{Kind: EventErr, Err: err}
 		return
+	}
+	if hasSearch && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized {
+		resp.Body.Close()
+		fallbackBody, buildErr := buildOpenAIAuthRequestMode(a.model, a.cfg.ReasoningEffort, a.cfg.CacheKey, messages, tools, false)
+		if buildErr == nil {
+			resp, err = a.sendWithRetry(ctx, fallbackBody)
+		}
+		if err != nil {
+			out <- StreamEvent{Kind: EventErr, Err: err}
+			return
+		}
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
@@ -867,6 +887,10 @@ func humanizeDuration(d time.Duration) string {
 // other shape with HTTP 400. See project memory
 // `project_chatgpt_codex_api_contract.md` for the full contract.
 func buildOpenAIAuthRequest(model, reasoningEffort, cacheKey string, messages []Message, tools []Tool) ([]byte, error) {
+	return buildOpenAIAuthRequestMode(model, reasoningEffort, cacheKey, messages, tools, true)
+}
+
+func buildOpenAIAuthRequestMode(model, reasoningEffort, cacheKey string, messages []Message, tools []Tool, nativeWebSearch bool) ([]byte, error) {
 	instructions, items := splitForOpenAIAuth(messages)
 	if strings.TrimSpace(instructions) == "" {
 		instructions = OpenAIAuthDefaultInstructions
@@ -894,7 +918,11 @@ func buildOpenAIAuthRequest(model, reasoningEffort, cacheKey string, messages []
 	if effort, ok := openAIEffort(reasoningEffort); ok && isReasoningModel(model) {
 		body["reasoning"] = map[string]any{"effort": string(effort)}
 	}
-	if functionTools := openAIAuthFunctionTools(tools); len(functionTools) > 0 {
+	functionTools := openAIAuthFunctionTools(tools, nativeWebSearch)
+	if nativeWebSearch && hasOpenAIAuthWebSearch(tools) {
+		functionTools = append(functionTools, openAIAuthHostedTool{Type: "web_search"})
+	}
+	if len(functionTools) > 0 {
 		body["tools"] = functionTools
 	}
 	return json.Marshal(body)
@@ -967,6 +995,10 @@ func splitForOpenAIAuth(ms []Message) (instructions string, items []inputItem) {
 	return
 }
 
+type openAIAuthHostedTool struct {
+	Type string `json:"type"`
+}
+
 type openAIAuthFunctionTool struct {
 	Type        string         `json:"type"`
 	Name        string         `json:"name"`
@@ -974,12 +1006,26 @@ type openAIAuthFunctionTool struct {
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
-func openAIAuthFunctionTools(tools []Tool) []openAIAuthFunctionTool {
+func hasOpenAIAuthWebSearch(tools []Tool) bool {
+	for _, t := range tools {
+		if t.Name == "web_search" {
+			return true
+		}
+	}
+	return false
+}
+
+func openAIAuthFunctionTools(tools []Tool, nativeWebSearch bool) []any {
 	if len(tools) == 0 {
 		return nil
 	}
-	out := make([]openAIAuthFunctionTool, 0, len(tools))
+	out := make([]any, 0, len(tools))
 	for _, t := range tools {
+		// The Codex backend owns hosted web_search. Do not also expose the
+		// local function with the same name when native mode is active.
+		if nativeWebSearch && t.Name == "web_search" {
+			continue
+		}
 		out = append(out, openAIAuthFunctionTool{
 			Type:        "function",
 			Name:        t.Name,

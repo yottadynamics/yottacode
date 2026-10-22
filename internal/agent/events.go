@@ -78,6 +78,12 @@ type ContextCompacted struct {
 	SnapshotPath string
 	SnapshotErr  error
 	Forced       bool
+	// Pruned marks a reduction done purely by blanking stale tool output,
+	// with no summary call.
+	Pruned bool
+	// Warning is set when a later stage (summary) failed or could not win and
+	// only the cheaper stages' reduction was applied.
+	Warning error
 }
 
 func (ContextCompacted) event() {}
@@ -144,6 +150,32 @@ type PathTrustElevationNeeded struct {
 	ArgsJSON     string
 }
 
+// QuestionNeeded fires when ask_user_question needs an answer. Unlike
+// ApprovalNeeded/PathTrustElevationNeeded, the reply isn't expressible
+// as a bare Decision — a multi-select or free-text answer carries real
+// data — so the consumer instead populates Reply BEFORE signaling
+// completion on the shared decisions channel: AllowOnce means "Reply
+// is populated, proceed", Deny means "cancelled, ignore Reply". The
+// consumer's write to *Reply happens-before AskUserQuestionTool.Execute's
+// read of it because both sides synchronize through the same decisions
+// channel send/receive — no separate lock needed, the same pattern
+// EnterPlanModeTool relies on for PlanModeState.
+//
+// Excluded from oneshot (falls back to any question's single
+// recommended:true option, or fails closed) and from ACP v1 (always
+// fails closed — see internal/acp's requestUserQuestion doc comment).
+//
+// No ToolCallID field: unlike ToolStart/ToolResult, nothing in the
+// loop attaches a call's ToolCallID to the context Execute runs under
+// today, so a field here would just be permanently empty. Add one
+// (with the matching WithToolCallID/ToolCallIDFromContext context
+// helpers) if a future consumer actually needs to correlate this event
+// with its ToolStart/ToolResult pair.
+type QuestionNeeded struct {
+	Questions []Question
+	Reply     *QuestionAnswer
+}
+
 // ToolStart fires immediately before a tool's Execute is called (after any
 // approval flow has resolved). ToolCallID identifies this invocation and is
 // used by consumers to correlate out-of-order parallel results.
@@ -157,10 +189,14 @@ type ToolStart struct {
 // ToolResult fires after the tool finishes. ToolCallID matches the originating
 // ToolStart; Errored signals whether it was a tool-level error vs. success.
 type ToolResult struct {
-	ToolCallID string
-	ToolName   string
-	Output     string
-	Errored    bool
+	ToolCallID     string
+	ToolName       string
+	Output         string
+	Errored        bool
+	FailureKind    string
+	Retryable      bool
+	AlreadyApplied bool
+	Mutated        bool
 }
 
 // CwdChanged fires when a tool (today: enter_worktree / exit_worktree)
@@ -415,6 +451,7 @@ func (IterationContinue) event()        {}
 func (ApprovalAuto) event()             {}
 func (ApprovalNeeded) event()           {}
 func (PathTrustElevationNeeded) event() {}
+func (QuestionNeeded) event()           {}
 func (ToolStart) event()                {}
 func (ToolResult) event()               {}
 func (CwdChanged) event()               {}

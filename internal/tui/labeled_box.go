@@ -27,7 +27,9 @@ const labeledBoxIndentW = 2
 // rendered before the first WindowSizeMsg; otherwise min(termWidth-4,
 // labeledBoxCap).
 func capLabeledBoxWidth(termWidth int) int {
-	if termWidth <= 0 {
+	if termWidth <= 4 {
+		// A bordered labeled box cannot fit below this width. Returning 0
+		// preserves the unconstrained fallback until the terminal is usable.
 		return 0
 	}
 	return min(termWidth-4, labeledBoxCap)

@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/compaction"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 )
 
@@ -95,28 +95,11 @@ func CompactionTriggerTokens(threshold float64, window int) int {
 // positive (~16384 − 8192 output − ~2200 overhead ≈ 6K of input room).
 const minCompactionWindow = 16384
 
-// compactionProgressMarker labels the folded progress summary, so the
-// model (and a later reader of the transcript) knows the text appended to
-// the task is a compaction artifact, not part of the original request.
-const compactionProgressMarker = "[Earlier progress compacted to stay within the context window]"
-
-// compactionPrompt asks the model to compress the dropped middle of an
-// in-progress agent loop into a resumable progress note. Distinct from
-// the TUI's session-summary prompt: this targets a working agent that
-// must keep going, not a human reading a session recap.
-const compactionPrompt = `You are compacting the working history of an in-progress agent task so it can continue with bounded context. Summarize what has happened so far so a capable agent could resume seamlessly without re-reading the dropped messages.
-
-Capture, concisely:
-- The task/goal as currently understood.
-- Key findings, facts, file paths, and tool results discovered so far.
-- Decisions made and approaches already ruled out.
-- What remains to be done and the immediate next step.
-
-Be terse and concrete. Do not invent. Omit pleasantries and restatements of these instructions.`
+const compactionProgressMarker = compaction.ProgressMarker
 
 var (
-	errEmptyCompactionBody       = errors.New("compaction: nothing to summarize")
-	errEmptyCompactionSummary    = errors.New("compaction: model returned empty summary")
+	errCompactionNoOlderHistory  = errors.New("compaction: no older history to summarize; the retained context alone is over the trigger")
+	errCompactionCannotConverge  = errors.New("compaction: summarizing the older history would not bring the request under the trigger")
 	errEmptyCompactionSummarizer = errors.New("compaction: no summarizer available")
 )
 
@@ -191,31 +174,67 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	// compaction fires against the real on-wire size, not an undercount.
 	overhead := toolSchemaTokens(cfg.Registry)
 	threshold := float64(CompactionTriggerTokens(cc.Threshold, cc.Window))
-	if !force && float64(before+overhead) < threshold {
+	// Estimates are scaled by the ratio learned from provider-reported prompt
+	// sizes (see compaction_calibrate.go).
+	scale := cc.calib.scale
+	if !force && float64(scale(before+overhead)) < threshold {
+		cc.warned.Store(false)
 		return false, nil
 	}
 	firstUser := firstUserIndex(h)
 	if firstUser < 0 {
 		return false, nil // no task anchor — nothing sensible to compact
 	}
-	tailBudget := int(compactionTargetRatio(cc) * float64(cc.Window))
+	// Cheapest reduction first: blank superseded reads and stale bulk tool
+	// output. It runs only here, past the trigger, so the prompt-cache miss it
+	// causes is paid at the moment compaction would have paid it anyway. If it
+	// brings the request comfortably under the line (80% of the trigger) the
+	// LLM summary is skipped entirely.
+	pruned := false
+	if p, _, ok := contextwindow.PruneToolOutputs(h); ok {
+		h, pruned = p, true
+		if after := contextwindow.EstimateTokens(h); !force && float64(scale(after+overhead)) <= 0.8*threshold {
+			cc.warned.Store(false)
+			setHistory(cfg, history, h)
+			path, snapErr := preCompactSnapshot(cc, original)
+			return true, send(ctx, events, ContextCompacted{Before: before, After: after, SnapshotPath: path, SnapshotErr: snapErr, Pruned: true})
+		}
+	}
+	// Fallback chain: when the summary can't run or can't win, still keep
+	// whatever the cheaper stages (prune, tail cap) achieved rather than
+	// discarding it, and tell the user why the context stayed large.
+	var tailCapped bool
+	reduce := func(cause error) (bool, error) {
+		if !pruned && !tailCapped {
+			return false, cc.warnOnce(ctx, events, before, cause, force)
+		}
+		after := contextwindow.EstimateTokens(h)
+		if after >= before {
+			return false, cc.warnOnce(ctx, events, before, cause, force)
+		}
+		path, snapErr := preCompactSnapshot(cc, original)
+		setHistory(cfg, history, h)
+		return true, send(ctx, events, ContextCompacted{Before: before, After: after, SnapshotPath: path, SnapshotErr: snapErr, Pruned: true, Forced: force, Warning: cause})
+	}
+	tailBudget := int(compactionTargetRatio(cc) * float64(cc.Window) / cc.calib.get())
 	tailStart := chooseCompactionTailStart(h, firstUser, tailBudget)
+	tailStart, latestRequest := resolveLatestRequest(h, firstUser, tailStart)
 	capped, cappedChanged := capRetainedToolMessages(h, tailStart, tailBudget)
 	if cappedChanged {
-		h = capped
+		h, tailCapped = capped, true
 	}
 	middle := h[firstUser+1 : tailStart]
 	if len(middle) == 0 {
-		if force && cappedChanged {
+		if force && (cappedChanged || pruned) {
 			path, snapErr := preCompactSnapshot(cc, original)
 			setHistory(cfg, history, h)
 			after := contextwindow.EstimateTokens(h)
 			return true, send(ctx, events, ContextCompacted{Before: before, After: after, SnapshotPath: path, SnapshotErr: snapErr, Forced: true})
 		}
 		// The anchors + retained tail already span everything; there's
-		// no older middle to summarize. Can't make progress this round —
-		// leave history alone and let the turn proceed.
-		return false, nil
+		// no older middle to summarize. Keep any prune/cap gains and let
+		// the turn proceed with a warning.
+		return reduce(errCompactionNoOlderHistory)
 	}
 	// Convergence guard: if dropping the entire middle still wouldn't get
 	// the request under the threshold, the irreducible floor (system +
@@ -225,9 +244,9 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	// that never gets under the line. Force skips this because the provider
 	// has already proven the current request is too large, and capping the
 	// retained tail may have lowered the floor.
-	overage := float64(before+overhead) - threshold
-	if !force && float64(contextwindow.EstimateTokens(middle)) <= overage {
-		return false, nil
+	overage := float64(scale(contextwindow.EstimateTokens(h)+overhead)) - threshold
+	if !force && float64(scale(contextwindow.EstimateTokens(middle))) <= overage {
+		return reduce(errCompactionCannotConverge)
 	}
 
 	summarizer := cc.Summarizer
@@ -238,8 +257,7 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 		// No summarizer wired (neither an injected Summarizer nor the
 		// loop's own Adapter). Can't compact; soft-skip so the turn still
 		// proceeds rather than nil-derefing on the ChatStream call.
-		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: errEmptyCompactionSummarizer, Forced: force})
-		return false, nil
+		return reduce(errEmptyCompactionSummarizer)
 	}
 	// Budget the summary INPUT against the SMALLER of the loop window and
 	// the summarizer's own window: under cache-safe routing the summary
@@ -249,16 +267,18 @@ func compact(ctx context.Context, cfg LoopConfig, history *[]adapter.Message, ev
 	if cc.SummarizerWindow > 0 && cc.SummarizerWindow < budgetWindow {
 		budgetWindow = cc.SummarizerWindow
 	}
-	summary, err := summarizeForCompaction(ctx, summarizer, middle, budgetWindow)
+	_, prevSummary, prevFiles := compaction.SplitNote(h[firstUser].Content)
+	summary, err := compaction.Summarize(ctx, summarizer, compaction.Input{
+		Middle: middle, Window: budgetWindow, Scale: cc.calib.get(), Prev: prevSummary, PrevFiles: prevFiles}, nil)
 	if err != nil {
-		// Best-effort: keep history, record the attempt. The turn
-		// continues and may hit the provider's own context limit, which
+		// Best-effort: keep any prune/cap gains and record the attempt. The
+		// turn continues and may hit the provider's own context limit, which
 		// is the pre-existing (pre-compaction) behavior.
-		_ = send(ctx, events, ContextCompacted{Before: before, After: before, Err: err, Forced: force})
-		return false, nil
+		return reduce(err)
 	}
+	cc.warned.Store(false)
 
-	out := assembleCompacted(h, firstUser, tailStart, summary)
+	out := assembleCompacted(h, firstUser, tailStart, summary, latestRequest)
 	path, snapErr := preCompactSnapshot(cc, original)
 	// Whole-slice replacement under the history lock. Today only subagents
 	// compact (cfg.HistoryLock nil → a plain assignment), but routing it
@@ -276,9 +296,9 @@ func preCompactSnapshot(cc *CompactionConfig, history []adapter.Message) (string
 }
 
 const (
-	maxRetainedToolTokens        = 4096
-	minRetainedToolTokens        = 256
-	retainedToolCompactionMarker = "…(truncated by compaction)"
+	maxRetainedToolTokens        = compaction.MaxRetainedToolTokens
+	minRetainedToolTokens        = compaction.MinRetainedToolTokens
+	retainedToolCompactionMarker = compaction.RetainedToolMarker
 )
 
 // capRetainedToolMessages shrinks h[tailStart:]'s tool messages so their
@@ -368,12 +388,72 @@ func chooseCompactionTailStart(h []adapter.Message, firstUser, budgetTokens int)
 			break
 		}
 	}
-	// Snap forward to the next assistant message to keep tool pairing
-	// intact. If none remains, start lands at len(h) (empty tail).
+	if budgetTokens <= 0 {
+		return len(h)
+	}
+	// Snap BACKWARD to the assistant message that owns the cut: the tail must
+	// not open with a tool_result whose tool_use was summarized away, and a
+	// backward snap keeps that whole round instead of discarding it (a
+	// forward snap could leave an empty tail). It overshoots the budget by at
+	// most one round, which capRetainedToolMessages then bounds.
+	for i := min(start, len(h)-1); i > firstUser; i-- {
+		if h[i].Role == adapter.RoleAssistant {
+			return i
+		}
+		if h[i].Role == adapter.RoleUser && i > firstUser {
+			// A user turn boundary: the cut is clean here (resolveLatestRequest
+			// folds this message into the task so roles stay alternating).
+			return i
+		}
+	}
+	// No assistant/user boundary between the task and the cut: fall back to
+	// the next assistant after it (possibly none, leaving an empty tail).
 	for start < len(h) && h[start].Role != adapter.RoleAssistant {
 		start++
 	}
 	return start
+}
+
+// maxLatestRequestChars bounds the verbatim user request folded into the
+// task so a pasted log can't undo the compaction.
+const maxLatestRequestChars = 8000
+
+// resolveLatestRequest finds the user message that started the work the
+// retained tail continues, when that message itself falls in the summarized
+// middle (a long tool loop under one request) or sits exactly at the cut.
+// Returns the (possibly advanced) tail start and the request text to keep
+// verbatim. The request is folded into the task message rather than kept as
+// its own turn: a standalone user message before the assistant-led tail
+// would sit next to the task user message, and Gemini/Claude need strict
+// alternation. Single-request loops (subagents) return "".
+func resolveLatestRequest(h []adapter.Message, firstUser, tailStart int) (int, string) {
+	// A cut exactly on a user turn: preserve that request verbatim on the
+	// task, then begin the retained tail at its assistant reply.
+	var latestRequest string
+	if tailStart < len(h) && tailStart > firstUser && h[tailStart].Role == adapter.RoleUser {
+		latestRequest = strings.TrimSpace(h[tailStart].Content)
+		if len(latestRequest) > maxLatestRequestChars {
+			latestRequest = latestRequest[:maxLatestRequestChars] + "…(truncated)"
+		}
+		tailStart++
+	}
+	for tailStart < len(h) && h[tailStart].Role == adapter.RoleUser && tailStart > firstUser {
+		tailStart++
+	}
+	if latestRequest != "" {
+		return tailStart, latestRequest
+	}
+	for i := min(tailStart, len(h)) - 1; i > firstUser; i-- {
+		if h[i].Role != adapter.RoleUser {
+			continue
+		}
+		req := strings.TrimSpace(h[i].Content)
+		if len(req) > maxLatestRequestChars {
+			req = req[:maxLatestRequestChars] + "…(truncated)"
+		}
+		return tailStart, req
+	}
+	return tailStart, ""
 }
 
 // assembleCompacted builds the post-compaction history: leading
@@ -389,11 +469,15 @@ func chooseCompactionTailStart(h []adapter.Message, firstUser, budgetTokens int)
 // assistant pair as prefill; only OpenAI-style backends tolerate it.
 // Folding keeps the sequence alternating (user task → assistant tail) for
 // every provider while preserving the original task text verbatim.
-func assembleCompacted(h []adapter.Message, firstUser, tailStart int, summary string) []adapter.Message {
+func assembleCompacted(h []adapter.Message, firstUser, tailStart int, summary, latestRequest string) []adapter.Message {
 	out := make([]adapter.Message, 0, firstUser+1+(len(h)-tailStart))
 	out = append(out, h[:firstUser]...) // leading system(s)
 	task := h[firstUser]                // value copy — does not mutate h
-	task.Content = strings.TrimSpace(task.Content) + "\n\n" + compactionProgressMarker + "\n\n" + summary
+	base, _, _ := compaction.SplitNote(task.Content)
+	task.Content = strings.TrimSpace(base) + "\n\n" + compactionProgressMarker + "\n\n" + summary
+	if latestRequest != "" {
+		task.Content += "\n\n" + compaction.LatestRequestOpen + "\n" + latestRequest + "\n" + compaction.LatestRequestClose
+	}
 	out = append(out, task)
 	out = append(out, h[tailStart:]...)
 	return out
@@ -528,116 +612,13 @@ func estimateMsgTokens(m adapter.Message) int {
 	return contextwindow.EstimateMessage(m)
 }
 
-// summarizeForCompaction renders the dropped middle to a text body
-// (budgeted to fit the window so the summary call itself doesn't
-// overflow) and runs a single summary completion, returning the model's
-// text.
-func summarizeForCompaction(ctx context.Context, s Streamer, middle []adapter.Message, window int) (string, error) {
-	body := renderForCompaction(middle, window)
-	if strings.TrimSpace(body) == "" {
-		return "", errEmptyCompactionBody
+// warnOnce emits a single "compaction could not reduce context" event per
+// episode (reset once the request size drops back under the trigger), so a
+// persistently-over-trigger loop doesn't warn on every iteration. Forced
+// (provider-overflow) attempts always report.
+func (cc *CompactionConfig) warnOnce(ctx context.Context, events chan<- Event, before int, cause error, force bool) error {
+	if cc.warned.Swap(true) && !force {
+		return nil
 	}
-	msgs := []adapter.Message{
-		{Role: adapter.RoleSystem, Content: compactionPrompt},
-		{Role: adapter.RoleUser, Content: body},
-	}
-	out := s.ChatStream(ctx, msgs, nil)
-	var b strings.Builder
-	for ev := range out {
-		switch ev.Kind {
-		case adapter.EventTokenDelta:
-			b.WriteString(ev.Token)
-		case adapter.EventErr:
-			return "", ev.Err
-		case adapter.EventDone:
-			if b.Len() == 0 && ev.Final != nil {
-				b.WriteString(ev.Final.Content)
-			}
-		}
-	}
-	summary := strings.TrimSpace(b.String())
-	if summary == "" {
-		return "", errEmptyCompactionSummary
-	}
-	return summary, nil
-}
-
-// renderForCompaction flattens the middle messages into one text body,
-// keeping the most recent segments that fit a budget derived from the
-// window (leaving room for the compaction prompt and the reserved
-// output). Oldest segments are dropped first with a marker — in normal
-// operation the middle is well under the window (compaction fires at the
-// threshold and retains a fraction as the tail), so this budget is a
-// safety net for the case where one iteration appended a very large tool
-// result.
-func renderForCompaction(middle []adapter.Message, window int) string {
-	segs := make([]string, 0, len(middle))
-	for _, m := range middle {
-		switch m.Role {
-		case adapter.RoleUser:
-			segs = append(segs, "USER: "+strings.TrimSpace(m.Content)+"\n\n")
-		case adapter.RoleAssistant:
-			var sb strings.Builder
-			if c := strings.TrimSpace(m.Content); c != "" {
-				sb.WriteString("ASSISTANT: ")
-				sb.WriteString(c)
-				sb.WriteString("\n\n")
-			}
-			for _, tc := range m.ToolCalls {
-				fmt.Fprintf(&sb, "ASSISTANT used tool %s\n", tc.Name)
-			}
-			if sb.Len() > 0 {
-				segs = append(segs, sb.String())
-			}
-		case adapter.RoleTool:
-			out := strings.TrimSpace(m.Content)
-			if len(out) > 600 {
-				out = out[:600] + "…(truncated)"
-			}
-			segs = append(segs, "TOOL_RESULT: "+out+"\n\n")
-		}
-	}
-
-	budget := compactionInputBudget(window)
-	if budget <= 0 {
-		// The window is too small for the standard output reservation
-		// (compactionInputBudget went non-positive — e.g. an ~8K-window
-		// summarizer). Returning the full middle here would send an
-		// over-window request and the summary call would be rejected,
-		// defeating compaction. Fall back to a conservative fraction of
-		// the window so the input still has a chance of fitting; a tiny
-		// window then degrades to a lossy summary rather than a guaranteed
-		// failure.
-		budget = window / 2
-	}
-	if budget <= 0 {
-		return strings.TrimSpace(strings.Join(segs, ""))
-	}
-	used := 0
-	keepFrom := len(segs)
-	for i := len(segs) - 1; i >= 0; i-- {
-		cost := (len(segs[i]) + 3) / 4
-		if used+cost > budget && keepFrom < len(segs) {
-			break
-		}
-		used += cost
-		keepFrom = i
-	}
-	if keepFrom == 0 {
-		return strings.TrimSpace(strings.Join(segs, ""))
-	}
-	var b strings.Builder
-	b.WriteString("[earlier middle omitted due to compaction budget]\n\n")
-	for i := keepFrom; i < len(segs); i++ {
-		b.WriteString(segs[i])
-	}
-	return strings.TrimSpace(b.String())
-}
-
-// compactionInputBudget is the token budget for the flattened middle,
-// leaving headroom for the compaction prompt and the reserved per-turn
-// output (matched to the chat adapter's default).
-func compactionInputBudget(window int) int {
-	overhead := (len(compactionPrompt) + 3) / 4
-	return window - overhead - int(adapter.ChatDefaultMaxTokens) - 2048
+	return send(ctx, events, ContextCompacted{Before: before, After: before, Err: cause, Forced: force})
 }

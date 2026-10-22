@@ -153,6 +153,32 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("apply_diff: invalid args: %w", err)
 	}
+	_, rels, err := prepareModelDiff(a.Diff)
+	if err != nil {
+		return "", err
+	}
+	cwd := t.Cwd.Get()
+	paths := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		p := rel
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cwd, p)
+		}
+		paths = append(paths, p)
+	}
+	return withEditPathLocks(paths, func() (string, error) {
+		return t.executeUnlocked(ctx, argsJSON, cwd)
+	})
+}
+
+// executeUnlocked performs the validated patch while the target locks are held.
+func (t *ApplyDiffTool) executeUnlocked(ctx context.Context, argsJSON, resolvedCwd string) (string, error) {
+	var a struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("apply_diff: invalid args: %w", err)
+	}
 	if strings.TrimSpace(a.Diff) == "" {
 		return "", fmt.Errorf("apply_diff: diff is required")
 	}
@@ -170,7 +196,7 @@ func (t *ApplyDiffTool) Execute(ctx context.Context, argsJSON string) (string, e
 			return "", fmt.Errorf("apply_diff: %w", err)
 		}
 	}
-	cwd := t.Cwd.Get()
+	cwd := resolvedCwd
 	for _, rel := range paths {
 		abs := rel
 		if !filepath.IsAbs(abs) {

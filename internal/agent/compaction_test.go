@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/compaction"
 	"github.com/yottadynamics/yottacode/internal/contextwindow"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
@@ -45,12 +47,13 @@ func subagentHistory(rounds, toolSize int) []adapter.Message {
 		{Role: adapter.RoleSystem, Content: "You are an auditing subagent."},
 		{Role: adapter.RoleUser, Content: "Audit the codebase for bugs."},
 	}
-	for range rounds {
+	for i := range rounds {
+		id := fmt.Sprintf("call-%d", i)
 		h = append(h,
 			adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{
-				{Name: "read_file", ArgsJSON: `{"path":"x.go"}`},
+				{ID: id, Name: "read_file", ArgsJSON: fmt.Sprintf(`{"path":"f%d.go"}`, i)},
 			}},
-			adapter.Message{Role: adapter.RoleTool, Content: strings.Repeat("x", toolSize)},
+			adapter.Message{Role: adapter.RoleTool, ToolCallID: id, Content: strings.Repeat("x", toolSize)},
 		)
 	}
 	return h
@@ -268,8 +271,19 @@ func TestMaybeCompact_SkipsWhenAnchorsExceedBudget(t *testing.T) {
 	if len(hh) != want {
 		t.Errorf("expected no compaction (anchors+tail exceed budget), history changed %d → %d", want, len(hh))
 	}
+	evs := drainEvents(events)
+	if len(evs) != 1 {
+		t.Fatalf("expected exactly one warning event when skipping, got %d", len(evs))
+	}
+	if ce, ok := evs[0].(ContextCompacted); !ok || !errors.Is(ce.Err, errCompactionCannotConverge) {
+		t.Errorf("expected cannot-converge warning, got %#v", evs[0])
+	}
+	// The warning is deduped until the request drops back under the trigger.
+	if err := maybeCompact(context.Background(), cfg, &hh, events); err != nil {
+		t.Fatalf("second maybeCompact: %v", err)
+	}
 	if evs := drainEvents(events); len(evs) != 0 {
-		t.Errorf("expected no ContextCompacted event when skipping, got %d", len(evs))
+		t.Errorf("repeat warning not deduped: %d events", len(evs))
 	}
 }
 
@@ -331,7 +345,7 @@ func TestNewChildCompaction(t *testing.T) {
 // middle sized to the (large) child window would overflow the summarizer.
 func TestMaybeCompact_SummarizerWindowClampsInput(t *testing.T) {
 	history := subagentHistory(120, 2000) // ~61K raw tokens → over a 40K*0.75 trigger, with a large middle
-	const marker = "[earlier middle omitted due to compaction budget]"
+	const marker = "[earlier turns omitted due to compaction budget]"
 	run := func(summarizerWindow int) string {
 		cap := &captureStreamer{reply: "ok summary"}
 		cfg := LoopConfig{Compaction: &CompactionConfig{
@@ -368,17 +382,6 @@ func TestMaybeCompact_SummarizerWindowClampsInput(t *testing.T) {
 // compactionInputBudget goes non-positive (~8K), the old code returned the
 // ENTIRE middle — an over-window request the summary call would reject.
 // The fix trims to ~window/2 instead.
-func TestRenderForCompaction_TinyWindowTrimsInsteadOfReturningAll(t *testing.T) {
-	middle := subagentHistory(40, 500)[2:] // ~5K tokens of segments, no anchors
-	body := renderForCompaction(middle, 8192)
-	const marker = "[earlier middle omitted due to compaction budget]"
-	if !strings.Contains(body, marker) {
-		t.Errorf("tiny window should trim (window/2 fallback), got full body without the omit marker")
-	}
-	if got := (len(body) + 3) / 4; got > 8192/2+256 {
-		t.Errorf("trimmed body = %d tokens, want <= ~%d (window/2 budget)", got, 8192/2)
-	}
-}
 
 // TestMaybeCompact_NilSummarizerSoftSkips proves the defensive guard: when
 // neither an injected Summarizer nor the loop's own Adapter is set, the
@@ -563,5 +566,260 @@ func TestCapRetainedToolMessages_ManyOversizedFitBudget(t *testing.T) {
 	}
 	if toolTokens > budget {
 		t.Fatalf("retained tool tokens %d exceed budget %d", toolTokens, budget)
+	}
+}
+
+func TestMaybeCompact_IterativeNoteReplacesAndRecordsFiles(t *testing.T) {
+	cs := &captureStreamer{reply: "UPDATED NOTE"}
+	h := subagentHistory(40, 4000)
+	h[1].Content = "Audit the codebase.\n\n" + compactionProgressMarker + "\n\nOLD NOTE\n\n<files>\n(Write) old.go\n</files>"
+	cfg := LoopConfig{Compaction: &CompactionConfig{Window: 20_000, Threshold: 0.5, TargetRatio: 0.35, Summarizer: cs}}
+	events := make(chan Event, 8)
+	changed, err := compact(context.Background(), cfg, &h, events, false)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if !strings.Contains(cs.lastUserBody, "<previous-summary>") || !strings.Contains(cs.lastUserBody, "OLD NOTE") {
+		t.Errorf("previous summary not passed to summarizer: %.200q", cs.lastUserBody)
+	}
+	task := h[1].Content
+	if strings.Count(task, compactionProgressMarker) != 1 {
+		t.Errorf("notes stacked: %q", task)
+	}
+	if strings.Contains(task, "OLD NOTE") || !strings.Contains(task, "UPDATED NOTE") {
+		t.Errorf("note not replaced: %q", task)
+	}
+	if !strings.Contains(task, "(Write) old.go") || !strings.Contains(task, "(Read) f0.go") {
+		t.Errorf("file list not merged: %q", task)
+	}
+}
+
+func TestMaybeCompact_PruneAloneSkipsSummary(t *testing.T) {
+	cs := &captureStreamer{reply: "SHOULD NOT BE CALLED"}
+	h := []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}, {Role: adapter.RoleUser, Content: "task"}}
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("c%d", i)
+		h = append(h,
+			adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: id, Name: "run_bash", ArgsJSON: `{}`}}},
+			adapter.Message{Role: adapter.RoleTool, ToolCallID: id, Content: strings.Repeat("x", 40_000)})
+	}
+	cfg := LoopConfig{Compaction: &CompactionConfig{Window: 200_000, Threshold: 0.5, TargetRatio: 0.35, Summarizer: cs}}
+	events := make(chan Event, 8)
+	changed, err := compact(context.Background(), cfg, &h, events, false)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if cs.lastUserBody != "" {
+		t.Errorf("summarizer was called despite prune sufficing")
+	}
+	got := drainEvents(events)
+	if len(got) != 1 || !got[0].(ContextCompacted).Pruned {
+		t.Errorf("expected one Pruned event, got %#v", got)
+	}
+}
+
+func TestTokenCalibrator(t *testing.T) {
+	var c tokenCalibrator
+	if c.get() != 1 {
+		t.Fatalf("unset ratio must be 1")
+	}
+	c.observe("m", 100, 500) // below min estimate: ignored
+	if c.get() != 1 {
+		t.Fatalf("tiny prompt must be ignored")
+	}
+	c.observe("m", 10_000, 15_000)
+	if got := c.get(); got != 1.5 {
+		t.Fatalf("first observation = %v, want 1.5", got)
+	}
+	c.observe("m", 10_000, 10_000) // EMA toward 1.0
+	if got := c.get(); got != 1.25 {
+		t.Fatalf("smoothed = %v, want 1.25", got)
+	}
+	c.observe("m", 10_000, 90_000) // clamped to 2.0
+	if got := c.get(); got != 1.625 {
+		t.Fatalf("clamped = %v, want 1.625", got)
+	}
+	var nilc *tokenCalibrator
+	nilc.observe("m", 10_000, 20_000)
+	if nilc.get() != 1 || nilc.scale(10) != 10 {
+		t.Fatalf("nil calibrator must be identity")
+	}
+}
+
+func TestReportedPromptTokens_SumsCacheParts(t *testing.T) {
+	u := &adapter.Usage{InputTokens: 10, CacheReadTokens: 200, CacheCreationTokens: 30}
+	if got := reportedPromptTokens(u); got != 240 {
+		t.Fatalf("got %d", got)
+	}
+	if reportedPromptTokens(nil) != 0 {
+		t.Fatal("nil usage")
+	}
+}
+
+func TestMaybeCompact_CalibrationMakesTriggerFireEarlier(t *testing.T) {
+	build := func() (LoopConfig, []adapter.Message) {
+		cfg := LoopConfig{Compaction: &CompactionConfig{Window: 100_000, Threshold: 0.7, TargetRatio: 0.35, Summarizer: &captureStreamer{reply: "S"}}}
+		return cfg, subagentHistory(20, 6000) // ~30k estimated tokens: under the 50k trigger
+	}
+	cfg, h := build()
+	if changed, _ := compact(context.Background(), cfg, &h, make(chan Event, 8), false); changed {
+		t.Fatal("uncalibrated estimate is under the trigger; must not compact")
+	}
+	cfg, h = build()
+	cfg.Compaction.calib.observe("m", 10_000, 20_000) // provider says prompts are 2x the estimate
+	if changed, _ := compact(context.Background(), cfg, &h, make(chan Event, 8), false); !changed {
+		t.Fatal("calibrated (2x) size is over the trigger; must compact")
+	}
+}
+
+func TestMaybeCompact_SummaryFailureKeepsPruneGains(t *testing.T) {
+	failing := &scriptedStreamer{turns: [][]adapter.StreamEvent{{{Kind: adapter.EventErr, Err: errors.New("boom")}}}}
+	h := []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}, {Role: adapter.RoleUser, Content: "task"}}
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("c%d", i)
+		h = append(h,
+			adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: id, Name: "run_bash", ArgsJSON: `{}`}}},
+			adapter.Message{Role: adapter.RoleTool, ToolCallID: id, Content: strings.Repeat("x", 40_000)})
+	}
+	// Threshold high enough that pruning alone doesn't reach 80% of it.
+	cfg := LoopConfig{Compaction: &CompactionConfig{Window: 80_000, Threshold: 0.5, TargetRatio: 0.35, Summarizer: failing}}
+	events := make(chan Event, 8)
+	before := contextwindow.EstimateTokens(h)
+	changed, err := compact(context.Background(), cfg, &h, events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := contextwindow.EstimateTokens(h)
+	if !changed || after >= before {
+		t.Fatalf("prune gains discarded: changed=%v %d -> %d", changed, before, after)
+	}
+	got := drainEvents(events)
+	if len(got) != 1 {
+		t.Fatalf("events: %#v", got)
+	}
+	if ce := got[0].(ContextCompacted); !ce.Pruned || ce.Warning == nil || ce.Err != nil {
+		t.Errorf("expected pruned event carrying a warning, got %#v", ce)
+	}
+}
+
+// multiTurnHistory: system, user "first", then per turn one user request
+// followed by `rounds` assistant/tool rounds.
+func multiTurnHistory(turns, rounds, toolSize int) []adapter.Message {
+	h := []adapter.Message{{Role: adapter.RoleSystem, Content: "sys"}}
+	n := 0
+	for turn := 0; turn < turns; turn++ {
+		h = append(h, adapter.Message{Role: adapter.RoleUser, Content: fmt.Sprintf("REQUEST-%d please do the thing", turn)})
+		for r := 0; r < rounds; r++ {
+			id := fmt.Sprintf("m%d", n)
+			n++
+			h = append(h,
+				adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: id, Name: "run_bash", ArgsJSON: `{}`}}},
+				adapter.Message{Role: adapter.RoleTool, ToolCallID: id, Content: strings.Repeat("x", toolSize)})
+		}
+	}
+	return h
+}
+
+func TestChooseCompactionTailStart_NeverOpensOnToolResult(t *testing.T) {
+	h := multiTurnHistory(3, 8, 400)
+	for budget := 1; budget < 6000; budget += 37 {
+		start := chooseCompactionTailStart(h, 1, budget)
+		if start < len(h) && h[start].Role == adapter.RoleTool {
+			t.Fatalf("budget %d: tail opens on a tool result at %d", budget, start)
+		}
+	}
+}
+
+func TestChooseCompactionTailStart_SnapsBackKeepsRound(t *testing.T) {
+	h := subagentHistory(6, 100)
+	// Budget that ends exactly on a tool result: backward snap must keep its
+	// owning assistant message rather than dropping the whole round.
+	start := chooseCompactionTailStart(h, 1, contextwindow.EstimateMessage(h[len(h)-1])+1)
+	if start >= len(h) || h[start].Role != adapter.RoleAssistant || h[start].ToolCalls[0].ID != h[start+1].ToolCallID {
+		t.Fatalf("tail start %d does not keep the last round intact", start)
+	}
+}
+
+func TestMaybeCompact_MidTurnCutKeepsLatestRequestVerbatim(t *testing.T) {
+	cs := &captureStreamer{reply: "NOTE"}
+	h := multiTurnHistory(1, 60, 2000) // one request, long tool loop
+	// Make it a second request so the cut lands mid-turn under REQUEST-1.
+	h = append([]adapter.Message{h[0], {Role: adapter.RoleUser, Content: "REQUEST-0 earlier work"}, {Role: adapter.RoleAssistant, Content: "done"}}, h[1:]...)
+	h[3].Content = "REQUEST-1 the active request"
+	cfg := LoopConfig{Compaction: &CompactionConfig{Window: 40_000, Threshold: 0.5, TargetRatio: 0.2, Summarizer: cs}}
+	changed, err := compact(context.Background(), cfg, &h, make(chan Event, 8), false)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	task := h[1].Content
+	if !strings.Contains(task, compaction.LatestRequestOpen+"\nREQUEST-1 the active request\n"+compaction.LatestRequestClose) {
+		t.Errorf("active request not kept verbatim in task: %q", task)
+	}
+	for i := 1; i < len(h); i++ {
+		if h[i].Role == adapter.RoleUser && h[i-1].Role == adapter.RoleUser {
+			t.Fatalf("consecutive user messages at %d", i)
+		}
+	}
+	if h[2].Role != adapter.RoleAssistant {
+		t.Errorf("tail must open on an assistant message, got %v", h[2].Role)
+	}
+	// A second compaction replaces the folded request instead of stacking it.
+	for i := 0; i < 60; i++ {
+		id := fmt.Sprintf("n%d", i)
+		h = append(h,
+			adapter.Message{Role: adapter.RoleAssistant, ToolCalls: []adapter.ToolCall{{ID: id, Name: "run_bash", ArgsJSON: `{}`}}},
+			adapter.Message{Role: adapter.RoleTool, ToolCallID: id, Content: strings.Repeat("y", 2000)})
+	}
+	if changed, err := compact(context.Background(), cfg, &h, make(chan Event, 8), false); err != nil || !changed {
+		t.Fatalf("second compaction changed=%v err=%v", changed, err)
+	}
+	if n := strings.Count(h[1].Content, compaction.LatestRequestOpen); n > 1 {
+		t.Errorf("latest-request blocks stacked: %d", n)
+	}
+	if strings.Contains(cs.lastUserBody, compaction.LatestRequestOpen) {
+		t.Errorf("stale latest-request leaked into summarizer input")
+	}
+}
+
+func TestTokenCalibrator_ResetsOnModelChange(t *testing.T) {
+	var c tokenCalibrator
+	c.observe("a/m1", 10_000, 20_000)
+	if c.get() != 2.0 {
+		t.Fatalf("ratio = %v", c.get())
+	}
+	c.observe("b/m2", 10_000, 11_000)
+	if got := c.get(); got != 1.1 {
+		t.Fatalf("ratio after model change = %v, want a fresh 1.1 (not smoothed with the old model)", got)
+	}
+}
+
+// The loop must feed provider-reported usage into the calibrator.
+func TestLoop_FeedsCalibrator(t *testing.T) {
+	big := strings.Repeat("x", 4*5000) // ~5k estimated tokens in the prompt
+	done := sseDone("ok")
+	done.Final.Usage = &adapter.Usage{InputTokens: 7500} // 1.5x the estimate
+	streamer := &scriptedStreamer{turns: [][]adapter.StreamEvent{{done}}}
+	cc := &CompactionConfig{Window: 1_000_000, Threshold: 0.9}
+	cfg := LoopConfig{Adapter: streamer, Registry: NewRegistry(), MaxIterations: 2, Compaction: cc}
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: big}}
+	if _, err := runTurnSync(t, context.Background(), cfg, &hist, nil); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	if got := cc.calib.get(); got < 1.4 || got > 1.6 {
+		t.Fatalf("calibrator ratio = %v, want ~1.5", got)
+	}
+}
+
+// contextwindow hardcodes the names of tools whose output must survive
+// pruning; fail loudly if a rename in this package breaks that protection.
+func TestPruneExemptNamesMatchRegisteredTools(t *testing.T) {
+	names := []string{SkillToolName, (&TodoWriteTool{}).Name(), (&EnterPlanModeTool{}).Name(), (&ExitPlanModeTool{}).Name()}
+	for _, n := range names {
+		if !contextwindow.PruneExempt(n) {
+			t.Errorf("tool %q is not prune-exempt; update contextwindow.pruneExemptTools", n)
+		}
+	}
+	if (&ReadFileTool{}).Name() != "read_file" {
+		t.Errorf("read_file renamed: update contextwindow.readerTools")
 	}
 }

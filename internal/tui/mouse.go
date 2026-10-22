@@ -11,7 +11,7 @@ import (
 // modal flags here are deliberately kept OUT of anyOverlayOpen itself because
 // that helper has callers/tests with a narrower overlay meaning.
 func (m Model) popupOpen() bool {
-	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.loopExitConfirmOpen
+	return m.anyOverlayOpen() || m.awaitingApproval || m.awaitingPathTrust || m.awaitingQuestion || m.loopExitConfirmOpen
 }
 
 // interactiveMouseOpen is intentionally false: yottacode no longer enables
@@ -907,7 +907,7 @@ func (m Model) inlinePaletteTop() int {
 // the same hit regions as click handling, but only moves cursors; it never
 // synthesizes Enter or commits an action.
 func (m Model) handlePopupHover(msg tea.MouseMotionMsg) Model {
-	if m.awaitingPathTrust || m.awaitingApproval {
+	if m.awaitingPathTrust || m.awaitingApproval || m.awaitingQuestion {
 		return m
 	}
 	if m.loopExitConfirmOpen {
@@ -1134,14 +1134,33 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleMouseWheel scrolls the owned session transcript and nothing else. The
-// wheel deliberately does not browse prompt history or scroll/activate popups;
-// keyboard controls remain the only interaction path outside transcript scroll.
-func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) Model {
-	return m
+// handleMouseWheel routes the wheel to an approval preview when the pointer is
+// inside that card. Approval clicks remain keyboard-only; wheel scrolling only
+// changes the preview offset and never resolves the decision.
+func (m Model) handlePopupWheel(msg tea.MouseWheelMsg) (Model, bool) {
+	if !m.awaitingApproval || m.approvalTool == "exit_plan_mode" || m.approvalTool == "enter_plan_mode" {
+		return m, false
+	}
+	if msg.Button != tea.MouseWheelUp && msg.Button != tea.MouseWheelDown {
+		return m, false
+	}
+	box := renderApprovalModal(m)
+	ox, oy := m.popupOrigin(box)
+	if msg.X < ox || msg.X >= ox+lipgloss.Width(box) || msg.Y < oy || msg.Y >= oy+lipgloss.Height(box) {
+		return m, false
+	}
+	delta := popupMouseWheelLines
+	if msg.Button == tea.MouseWheelUp {
+		delta = -delta
+	}
+	m.approvalScrollOffset = max(0, min(m.approvalScrollOffset+delta, m.approvalMaxScrollOffset()))
+	return m, true
 }
 
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (Model, tea.Cmd) {
+	if next, handled := m.handlePopupWheel(msg); handled {
+		return next, nil
+	}
 	if m.memoryPickerOpen && m.memoryPicker != nil && m.memoryPicker.mode == memoryBrowseMode {
 		step := 1
 		if msg.Button == tea.MouseWheelUp {

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yottadynamics/yottacode/internal/documents"
 )
@@ -92,12 +94,35 @@ func (t *ReadDocumentTool) resolvePyHelperScript(script documents.PyHelperScript
 // PDFExtractor and DocxExtractor's optional pandoc tier — one
 // Sandbox-routing helper, not a copy per extractor.
 func (t *ReadDocumentTool) runSandboxCommand(ctx context.Context, command string) ([]byte, []byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, documentCommandTimeout)
+	defer cancel()
 	c := CommandInProfile(ctx, t.sandbox(), SandboxProfileDocuments, command, t.Cwd.Get())
 	var stdout, stderr bytes.Buffer
 	c.Stdout = &cappedWriter{buf: &stdout}
 	c.Stderr = &cappedWriter{buf: &stderr}
 	err := c.Run()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("timed out after %s: %w", documentCommandTimeout, ctx.Err())
+		} else if ctx.Err() != nil {
+			err = fmt.Errorf("document command canceled: %w", ctx.Err())
+		}
+	}
 	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+// documentCommandTimeout bounds every document-tool subprocess (pandoc,
+// weasyprint, pdftotext, python helpers) so a pathological input can't hang
+// a turn or an unattended dispatch worker until the user cancels.
+var documentCommandTimeout = 2 * time.Minute
+
+// documentTimeoutErr returns a descriptive error when ctx's deadline (set via
+// documentCommandTimeout) expired, or nil otherwise.
+func documentTimeoutErr(ctx context.Context, what string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("create_document: %s timed out after %s", what, documentCommandTimeout)
+	}
+	return nil
 }
 
 func (t *ReadDocumentTool) Name() string { return "read_document" }

@@ -13,8 +13,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-// WebSearchTool provides web search for models whose provider lacks a native
-// web_search built-in (Ollama, NVIDIA NIM, OpenAI-compatible endpoints, etc.).
+// WebSearchTool provides the local DuckDuckGo fallback for models whose
+// provider lacks a native web_search built-in. openai-auth keeps this tool
+// registered as a recovery path when its hosted Codex search request fails.
 // Queries DuckDuckGo's HTML endpoint and returns parsed results.
 type WebSearchTool struct{}
 
@@ -99,6 +100,7 @@ type ddgResult struct {
 }
 
 var ddgSearchFunc = ddgSearch
+var ddgHTTPClient = http.DefaultClient
 
 func ddgSearch(ctx context.Context, query string, maxResults int) ([]ddgResult, error) {
 	return ddgSearchWithBase(ctx, query, maxResults, "https://html.duckduckgo.com/html/")
@@ -113,16 +115,25 @@ func ddgSearchWithBase(ctx context.Context, query string, maxResults int, baseUR
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "yottacode/1.0")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; yottacode/1.0; +https://github.com/yottadynamics/yottacode)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := ddgHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %d from DuckDuckGo", resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		detail := cleanText(string(body))
+		if len(detail) > 200 {
+			detail = detail[:200] + "…"
+		}
+		if detail == "" {
+			return nil, fmt.Errorf("HTTP %d from DuckDuckGo", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("HTTP %d from DuckDuckGo: %s", resp.StatusCode, detail)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
@@ -130,7 +141,15 @@ func ddgSearchWithBase(ctx context.Context, query string, maxResults int, baseUR
 		return nil, err
 	}
 
-	return parseDDGHTML(string(body), maxResults), nil
+	results := parseDDGHTML(string(body), maxResults)
+	if len(results) == 0 {
+		lower := strings.ToLower(string(body))
+		if strings.Contains(lower, "captcha") || strings.Contains(lower, "challenge") || strings.Contains(lower, "robot") || strings.Contains(lower, "consent") {
+			return nil, fmt.Errorf("DuckDuckGo returned a block or consent page; search response could not be parsed")
+		}
+		return nil, fmt.Errorf("DuckDuckGo returned no parseable results; its HTML response may have changed")
+	}
+	return results, nil
 }
 
 // parseDDGHTML extracts search results from DuckDuckGo's HTML response.

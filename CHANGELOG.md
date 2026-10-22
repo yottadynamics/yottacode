@@ -6,9 +6,35 @@ the project uses semantic versioning once it's past `1.0.0`.
 
 ## Unreleased
 
+worktree-dispatcher-ga
 - Keep `dispatch` and `integrate` behind their experimental opt-in while integration serialization, dirty-state protection, and branch provenance validation harden the feature.
+### Fixed
+
+- **Document tools hardening ahead of GA confidence.** `read_document` on
+  `.xlsx` now caps total decompressed size (20x the read cap) instead of only
+  gating the compressed file size, so a zip bomb errors rather than exhausting
+  memory. Every document subprocess (pandoc, weasyprint, pdftotext/pdfinfo,
+  python helpers) now has a 2-minute deadline and reports a clear timeout
+  error instead of hanging until cancelled. New `Documents integration` CI
+  workflow runs real pandoc/weasyprint/poppler create-then-read round trips
+  for docx and pdf.
 
 ### Added
+
+- **`ask_user_question` tool.** The agent can now ask you 1-4 multiple-choice
+  questions in a picker instead of ending its turn with a prose question.
+  Each question offers 2-4 options (one can be pre-selected as the
+  recommended default) plus a free-text "Other"; multi-select questions are
+  supported. It never needs approval, so yolo/auto mode can't skip it. In
+  `/plan` mode it unlocks once the plan file has content. Subagents and
+  dispatch workers can't use it; `yottacode run` auto-answers from the
+  recommended defaults (or fails with a clear message if there are none);
+  ACP fails closed. The picker marks the recommended option `★ recommended`,
+  numbers options for `1`-`9` quick pick, lets you attach a note (`n`) or skip
+  a question (`s`), keeps a fixed size across tabs, and asks for a second Esc
+  before discarding all answers. See [docs/tools.md#ask_user_question](docs/tools.md#ask_user_question).
+
+- **Approval command layout is clearer.** Approval cards now label the operation as `Command` for shell calls, show compact primary actions (`[Y] allow once`, `[N] reject`), and keep persistent permission choices (`[S]`, `[A]`, `[D]`) scannable without repeating long policy explanations.
 
 - **`/deep-research [--breadth 2-6] <question>`.** Plans up to `breadth`
   (default 4) independent sub-questions, runs read-only web researchers in
@@ -357,6 +383,25 @@ the project uses semantic versioning once it's past `1.0.0`.
   PR. See [`installation.md`](docs/installation.md#homebrew).
 
 ### Changed
+
+- **Built-in subagent prompts tightened.** `Explore` scales depth to the
+  caller's thoroughness level and reports "not found" instead of widening
+  past the workspace; `Plan` works in four passes and gives each critical
+  file a reason; `general-purpose` does what was asked and reports anything
+  blocked or unverified. `implement`, `test` and `docs` now stop and name the
+  file and change needed when blocked by a file they don't own, rather than
+  editing around it. `review` stays on the change (pre-existing issues are
+  tagged `[pre-existing]`) and defaults to at most 10 findings as
+  `file:line — severity — scenario`; a caller-specified format still wins.
+  `Explore`, `review` and `verification` treat file contents, command output
+  and fetched pages as data, not instructions.
+  An opt-in live eval (`YOTTACODE_SUBAGENT_EVAL_MODEL`) checks that a local
+  model follows the `review`, `Explore` and `implement` policies.
+  `verification` now takes the previous FAIL findings on a re-check (a new FAIL
+  needs a real defect or unmet requirement, not a preference) and checks the
+  caller's "files changed" against the real diff. `implement` and `test` gain a
+  "no test theater" rule: no hard-coded expectations, re-implemented units or
+  skipped tests, while faking a clock, network or I/O boundary stays fine.
 
 - **Approval prompts show `~` instead of the home directory** in the
   command being approved (e.g. `git -C ~/go/src/...`).

@@ -17,6 +17,10 @@ import (
 // writing, so reading and writing xlsx share one dependency.
 type XLSXExtractor struct{}
 
+// xlsxMaxExpansion is the decompressed-to-compressed ratio ceiling applied to
+// the read cap; real workbooks compress roughly 5-10x.
+const xlsxMaxExpansion = 20
+
 func (e *XLSXExtractor) Match(path string) bool {
 	return strings.EqualFold(filepath.Ext(path), ".xlsx")
 }
@@ -36,7 +40,15 @@ func (e *XLSXExtractor) Extract(ctx context.Context, req ExtractRequest) (Extrac
 		return ExtractResult{}, fmt.Errorf("documents: xlsx %q (%d bytes) exceeds the %d-byte read cap", req.Path, info.Size(), req.MaxBytes)
 	}
 
-	f, err := excelize.OpenFile(req.Path)
+	// The compressed-size gate above doesn't bound inflation: a few KiB of
+	// deflate can expand to gigabytes. Cap total decompressed bytes
+	// relative to the read cap so a zip bomb errors instead of exhausting
+	// memory.
+	unzipLimit := req.MaxBytes * xlsxMaxExpansion
+	f, err := excelize.OpenFile(req.Path, excelize.Options{
+		UnzipSizeLimit:    unzipLimit,
+		UnzipXMLSizeLimit: unzipLimit,
+	})
 	if err != nil {
 		return ExtractResult{}, fmt.Errorf("documents: open xlsx: %w", err)
 	}

@@ -134,7 +134,8 @@ func renderDockRow(t subagents.Task, width int, defaultModel string, selected bo
 		agentStyle = styleSubagentLabel.Underline(true)
 	}
 	model := strings.TrimSpace(t.Model)
-	if model == "" {
+	if model == "" && !t.NonAgent {
+		// A shell job runs no model, so it must not claim the session's.
 		model = defaultModel
 	}
 	dim := lipgloss.NewStyle().Foreground(colorDim)
@@ -218,6 +219,11 @@ func shortModel(model string) string {
 // placeholder when none has been recorded yet.
 func latestActivity(t subagents.Task) string {
 	if len(t.Activities) == 0 {
+		if t.NonAgent {
+			// A shell job never reports activity lines; its command is the
+			// useful thing to show.
+			return "$ " + strings.Join(strings.Fields(t.Prompt), " ")
+		}
 		return "starting…"
 	}
 	return strings.TrimSpace(t.Activities[len(t.Activities)-1])
