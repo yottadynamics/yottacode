@@ -21,6 +21,7 @@ worktree-dispatcher-ga
 
 ### Added
 
+
 - **`/loop` gains pause/resume, a token budget, a verify gate and status
   detail.** `/loop pause` and `/loop resume` (`<id>`, `all`, or bare with one
   loop) hold a loop without losing its count, meter or expiry; resume fires
@@ -85,6 +86,34 @@ worktree-dispatcher-ga
   - `web_search` is classified read-only for subagent posture but, like
     `fetch_url`, stays off the unattended background allowlist.
   - See `docs/deep-research.md`.
+
+- **Browser (experimental): pages can no longer reach your machine or
+  network through the browser.** Every request a page makes (redirects,
+  subresources, `fetch`, iframes, WebSockets) is checked before it leaves
+  Chrome: link-local and cloud metadata addresses are never reachable, and
+  loopback / private-network hosts only from a page that is itself local,
+  reached by an explicit navigation (the permission ends when the browser goes
+  to a public site). Refusals appear in `browser_console_logs` as `[blocked]`. This
+  covers every target (cross-site iframes, popups, workers): a guard attaches
+  to each one paused and installs interception before it runs, and the
+  session fails closed if the guard cannot start or dies.
+- **Browser: page text is wrapped as untrusted.** `browser_inspect`, console,
+  network, tab and response-body output is returned inside an
+  `untrusted_web_content` envelope (copies of the tag in page text are
+  neutralized) and size-capped.
+- **Browser: new tools and selectors.** `browser_select` (dropdowns) and
+  `browser_response_body` (read an API response the page received, in pieces of up to 40,000 bytes with an `offset`).
+  Selectors also accept `ref=eN` element refs printed by `browser_inspect`
+  and `iframe >>> css` paths; `browser_wait` can wait for text inside an
+  iframe. `browser_handoff` gains `action: "resume"`.
+- **Browser: limits and diagnostics.** Dialogs are answered by a fixed policy
+  and recorded; at most 8 tabs; uploads limited to regular files under
+  100 MB; background subagents never get `browser_*` tools;
+  `yottacode doctor` gains a Browser section (binary, version, root/container
+  warnings) when the feature is enabled; launch failures as root now say why.
+  See `docs/browser.md`.
+
+
 - **Approval prompts can save a rule for more tools and for chained
   commands.** A chained `run_bash` call (`gofmt -w x.go && go test ./...`)
   now offers `[S]`/`[A]`, saving one `Bash(<verb> *)` rule per segment verb
@@ -443,6 +472,7 @@ worktree-dispatcher-ga
 
 ### Fixed
 
+
 - **Edit tools fail less and recover faster.** From a session where 32 tool
   calls errored (16 of 48 `edit_file`, 9 of 19 `edit_anchored`, 4 of 4
   `apply_hashline`, 2 of 2 `apply_diff`):
@@ -516,6 +546,16 @@ worktree-dispatcher-ga
 - **Sessions from Buzz are titled by the user's request.** The `/load` picker
   showed `<base> You are an agent operating inside Buzz…` for every Buzz
   session; the gist now comes from the message's `Content:` field.
+
+- **Browser: `browser_inspect` was silently falling back to DOM text on
+  current Chrome.** The pinned CDP bindings could not decode newer Chrome's
+  accessibility tree (`unknown PropertyName value: uninteresting`), so
+  inspect returned no roles and no refs; the tree is now decoded leniently.
+- **Browser: leftover `DEBUG` lines were written to stderr** on every click,
+  wait and new tab, corrupting the TUI.
+- **Browser: `network_idle` / `wait_until: networkidle` now wait for
+  in-flight requests** instead of returning as soon as the document loaded.
+
 
 - **Interrupting a turn with Ctrl+C no longer leaves the terminal-tab
   "working" icon and the footer's `tools <name>` segment stuck on.** The

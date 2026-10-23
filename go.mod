@@ -13,6 +13,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/gobwas/ws v1.4.0
 	github.com/google/go-dap v0.12.0
 	github.com/google/go-github/v66 v66.0.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -38,7 +39,6 @@ require (
 	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect

@@ -23,7 +23,11 @@ func axValueString(v *accessibility.Value) string {
 	}
 	return string(v.Value)
 }
-func renderAXTree(nodes []*accessibility.Node) string {
+func renderAXTree(nodes []*accessibility.Node) string { return renderAXTreeRefs(nodes, nil) }
+
+// renderAXTreeRefs renders the tree, tagging each interactive node with a
+// "[ref=eN]" the other browser tools accept as a selector (see selector.go).
+func renderAXTreeRefs(nodes []*accessibility.Node, refs *refTable) string {
 	if len(nodes) == 0 {
 		return "(empty accessibility tree)"
 	}
@@ -57,6 +61,9 @@ func renderAXTree(nodes []*accessibility.Node) string {
 			}
 			if s := axValueString(x.Value); s != "" {
 				line += fmt.Sprintf(" =%q", s)
+			}
+			if ref := refs.assign(x); ref != "" {
+				line += " [ref=" + ref + "]"
 			}
 			b.WriteString(line + "\n")
 			n++
