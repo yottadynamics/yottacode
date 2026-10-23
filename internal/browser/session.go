@@ -981,9 +981,6 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 	if err := chromedp.Run(cctx, a...); err != nil {
 		return classifySelectorErr(err)
 	}
-	if err := chromedp.Run(cctx, a...); err != nil {
-		return classifySelectorErr(err)
-	}
 	return nil
 }
 
