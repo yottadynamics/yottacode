@@ -192,6 +192,33 @@ func TestCoerceArgs_ArrayItems(t *testing.T) {
 	}
 }
 
+func TestCoerceArgs_JSONEncodedArrayString(t *testing.T) {
+	schema := objSchema(map[string]any{
+		"questions": map[string]any{
+			"type":  "array",
+			"items": map[string]any{"type": "object"},
+		},
+	})
+	in := `{"questions":"[{\"header\":\"Auth\"}]"}`
+	out := coerceArgsToSchema(in, schema)
+	if got := fieldRaw(t, out, "questions"); got != `[{"header":"Auth"}]` {
+		t.Fatalf("questions = %s, want decoded array", got)
+	}
+}
+
+func TestCoerceArgs_InvalidArrayStringUnchanged(t *testing.T) {
+	schema := objSchema(map[string]any{
+		"questions": map[string]any{
+			"type":  "array",
+			"items": map[string]any{"type": "object"},
+		},
+	})
+	in := `{"questions":"not an array"}`
+	if out := coerceArgsToSchema(in, schema); out != in {
+		t.Fatalf("invalid array string changed: %s", out)
+	}
+}
+
 func TestCoerceArgs_UnionTypeWithNull(t *testing.T) {
 	schema := objSchema(map[string]any{
 		"max_results": map[string]any{"type": []any{"integer", "null"}},

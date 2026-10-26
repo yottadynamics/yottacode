@@ -17,6 +17,10 @@ const questionFreeTextMaxLen = 500
 // questionSummaryValueMax bounds one answer in the post-submit transcript line.
 const questionSummaryValueMax = 60
 
+// questionAnswerVisibleLines keeps the modal height fixed while still showing
+// enough of a long answer or note to confirm that input was captured.
+const questionAnswerVisibleLines = 4
+
 type questionAnswerState struct {
 	selected      map[int]bool
 	cursor        int
@@ -282,7 +286,7 @@ func renderQuestionPicker(p *questionPickerState, width int) string {
 		probe := *p
 		probe.activeTab = tab
 		_, d := probe.titleAndDescription()
-		maxQuestionLines = max(maxQuestionLines, lineCount(wrapPlain(strings.TrimSpace(d), contentWidth)))
+		maxQuestionLines = max(maxQuestionLines, lineCount(wrapQuestionText(strings.TrimSpace(d), contentWidth)))
 	}
 	// Body and footer heights are measured across every tab (Review
 	// included) and padded to the maximum, so the popup never resizes while
@@ -292,16 +296,16 @@ func renderQuestionPicker(p *questionPickerState, width int) string {
 		probe := *p
 		probe.activeTab = tab
 		maxBody = max(maxBody, lineCount(probe.renderBody(contentWidth)))
-		maxFoot = max(maxFoot, lineCount(wrapPlain(probe.footerHintAt(), contentWidth)))
+		maxFoot = max(maxFoot, lineCount(wrapQuestionText(probe.footerHintAt(), contentWidth)))
 		probe.escArmed = true
-		maxFoot = max(maxFoot, lineCount(wrapPlain(probe.footerHintAt(), contentWidth)))
+		maxFoot = max(maxFoot, lineCount(wrapQuestionText(probe.footerHintAt(), contentWidth)))
 	}
 	title := fmt.Sprintf("Questions · %d/%d", min(p.activeTab+1, len(p.questions)), len(p.questions))
 	if p.onSubmitTab() {
 		title = "Questions · review"
 	}
 	_, desc := p.titleAndDescription()
-	descLines := strings.Split(wrapPlain(strings.TrimSpace(desc), contentWidth), "\n")
+	descLines := strings.Split(wrapQuestionText(strings.TrimSpace(desc), contentWidth), "\n")
 	for len(descLines) < maxQuestionLines {
 		descLines = append(descLines, "\u200b")
 	}
@@ -315,12 +319,42 @@ func renderQuestionPicker(p *questionPickerState, width int) string {
 	body := p.renderBody(contentWidth)
 	b.WriteString(body + strings.Repeat("\n", maxBody-lineCount(body)))
 	b.WriteString("\n")
-	foot := wrapPlain(p.footerHint(), contentWidth)
+	foot := wrapQuestionText(p.footerHint(), contentWidth)
 	b.WriteString(styleMeta.Render(foot + strings.Repeat("\n", maxFoot-lineCount(foot))))
 	return b.String()
 }
 
 func lineCount(s string) int { return strings.Count(s, "\n") + 1 }
+
+// wrapQuestionText wraps at words and hard-wraps unbroken input so generated
+// URLs, paths, identifiers, and wide Unicode strings cannot widen the popup.
+func wrapQuestionText(s string, width int) string {
+	if width < 1 {
+		return ""
+	}
+	var lines []string
+	for _, line := range strings.Split(wrapPlain(s, width), "\n") {
+		for ansi.StringWidth(line) > width {
+			runes := []rune(line)
+			used, cut := 0, 0
+			for cut < len(runes) {
+				w := ansi.StringWidth(string(runes[cut]))
+				if used+w > width {
+					break
+				}
+				used += w
+				cut++
+			}
+			if cut == 0 {
+				cut = 1
+			}
+			lines = append(lines, string(runes[:cut]))
+			line = string(runes[cut:])
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
 
 func (p *questionPickerState) renderBody(width int) string {
 	if p.onSubmitTab() {
@@ -407,14 +441,35 @@ func renderQuestionTabStrip(p *questionPickerState, width int) string {
 // questionOptionRows counts the rendered lines for one question's option list
 // (label row + optional description row per option, plus the free-text row).
 func questionOptionRows(q agent.Question, descWidth int) int {
-	rows := 2 // free-text row + note row
+	// Reserve the fixed answer/note display budget so editing cannot resize the frame.
+	rows := 2 + (questionAnswerVisibleLines-1)*2 // free-text row + note row
 	for _, opt := range q.Options {
 		rows++
 		if strings.TrimSpace(opt.Description) != "" {
-			rows += strings.Count(wrapPlain(strings.TrimSpace(opt.Description), descWidth), "\n") + 1
+			rows += strings.Count(wrapQuestionText(strings.TrimSpace(opt.Description), descWidth), "\n") + 1
 		}
 	}
 	return rows
+}
+
+// questionAnswerLines wraps an answer or note while preserving its prefix.
+// The visible portion is capped so the modal frame remains stable while editing.
+func questionAnswerLines(prefix, value string, width int) []string {
+	budget := max(width-ansi.StringWidth(prefix), 1)
+	wrapped := strings.Split(wrapQuestionText(value, budget), "\n")
+	if len(wrapped) > questionAnswerVisibleLines {
+		wrapped = wrapped[:questionAnswerVisibleLines]
+		wrapped[len(wrapped)-1] = truncateDisplay(wrapped[len(wrapped)-1], max(budget-1, 1)) + "…"
+	}
+	lines := make([]string, 0, len(wrapped))
+	for i, line := range wrapped {
+		indent := prefix
+		if i > 0 {
+			indent = strings.Repeat(" ", ansi.StringWidth(prefix))
+		}
+		lines = append(lines, indent+line)
+	}
+	return lines
 }
 
 const questionDescIndent = 7
@@ -455,32 +510,37 @@ func renderQuestionOptions(p *questionPickerState, width int) string {
 		}
 		lines = append(lines, row)
 		if d := strings.TrimSpace(opt.Description); d != "" {
-			for _, dl := range strings.Split(wrapPlain(d, descWidth), "\n") {
+			for _, dl := range strings.Split(wrapQuestionText(d, descWidth), "\n") {
 				lines = append(lines, styleMeta.Render(strings.Repeat(" ", questionDescIndent)+dl))
 			}
 		}
 	}
-	other := "Type your own answer…"
+	otherPrefix := "✎ "
+	otherValue := "Type your own answer…"
 	if a.editingOther {
-		other = "Type your own answer: " + truncateDisplay(a.freeTextBuf, width-26) + "█"
+		otherValue = "Type your own answer: " + a.freeTextBuf + "█"
 	} else if a.usingFreeText {
-		other = "Your answer: " + truncateDisplay(a.freeText, width-16)
+		otherValue = "Your answer: " + a.freeText
 	}
-	if a.cursor == p.otherRowIndex() {
-		lines = append(lines, cursorStyle.Render("✎ "+other))
-	} else {
-		lines = append(lines, stylePaletteItem.Render("✎ "+other))
+	for i, line := range questionAnswerLines(otherPrefix, otherValue, width) {
+		if i == 0 && a.cursor == p.otherRowIndex() {
+			lines = append(lines, cursorStyle.Render(line))
+		} else {
+			lines = append(lines, stylePaletteItem.Render(line))
+		}
 	}
-	note := ""
+	noteLines := []string{""}
 	switch {
 	case a.editingNote:
-		note = "  note: " + truncateDisplay(a.noteBuf, width-12) + "█"
+		noteLines = questionAnswerLines("  note: ", a.noteBuf+"█", width)
 	case a.note != "":
-		note = "  note: " + truncateDisplay(a.note, width-12)
+		noteLines = questionAnswerLines("  note: ", a.note, width)
 	case a.skipped:
-		note = "  skipped"
+		noteLines = []string{"  skipped"}
 	}
-	lines = append(lines, styleMeta.Render(note))
+	for _, line := range noteLines {
+		lines = append(lines, styleMeta.Render(line))
+	}
 	// Hold the frame steady across tabs: pad to the tallest question.
 	rows := 0
 	for _, qq := range p.questions {
