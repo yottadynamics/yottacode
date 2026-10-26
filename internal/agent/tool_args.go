@@ -35,7 +35,9 @@ import (
 // Coercion is driven by the local tool Schema(), not by anything the model
 // sends, so it is provider- and model-agnostic. It is the type-normalization
 // step that first-party stacks (e.g. OpenAI's schema-constrained decoding)
-// perform internally but the NIM+Llama path skips.
+// perform internally but the NIM+Llama path skips. For array fields, the
+// normalizer also accepts a JSON-encoded array string, but never guesses how to
+// convert prose or an object into an array.
 func coerceArgsToSchema(argsJSON string, schema map[string]any) string {
 	// Empty/whitespace args normalize to an empty JSON object so the tool decodes a
 	// valid {} (reaching its own required-field validation with a recoverable
@@ -96,6 +98,10 @@ func schemaHasCoercibleField(node map[string]any) bool {
 	switch schemaType(node) {
 	case "integer", "number", "boolean":
 		return true
+	case "array":
+		// Arrays may need structural normalization even when their items are
+		// objects with no scalar fields to coerce.
+		return true
 	}
 	if props, ok := node["properties"].(map[string]any); ok {
 		for _, p := range props {
@@ -155,6 +161,23 @@ func coerceValue(raw json.RawMessage, prop map[string]any) (json.RawMessage, int
 		}
 		var elems []json.RawMessage
 		if json.Unmarshal(raw, &elems) != nil {
+			// Some providers serialize an array into a JSON string. Decode only
+			// when the string itself contains a valid array; malformed strings
+			// remain unchanged for the tool's normal validation error.
+			var encoded string
+			if json.Unmarshal(raw, &encoded) != nil || json.Unmarshal([]byte(encoded), &elems) != nil {
+				return raw, 0
+			}
+			changed := 1
+			for i, e := range elems {
+				if ne, n := coerceValue(e, items); n > 0 {
+					elems[i] = ne
+					changed += n
+				}
+			}
+			if b, err := json.Marshal(elems); err == nil {
+				return b, changed
+			}
 			return raw, 0
 		}
 		changed := 0

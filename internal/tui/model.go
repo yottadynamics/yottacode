@@ -1426,7 +1426,13 @@ func (m *Model) sendDecision(d agent.Decision) bool {
 
 func (m *Model) finishDecisionUI() tea.Cmd {
 	m.clearPendingDecisionUI()
-	if m.turnActive {
+	// The agent may already have transitioned its turn state while the
+	// decision was on screen. The decision itself is the synchronization
+	// point, so resume the event pump whenever the per-turn channels exist;
+	// relying only on turnActive can leave the agent thinking with no
+	// Bubble Tea command consuming its follow-up events, and the popup stays
+	// visually stale.
+	if m.eventsCh != nil && m.turnErrCh != nil {
 		return waitForEvent(m.eventsCh, m.turnErrCh)
 	}
 	return nil

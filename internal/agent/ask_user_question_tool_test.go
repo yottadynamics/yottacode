@@ -31,6 +31,9 @@ func TestParseAskUserQuestionArgs_Validation(t *testing.T) {
 	if _, err := parseAskUserQuestionArgs(valid); err != nil {
 		t.Fatalf("expected valid args to parse; got %v", err)
 	}
+	if _, err := parseAskUserQuestionArgs(`{"questions":"not an array"}`); err == nil || !strings.Contains(err.Error(), "cannot unmarshal string") {
+		t.Fatalf("expected invalid questions type error; got %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -249,7 +252,7 @@ func TestLoop_AskUserQuestion_YoloDoesNotShortCircuit(t *testing.T) {
 		{sseDone("", adapter.ToolCall{
 			ID:       "c1",
 			Name:     AskUserQuestionToolName,
-			ArgsJSON: `{"questions":[{"header":"Auth","question":"How should we authenticate?","options":[{"label":"OAuth"},{"label":"API key"}]}]}`,
+			ArgsJSON: `{"questions":"[{\"header\":\"Auth\",\"question\":\"How should we authenticate?\",\"options\":[{\"label\":\"OAuth\"},{\"label\":\"API key\"}]}]"}`,
 		})},
 		{sseToken("ok"), sseDone("ok")},
 	}}

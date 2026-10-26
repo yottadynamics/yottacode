@@ -398,6 +398,39 @@ func TestQuestionPickerState_SummaryLineTruncatesLongFreeText(t *testing.T) {
 	}
 }
 
+func TestRenderQuestionPicker_WrapsLongFreeTextAndNotes(t *testing.T) {
+	p := newQuestionPickerState([]agent.Question{{
+		Header:   "Auth",
+		Question: "How should we authenticate?",
+		Options:  []agent.QuestionOption{{Label: "OAuth"}},
+	}})
+	p.answers[0].cursor = p.otherRowIndex()
+	p.answers[0].usingFreeText = true
+	p.answers[0].freeText = strings.Repeat("long answer ", 12)
+	p.answers[0].note = strings.Repeat("note ", 12)
+	before := stripANSI(renderQuestionPicker(&p, 50))
+	p.answers[0].editingOther = true
+	p.answers[0].freeTextBuf = strings.Repeat("long answer ", 12)
+	editing := stripANSI(renderQuestionPicker(&p, 50))
+	if strings.Count(before, "\n") != strings.Count(editing, "\n") {
+		t.Fatalf("editing a long answer must not resize the popup: before=%d after=%d", strings.Count(before, "\n"), strings.Count(editing, "\n"))
+	}
+	for _, line := range strings.Split(editing, "\n") {
+		if ansi.StringWidth(line) > 42 {
+			t.Fatalf("content line exceeds popup content width: %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
+func TestWrapQuestionText_HardWrapsLongTokensAndUnicode(t *testing.T) {
+	got := wrapQuestionText(strings.Repeat("界", 40), 10)
+	for _, line := range strings.Split(got, "\n") {
+		if ansi.StringWidth(line) > 10 {
+			t.Fatalf("hard-wrapped line exceeds width: %d: %q", ansi.StringWidth(line), line)
+		}
+	}
+}
+
 func TestRenderQuestionPicker_ShowsRecommendedMarkerAndNumbers(t *testing.T) {
 	qs := twoQuestions()
 	qs[0].Options[1].Description = "Simplest to ship"
