@@ -969,7 +969,11 @@ func (s *session) click(ctx context.Context, sel string) error {
 	var clickErr error
 	for {
 		inner, opts, err := s.query(c, sel)
-		if err == nil {
+		if err != nil {
+			if errors.Is(err, ErrSelectorNotFound) {
+				return err
+			}
+		} else {
 			err = chromedp.Run(c, chromedp.WaitVisible(inner, opts...))
 			if err == nil {
 				err = chromedp.Run(c, chromedp.Click(inner, opts...))

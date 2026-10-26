@@ -64,13 +64,22 @@ func stealthLaunchOptions(ctx context.Context, bin string, headless bool) []chro
 // not yet visually settled — not worth failing launch over.
 func waitMaximizedViewport(ctx context.Context, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
+	lastW, lastH := 0, 0
+	stable := 0
 	for time.Now().Before(deadline) {
 		var w, h int
 		evalCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		err := chromedp.Run(evalCtx, chromedp.Evaluate(`window.innerWidth`, &w), chromedp.Evaluate(`window.innerHeight`, &h))
 		cancel()
 		if err == nil && w > 0 && h > 0 {
-			return
+			if w == lastW && h == lastH {
+				stable++
+			} else {
+				lastW, lastH, stable = w, h, 1
+			}
+			if stable >= 2 {
+				return
+			}
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

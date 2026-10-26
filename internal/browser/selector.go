@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -109,6 +110,9 @@ func (s *session) query(c context.Context, sel string) (string, []chromedp.Query
 		err := chromedp.Run(lc, chromedp.Nodes(f, &nodes, qo...))
 		lcancel()
 		if err != nil {
+			if errors.Is(lc.Err(), context.DeadlineExceeded) {
+				return "", nil, fmt.Errorf("%w: frame %q did not appear within %s", ErrSelectorNotFound, f, selectorLookupTimeout)
+			}
 			return "", nil, classifySelectorErr(fmt.Errorf("frame %q: %w", f, err))
 		}
 		if len(nodes) == 0 {
