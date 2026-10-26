@@ -963,12 +963,39 @@ func (s *session) click(ctx context.Context, sel string) error {
 	before := s.pageCount()
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	inner, opts, err := s.query(c, sel)
-	if err != nil {
-		return err
+
+	// Headed Chrome under Xvfb can report a visible element before its renderer
+	// has settled the input coordinates. Re-resolve the target and retry the
+	// native click briefly so handoff clicks are not lost at that boundary.
+	var clickErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		inner, opts, err := s.query(c, sel)
+		if err != nil {
+			clickErr = err
+		} else {
+			// Wait against the resolved selector rather than evaluating the raw
+			// input: refs and iframe paths are not valid document.querySelector
+			// expressions, but s.query has already translated them safely.
+			readyErr := chromedp.Run(c, chromedp.WaitVisible(inner, opts...))
+			if readyErr == nil {
+				clickErr = chromedp.Run(c, chromedp.Click(inner, opts...))
+				if clickErr == nil {
+					break
+				}
+			} else {
+				clickErr = readyErr
+			}
+		}
+		if attempt < 2 {
+			select {
+			case <-c.Done():
+				return c.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	}
-	if err := chromedp.Run(c, chromedp.Click(inner, opts...)); err != nil {
-		return classifySelectorErr(err)
+	if clickErr != nil {
+		return classifySelectorErr(clickErr)
 	}
 	s.followNewPage(before, ctx)
 	return nil
@@ -977,18 +1004,45 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 	pageCtx := s.activePage().ctx
 	cctx, cancel := actionContext(pageCtx, ctx)
 	defer cancel()
-	inner, opts, err := s.query(cctx, sel)
-	if err != nil {
-		return err
+
+	// Headed Chrome under Xvfb can acknowledge keyboard input before the
+	// renderer commits the value. Confirm the value and wait for two paint
+	// frames before a following native click can use the updated layout.
+	var typeErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		inner, opts, err := s.query(cctx, sel)
+		if err != nil {
+			typeErr = err
+		} else {
+			a := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
+			if submit {
+				a = append(a, chromedp.SendKeys(inner, "\r", opts...))
+			}
+			if typeErr = chromedp.Run(cctx, a...); typeErr == nil {
+				if text == "" {
+					return nil
+				}
+				var value string
+				if err := chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err == nil && value == text {
+					frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+					if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err == nil {
+						return nil
+					}
+				}
+			}
+		}
+		if attempt < 2 {
+			select {
+			case <-cctx.Done():
+				return cctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	}
-	a := []chromedp.Action{chromedp.SetValue(inner, text, opts...)}
-	if submit {
-		a = append(a, chromedp.SendKeys(inner, "\r", opts...))
+	if typeErr != nil {
+		return classifySelectorErr(typeErr)
 	}
-	if err := chromedp.Run(cctx, a...); err != nil {
-		return classifySelectorErr(err)
-	}
-	return nil
+	return fmt.Errorf("%w: value %q was not committed", ErrSelectorNotFound, text)
 }
 
 // reserveTab claims one of MaxTabs slots for a page about to be set up, counting
