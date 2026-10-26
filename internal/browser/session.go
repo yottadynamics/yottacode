@@ -964,85 +964,68 @@ func (s *session) click(ctx context.Context, sel string) error {
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
 
-	// Headed Chrome under Xvfb can report a visible element before its renderer
-	// has settled the input coordinates. Re-resolve the target and retry the
-	// native click briefly so handoff clicks are not lost at that boundary.
+	// Handoff can race the headed window manager. Re-resolve the selector and
+	// retry the complete layout/click sequence until the caller's deadline.
 	var clickErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for {
 		inner, opts, err := s.query(c, sel)
-		if err != nil {
-			clickErr = err
-		} else {
-			// Wait against the resolved selector rather than evaluating the raw
-			// input: refs and iframe paths are not valid document.querySelector
-			// expressions, but s.query has already translated them safely.
-			readyErr := chromedp.Run(c, chromedp.WaitVisible(inner, opts...))
-			if readyErr == nil {
-				clickErr = chromedp.Run(c, chromedp.Click(inner, opts...))
-				if clickErr == nil {
-					break
+		if err == nil {
+			err = chromedp.Run(c, chromedp.WaitVisible(inner, opts...))
+			if err == nil {
+				err = chromedp.Run(c, chromedp.Click(inner, opts...))
+				if err == nil {
+					s.followNewPage(before, ctx)
+					return nil
 				}
-			} else {
-				clickErr = readyErr
 			}
 		}
-		if attempt < 2 {
-			select {
-			case <-c.Done():
-				return c.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
+		clickErr = err
+		if clickErr == nil {
+			clickErr = fmt.Errorf("click did not complete")
+		}
+		select {
+		case <-c.Done():
+			return classifySelectorErr(clickErr)
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	if clickErr != nil {
-		return classifySelectorErr(clickErr)
-	}
-	s.followNewPage(before, ctx)
-	return nil
 }
 func (s *session) typeText(ctx context.Context, sel, text string, submit bool) error {
 	pageCtx := s.activePage().ctx
 	cctx, cancel := actionContext(pageCtx, ctx)
 	defer cancel()
 
-	// Headed Chrome under Xvfb can acknowledge keyboard input before the
-	// renderer commits the value. Confirm the value and wait for two paint
-	// frames before a following native click can use the updated layout.
-	var typeErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		inner, opts, err := s.query(cctx, sel)
-		if err != nil {
-			typeErr = err
-		} else {
-			a := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
-			if submit {
-				a = append(a, chromedp.SendKeys(inner, "\r", opts...))
-			}
-			if typeErr = chromedp.Run(cctx, a...); typeErr == nil {
-				if text == "" {
-					return nil
-				}
-				var value string
-				if err := chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err == nil && value == text {
-					frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
-					if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err == nil {
-						return nil
-					}
-				}
+	// Headed Chrome can acknowledge keyboard input before committing the DOM
+	// value. Send once, then poll the value before allowing the next action.
+	inner, opts, err := s.query(cctx, sel)
+	if err != nil {
+		return classifySelectorErr(err)
+	}
+	actions := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
+	if submit {
+		actions = append(actions, chromedp.SendKeys(inner, "\r", opts...))
+	}
+	if err := chromedp.Run(cctx, actions...); err != nil {
+		return classifySelectorErr(err)
+	}
+	if text == "" {
+		return nil
+	}
+
+	var value string
+	for {
+		if err := chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err == nil && value == text {
+			frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
+			if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err == nil {
+				return nil
 			}
 		}
-		if attempt < 2 {
-			select {
-			case <-cctx.Done():
-				return cctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
+		select {
+		case <-cctx.Done():
+			return fmt.Errorf("%w: value %q was not committed: %v", ErrSelectorNotFound, text, cctx.Err())
+		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	if typeErr != nil {
-		return classifySelectorErr(typeErr)
-	}
-	return fmt.Errorf("%w: value %q was not committed", ErrSelectorNotFound, text)
 }
 
 // reserveTab claims one of MaxTabs slots for a page about to be set up, counting
