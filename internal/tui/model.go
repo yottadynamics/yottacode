@@ -2465,25 +2465,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
-			case tea.KeyTab, tea.KeyEnter:
+			case tea.KeyTab:
 				if len(m.filePaletteFiltered) > 0 {
 					m.acceptFilePaletteChoice()
-					// Tab keeps the textarea focused for further
-					// typing; Enter is treated as "I'm done picking"
-					// — the next Enter (with no further chars) will
-					// submit normally.
-					if msg.Code == tea.KeyEnter {
-						return m, nil
-					}
-					return m, nil
 				}
-				if msg.Code == tea.KeyEnter {
-					// No matches: fall through to normal Enter so the
-					// user can submit whatever they typed.
-					m.filePaletteOpen = false
-				} else {
-					return m, nil
-				}
+				return m, nil
+			case tea.KeyEnter:
+				// Enter submits the prompt; Tab is the explicit file-
+				// completion action. Close the palette and let the normal
+				// Enter handler below process the current input.
+				m.dropFilePalette()
 			case tea.KeyEsc:
 				m.filePaletteOpen = false
 				m.filePaletteIndex = 0
@@ -6396,6 +6387,10 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 		// would put a git subprocess on the event path. m.cwd still
 		// updates, so the literal-cwd arm of the scope match follows.
 		m.cwd = e.NewCwd
+		// File candidates are relative to cwd; never reuse entries from a
+		// previous checkout after enter_worktree/exit_worktree.
+		m.filePaletteEntries = nil
+		m.dropFilePalette()
 		m.branch = gitBranch(m.parentCtx, e.NewCwd)
 		gitStatus := gitAheadBehind(m.parentCtx, e.NewCwd)
 		m.gitAhead = gitStatus.ahead

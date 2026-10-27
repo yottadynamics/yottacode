@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
@@ -71,6 +72,11 @@ func (m *Model) acceptFilePaletteChoice() {
 	if m.filePaletteAt < 0 || m.filePaletteAt > len(val) {
 		// Defensive — shouldn't happen since refreshFilePalette set
 		// the anchor before opening, but never panic on a stale state.
+		return
+	}
+	active := val[m.filePaletteAt:]
+	if !strings.HasPrefix(active, "@") || active[1:] != m.filePaletteQuery {
+		m.dropFilePalette()
 		return
 	}
 	suffix := "@" + choice.Path

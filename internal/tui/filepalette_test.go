@@ -96,6 +96,26 @@ func TestFilterFilePalette_RanksBetterMatchesFirst(t *testing.T) {
 	}
 }
 
+func TestFilterFilePalette_PathQueryStaysWithinDirectory(t *testing.T) {
+	entries := []fileEntry{
+		{Path: "roadmap/plan.md"},
+		{Path: "roadmap/implemented/release.md"},
+		{Path: ".claude/worktrees/approval-readability/internal/codemap/builder.go"},
+	}
+	got := filterFilePalette("roadmap/", entries)
+	if len(got) != 2 || got[0].Path != "roadmap/plan.md" || got[1].Path != "roadmap/implemented/release.md" {
+		t.Fatalf("path query returned unrelated entries: %+v", got)
+	}
+}
+
+func TestFilterFilePalette_PathQueryMatchesDirectoryPrefixCaseInsensitively(t *testing.T) {
+	entries := []fileEntry{{Path: "Roadmap/Plan.md"}, {Path: "other/roadmap.md"}}
+	got := filterFilePalette("roadmap/", entries)
+	if len(got) != 1 || got[0].Path != "Roadmap/Plan.md" {
+		t.Fatalf("path query = %+v, want only Roadmap/Plan.md", got)
+	}
+}
+
 func TestFilterFilePalette_SubsequenceMatch(t *testing.T) {
 	entries := []fileEntry{
 		{Path: "internal/cli/options.go"},
@@ -211,6 +231,9 @@ func TestModel_AtKeyOpensFilePalette(t *testing.T) {
 	cwd := t.TempDir()
 	mustWriteFile(t, filepath.Join(cwd, "main.go"), "package main\n")
 	mustWriteFile(t, filepath.Join(cwd, "README.md"), "# yo\n")
+	mustWriteFile(t, filepath.Join(cwd, ".env"), "SECRET=x\n")
+	mustWriteFile(t, filepath.Join(cwd, "server.pem"), "PRIVATE KEY\n")
+	mustWriteFile(t, filepath.Join(cwd, "id_ed25519"), "PRIVATE KEY\n")
 
 	m := newTestModel(t)
 	m.cwd = cwd
@@ -221,6 +244,11 @@ func TestModel_AtKeyOpensFilePalette(t *testing.T) {
 	}
 	if len(m.filePaletteFiltered) == 0 {
 		t.Fatalf("file palette should have entries; got 0")
+	}
+	for _, entry := range m.filePaletteEntries {
+		if entry.Path == ".env" || entry.Path == "server.pem" || entry.Path == "id_ed25519" {
+			t.Fatalf("sensitive file leaked into picker: %q", entry.Path)
+		}
 	}
 }
 
@@ -233,6 +261,23 @@ func TestModel_AtKeyDoesNotOpenPaletteOnEmail(t *testing.T) {
 	}
 	if m.filePaletteOpen {
 		t.Fatalf("user@ should not open palette (no whitespace before @)")
+	}
+}
+
+func TestModel_EnterSubmitsInsteadOfAttachingFile(t *testing.T) {
+	cwd := t.TempDir()
+	mustWriteFile(t, filepath.Join(cwd, "main.go"), "package main\n")
+	m := newTestModel(t)
+	m.cwd = cwd
+	for _, r := range []rune("@main") {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
+	}
+	if !m.filePaletteOpen {
+		t.Fatal("setup: palette should be open")
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if strings.Contains(m.textInput.Value(), "main.go") {
+		t.Fatalf("Enter attached a file: %q", m.textInput.Value())
 	}
 }
 
