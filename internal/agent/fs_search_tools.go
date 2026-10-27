@@ -184,14 +184,31 @@ func (t *GlobTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	if pattern == "" {
 		pattern = "."
 	}
-	fsys := os.DirFS(root)
+
+	// WalkDir is used instead of doublestar.GlobWalk here because its callback
+	// runs for every visited entry, including non-matches. That gives us a
+	// cancellation checkpoint even for a broad pattern that finds nothing, and
+	// WalkDir deliberately does not follow symlinked directories.
 	var b strings.Builder
 	count := 0
 	truncated := false
 	stop := errors.New("glob result limit reached")
-	err = doublestar.GlobWalk(fsys, pattern, func(path string, d fs.DirEntry) error {
+	err = fs.WalkDir(os.DirFS(root), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if path == "." {
+			return nil
+		}
+		matched, matchErr := doublestar.Match(pattern, path)
+		if matchErr != nil {
+			return matchErr
+		}
+		if !matched {
+			return nil
 		}
 		if count >= a.MaxResults {
 			truncated = true
@@ -200,7 +217,7 @@ func (t *GlobTool) Execute(ctx context.Context, argsJSON string) (string, error)
 		fmt.Fprintln(&b, path)
 		count++
 		return nil
-	}, doublestar.WithNoFollow())
+	})
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return "", fmt.Errorf("glob: %w", err)
 	}
