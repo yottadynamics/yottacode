@@ -162,23 +162,73 @@ func (t *GlobTool) Execute(ctx context.Context, argsJSON string) (string, error)
 	} else {
 		root = resolvePath(t.Cwd.Get(), root)
 	}
-	fsys := os.DirFS(root)
-	matches, err := doublestar.Glob(fsys, a.Pattern)
+	// Validate the host path before constructing DirFS: DirFS itself accepts
+	// missing paths and would otherwise turn a bad root into an empty result.
+	rootInfo, err := os.Stat(root)
 	if err != nil {
+		return "", fmt.Errorf("glob: root %q: %w", root, err)
+	}
+	if !rootInfo.IsDir() {
+		return "", fmt.Errorf("glob: root %q is not a directory", root)
+	}
+	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("glob: %w", err)
 	}
-	if len(matches) == 0 {
-		return "(no matches)\n", nil
+
+	// fs.FS paths are slash-separated and do not conventionally begin with
+	// "./". Removing only that prefix preserves doublestar metacharacters.
+	pattern := filepath.ToSlash(a.Pattern)
+	for strings.HasPrefix(pattern, "./") {
+		pattern = strings.TrimPrefix(pattern, "./")
 	}
-	sort.Strings(matches)
+	if pattern == "" {
+		pattern = "."
+	}
+
+	// WalkDir is used instead of doublestar.GlobWalk here because its callback
+	// runs for every visited entry, including non-matches. That gives us a
+	// cancellation checkpoint even for a broad pattern that finds nothing, and
+	// WalkDir deliberately does not follow symlinked directories.
 	var b strings.Builder
-	for i, m := range matches {
-		if i >= a.MaxResults {
-			fmt.Fprintf(&b, "…[truncated, %d total]\n", len(matches))
-			break
+	count := 0
+	truncated := false
+	stop := errors.New("glob result limit reached")
+	err = fs.WalkDir(os.DirFS(root), ".", func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		// Return paths relative to root for portability.
-		fmt.Fprintln(&b, m)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if path == "." {
+			return nil
+		}
+		matched, matchErr := doublestar.Match(pattern, path)
+		if matchErr != nil {
+			return matchErr
+		}
+		if !matched {
+			return nil
+		}
+		if count >= a.MaxResults {
+			truncated = true
+			return stop
+		}
+		fmt.Fprintln(&b, path)
+		count++
+		return nil
+	})
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "", fmt.Errorf("glob: %w", err)
+	}
+	if err != nil && !errors.Is(err, stop) {
+		return "", fmt.Errorf("glob: %w", err)
+	}
+	if truncated {
+		fmt.Fprintf(&b, "…[truncated at %d results]\n", a.MaxResults)
+	}
+	if count == 0 {
+		return "(no matches)\n", nil
 	}
 	return b.String(), nil
 }

@@ -1595,13 +1595,17 @@ No approval.
 
 ## glob
 
-Doublestar pattern match (`**` recursive). Returns paths relative to
-the cwd. Capped at 200 results.
+Doublestar pattern match (`**` recursive). Returns paths relative to the
+selected root, capped during traversal at 200 results by default. The root
+must exist and be a directory; missing roots are reported as errors. `./`
+prefixes are normalized (so `./roadmap` is equivalent to `roadmap`), and
+symlinked directories are not followed. Traversal observes cancellation.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `pattern` | string | — | e.g. `**/*.go`, `internal/agent/*.go` |
-| `cwd` | string | tool's cwd | Roots the search |
+| `root` | string | tool's cwd | Directory to search from |
+| `max_results` | int | `200` | Hard cap; a `…[truncated at N results]` line indicates truncation |
 
 No approval.
 
