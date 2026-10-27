@@ -24,7 +24,7 @@ import (
 var browserVerbs = map[string]struct{}{
 	"navigate": {}, "screenshot": {}, "inspect": {}, "click": {}, "type": {},
 	"hotkey": {}, "scroll": {}, "handoff": {}, "upload": {}, "download": {},
-	"console_logs": {}, "network_requests": {},
+	"console_logs": {}, "network_requests": {}, "select": {}, "response_body": {},
 }
 
 // browserNavigateNonWeb prefixes the descriptor of a navigation that isn't a

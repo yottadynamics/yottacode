@@ -1000,34 +1000,73 @@ func (s *session) typeText(ctx context.Context, sel, text string, submit bool) e
 	defer cancel()
 
 	// Headed Chrome can acknowledge keyboard input before committing the DOM
-	// value. Send once, then poll the value before allowing the next action.
-	inner, opts, err := s.query(cctx, sel)
-	if err != nil {
-		return classifySelectorErr(err)
-	}
-	actions := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, text, opts...)}
-	if submit {
-		actions = append(actions, chromedp.SendKeys(inner, "\r", opts...))
-	}
-	if err := chromedp.Run(cctx, actions...); err != nil {
-		return classifySelectorErr(err)
-	}
-	if text == "" {
-		return nil
-	}
-
-	var value string
+	// value, or replace the execution context while the window manager settles.
+	// Re-resolve the element for every attempt and only send the suffix that is
+	// still missing, so a delayed first send cannot become duplicated text.
+	submitted := false
 	for {
-		if err := chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err == nil && value == text {
+		inner, opts, err := s.query(cctx, sel)
+		if err != nil {
+			return classifySelectorErr(err)
+		}
+
+		value := ""
+		if err := chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err != nil && !isExecutionContextGone(err) {
+			return classifySelectorErr(err)
+		}
+		if value == text {
+			if submit && !submitted {
+				if err := chromedp.Run(cctx, chromedp.SendKeys(inner, "\r", opts...)); err != nil {
+					return classifySelectorErr(err)
+				}
+				submitted = true
+			}
 			frameBarrier := `new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`
 			if err := chromedp.Run(cctx, chromedp.Evaluate(frameBarrier, nil)); err == nil {
 				return nil
 			}
+			continue
 		}
-		select {
-		case <-cctx.Done():
-			return fmt.Errorf("%w: value %q was not committed: %v", ErrSelectorNotFound, text, cctx.Err())
-		case <-time.After(50 * time.Millisecond):
+
+		suffix := text
+		if value != "" && strings.HasPrefix(text, value) {
+			suffix = text[len(value):]
+		}
+		actions := []chromedp.Action{chromedp.Focus(inner, opts...), chromedp.SendKeys(inner, suffix, opts...)}
+		if submit && !submitted {
+			actions = append(actions, chromedp.SendKeys(inner, "\r", opts...))
+			submitted = true
+		}
+		if err := chromedp.Run(cctx, actions...); err != nil && !isExecutionContextGone(err) {
+			return classifySelectorErr(err)
+		}
+		if text == "" {
+			return nil
+		}
+
+		// Give this target a short verification window. If the target is being
+		// recreated or input delivery is delayed, the outer loop re-queries it
+		// instead of waiting until the full 60-second action timeout.
+		verifyUntil := time.Now().Add(2 * time.Second)
+		for time.Now().Before(verifyUntil) {
+			inner, opts, err = s.query(cctx, sel)
+			if err == nil {
+				value = ""
+				if err = chromedp.Run(cctx, chromedp.Value(inner, &value, opts...)); err == nil && value == text {
+					if submit && !submitted {
+						if err = chromedp.Run(cctx, chromedp.SendKeys(inner, "\r", opts...)); err != nil {
+							return classifySelectorErr(err)
+						}
+						submitted = true
+					}
+					return nil
+				}
+			}
+			select {
+			case <-cctx.Done():
+				return classifyErr(cctx.Err(), ErrNavigationTimeout)
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 	}
 }

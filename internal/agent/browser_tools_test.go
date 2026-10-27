@@ -171,6 +171,8 @@ func browserToolCases(fake *fakeBrowserSession) []struct {
 		{"browser_download", &BrowserDownloadTool{browserToolBase: base}, `{"selector":"#dl","path":"out.bin"}`, true},
 		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: base}, `{}`, true},
 		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: base}, `{}`, true},
+		{"browser_select", &BrowserSelectTool{browserToolBase: base}, `{"selector":"#s","label":"A"}`, true},
+		{"browser_response_body", &BrowserResponseBodyTool{browserToolBase: base}, `{"request_id":"1"}`, true},
 	}
 }
 
@@ -216,6 +218,8 @@ func TestBrowserTools_DisabledMessage(t *testing.T) {
 		{"browser_download", &BrowserDownloadTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#dl","path":"out.bin"}`},
 		{"browser_console_logs", &BrowserConsoleLogsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
 		{"browser_network_requests", &BrowserNetworkRequestsTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{}`},
+		{"browser_select", &BrowserSelectTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"selector":"#s","label":"A"}`},
+		{"browser_response_body", &BrowserResponseBodyTool{browserToolBase: browserToolBase{Session: fake, Enabled: false}}, `{"request_id":"1"}`},
 	}
 	for _, tc := range disabledCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -253,10 +257,10 @@ func TestRegisterCoreCwdTools_BrowserGate(t *testing.T) {
 
 		"browser_wait", "browser_handoff", "browser_close", "browser_tabs", "browser_switch_tab",
 		"browser_close_tab", "browser_upload", "browser_download",
-		"browser_console_logs", "browser_network_requests",
+		"browser_console_logs", "browser_network_requests", "browser_select", "browser_response_body",
 	}
-	if len(names) != 18 {
-		t.Fatalf("test bug: expected 18 tool names, got %d", len(names))
+	if len(names) != 20 {
+		t.Fatalf("test bug: expected 20 tool names, got %d", len(names))
 	}
 	for _, name := range names {
 		if _, ok := reg2.Get(name); !ok {
