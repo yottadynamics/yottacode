@@ -244,9 +244,9 @@ func (m *ShellJobs) finish(job *shellJob, exit int, status subagents.TaskStatus,
 
 	result := formatShellDone(job, exit, status, note)
 	job.closeLog()
-	close(job.done)
 	errored := status == subagents.TaskErrored
 	m.agent.Tasks.MarkDone(job.id, status, result, errored, 0)
+	close(job.done)
 	// Only wake-relevant completions enter the model-facing callback. Silent
 	// jobs remain durably available through process(poll|wait|log), so they
 	// cannot consume notification capacity or crowd out requested wakes.

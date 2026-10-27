@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,6 +47,9 @@ type fakeBrowserSession struct {
 	consoleLogsErr        error
 	networkRequestsResult []browser.NetworkEntry
 	networkRequestsErr    error
+	responseBodyResult    browser.ResponseBody
+	responseBodyErr       error
+	selectErr             error
 
 	calls []string
 }
@@ -122,6 +126,14 @@ func (f *fakeBrowserSession) ConsoleLogs(ctx context.Context, limit int) ([]brow
 func (f *fakeBrowserSession) NetworkRequests(ctx context.Context, limit int) ([]browser.NetworkEntry, error) {
 	f.calls = append(f.calls, fmt.Sprintf("network_requests:%d", limit))
 	return f.networkRequestsResult, f.networkRequestsErr
+}
+func (f *fakeBrowserSession) SelectOption(ctx context.Context, selector, value, label string) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("select:%s:%s:%s", selector, value, label))
+	return label, f.selectErr
+}
+func (f *fakeBrowserSession) ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (browser.ResponseBody, error) {
+	f.calls = append(f.calls, fmt.Sprintf("response_body:%s:%d:%d", requestID, maxBytes, offset))
+	return f.responseBodyResult, f.responseBodyErr
 }
 
 var _ browserSession = (*fakeBrowserSession)(nil)
@@ -532,6 +544,15 @@ func TestBrowserUploadTool_PathOutsideWorkspaceDenied(t *testing.T) {
 func TestBrowserUploadTool_Success(t *testing.T) {
 	fake := &fakeBrowserSession{}
 	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "b.txt"), []byte("b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cwd := NewCwdRef(dir)
 	tool := &BrowserUploadTool{browserToolBase: browserToolBase{Session: fake, Enabled: true}, Cwd: cwd, WriteOpts: WritePathOptions{Cwd: cwd}}
 	out, err := tool.Execute(context.Background(), `{"selector":"#f","paths":["a.txt","sub/b.txt"]}`)

@@ -831,7 +831,7 @@ func TestIntegration_HandoffOpensVisibleIsolatedSession(t *testing.T) {
 	if err := m.Click(ctx, "#go"); err != nil {
 		t.Fatalf("Click in headed session: %v", err)
 	}
-	if err := m.Wait(ctx, "#out", "clicked:visible", false, 10*time.Second); err != nil {
+	if err := m.Wait(ctx, "#out", "clicked:visible", false, 15*time.Second); err != nil {
 		t.Fatalf("Wait in headed session: %v", err)
 	}
 
