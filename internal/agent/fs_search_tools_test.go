@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,6 +94,66 @@ func TestGlob_RequiresPattern(t *testing.T) {
 	tool := &GlobTool{Cwd: NewCwdRef(t.TempDir())}
 	if _, err := tool.Execute(context.Background(), `{}`); err == nil {
 		t.Errorf("expected error on empty pattern")
+	}
+}
+
+func TestGlob_NormalizesDotSlash(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "roadmap", "plan")
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"pattern":"./roadmap"}`)
+	if err != nil || out != "roadmap\n" {
+		t.Fatalf("./roadmap: out=%q err=%v", out, err)
+	}
+}
+
+func TestGlob_RejectsMissingRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+	tool := &GlobTool{Cwd: NewCwdRef(filepath.Dir(root))}
+	_, err := tool.Execute(context.Background(), `{"pattern":"**/*","root":"missing"}`)
+	if err == nil || !strings.Contains(err.Error(), root) {
+		t.Fatalf("expected error naming root %q, got %v", root, err)
+	}
+}
+
+func TestGlob_CanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tool := &GlobTool{Cwd: NewCwdRef(t.TempDir())}
+	_, err := tool.Execute(ctx, `{"pattern":"**/*"}`)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled context, got %v", err)
+	}
+}
+
+func TestGlob_MaxResultsDuringTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	for i := 0; i < 5; i++ {
+		writeFile(t, tmp, fmt.Sprintf("f%d", i), "x")
+	}
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"pattern":"*","max_results":2}`)
+	if err != nil || !strings.Contains(out, "truncated at 2 results") {
+		t.Fatalf("expected bounded truncation, out=%q err=%v", out, err)
+	}
+	if strings.Count(strings.TrimSuffix(out, "…[truncated at 2 results]\n"), "\n") != 2 {
+		t.Fatalf("expected two matches before marker, got %q", out)
+	}
+}
+
+func TestGlob_DoesNotFollowSymlinkDirectory(t *testing.T) {
+	tmp := t.TempDir()
+	writeFile(t, tmp, "real/inside.txt", "x")
+	if err := os.Symlink(filepath.Join(tmp, "real"), filepath.Join(tmp, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	tool := &GlobTool{Cwd: NewCwdRef(tmp)}
+	out, err := tool.Execute(context.Background(), `{"pattern":"**/*.txt"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "link/inside.txt") {
+		t.Fatalf("followed symlink directory: %q", out)
 	}
 }
 
