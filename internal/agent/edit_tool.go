@@ -156,7 +156,11 @@ func (t *EditFileTool) executeUnlocked(ctx context.Context, argsJSON string, res
 	}
 	if receipt.Hash != "" {
 		applyOffset := receipt.Offset
-		observedMatches := receipt.Offset >= 0 && receipt.Offset+receipt.Length <= len(contents) && string(contents[receipt.Offset:receipt.Offset+receipt.Length]) == receipt.Old
+		observedMatches := false
+		if receipt.Offset >= 0 && receipt.Offset <= len(contents) && receipt.Length >= 0 && receipt.Length <= len(contents)-receipt.Offset {
+			end := receipt.Offset + receipt.Length
+			observedMatches = string(contents[receipt.Offset:end]) == receipt.Old
+		}
 		if !observedMatches {
 			// A preceding insertion/deletion can shift an otherwise unchanged target.
 			// Rebase exactly once only when the original bytes occur at one unique

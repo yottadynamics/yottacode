@@ -108,8 +108,8 @@ const synonymWeight = 0.5
 // higher (original) weight wins.
 func stemExpandWeighted(s string) []weightedStem {
 	raw := tokenize(s)
-	idx := make(map[string]int, len(raw)*3)
-	out := make([]weightedStem, 0, len(raw)*3)
+	idx := make(map[string]int, len(raw))
+	out := make([]weightedStem, 0, len(raw))
 	add := func(stem string, w float64) {
 		if i, ok := idx[stem]; ok {
 			if w > out[i].weight {
@@ -160,8 +160,8 @@ func normalizeByMax(scored []Scored) {
 // to increase recall without inflating document frequencies.
 func StemExpandTokenize(s string) []string {
 	raw := tokenize(s)
-	seen := make(map[string]struct{}, len(raw)*3)
-	out := make([]string, 0, len(raw)*3)
+	seen := make(map[string]struct{}, len(raw))
+	out := make([]string, 0, len(raw))
 	for _, t := range raw {
 		stemmed := Stem(t)
 		if _, ok := seen[stemmed]; ok {
