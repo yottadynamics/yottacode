@@ -647,6 +647,7 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 		AllowDocxPdfGeneration: true,
 		SupportsBackground:     spec.SupportsBackgroundDispatch,
 		Enabled:                dispatchEnabled,
+		MaxWorkers:             fileCfg.DispatchMaxWorkers(),
 		SandboxFactory:         sandboxFactory,
 		MediaMaxThreads:        fileCfg.MediaMaxThreads(),
 		MediaRenderTimeout:     time.Duration(fileCfg.MediaRenderTimeoutSeconds()) * time.Second,

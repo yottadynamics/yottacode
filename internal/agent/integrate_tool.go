@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/yottadynamics/yottacode/internal/subagents"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
@@ -48,6 +49,11 @@ type IntegrateTool struct {
 	// came from successful dispatch workers. It may be nil for low-level callers
 	// and tests that deliberately exercise generic branch merging.
 	Tasks *subagents.Registry
+
+	// sem serializes calls on one IntegrateTool and lets cancellation interrupt
+	// a waiter before it enters the repository-wide lock.
+	semOnce sync.Once
+	sem     chan struct{}
 }
 
 func (t *IntegrateTool) Name() string { return IntegrateToolName }
@@ -107,6 +113,13 @@ func (t *IntegrateTool) Execute(ctx context.Context, argsJSON string) (string, e
 	// Git worktree registration, merge state, and pending cleanup config are
 	// repository-global. Hold the lock for the complete operation so a second
 	// integrate call cannot observe or mutate half-finished state.
+	t.semOnce.Do(func() { t.sem = make(chan struct{}, 1) })
+	select {
+	case t.sem <- struct{}{}:
+		defer func() { <-t.sem }()
+	case <-ctx.Done():
+		return "error: integrate cancelled while waiting for another integrate to finish", nil
+	}
 	integrateMu.Lock()
 	defer integrateMu.Unlock()
 
