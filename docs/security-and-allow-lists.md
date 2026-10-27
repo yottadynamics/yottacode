@@ -274,14 +274,16 @@ top of the normal approval model:
   without the guard (a hard-killed yottacode may then leave an orphaned
   browser process behind).
 - **Console/network capture is buffered continuously, and reading it
-  needs approval.** `browser_console_logs`/`browser_network_requests`
-  read from a per-page bounded buffer (`Runtime`/`Network` domain
-  events) populated from the moment a page is tracked, not just during
-  the call — so they can surface messages or requests from well before
-  the call was made. Both always prompt: console output and request
-  URLs can carry private data (a logged token, a session-bearing query
-  param) even though nothing was clicked to produce them. Metadata
-  only — no response bodies, and no request blocking/mocking.
+  needs approval.** `browser_console_logs`/`browser_network_requests`/
+  `browser_response_body` read from a per-page bounded buffer
+  (`Runtime`/`Network` domain events) populated from the moment a page is
+  tracked, not just during the call — so they can surface messages or
+  requests from well before the call was made. All three always prompt:
+  console output, request URLs, and response bodies can carry private data
+  (a logged token, a session-bearing query param, or page content) even
+  though nothing was clicked to produce them. Response bodies are bounded
+  and binary bodies are described rather than returned; request
+  blocking/mocking remains out of scope for v1.
 - **Not available to `dispatch` workers.** A dispatch worker never
   sees the `browser_*` tools, regardless of whether `browser` is
   enabled for the parent session — concurrent browser sessions across

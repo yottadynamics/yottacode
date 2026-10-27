@@ -135,6 +135,8 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_download`](#browser_download) | required | Experimental behind `browser`; trigger a download (via click or url) and save it to a local path |
 | [`browser_console_logs`](#browser_console_logs) | required | Experimental behind `browser`; return buffered console.* calls and uncaught exceptions from the active page |
 | [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
+| [`browser_select`](#browser_select) | required | Experimental behind `browser`; select an option in a `<select>` element |
+| [`browser_response_body`](#browser_response_body) | required | Experimental behind `browser`; return a buffered response body by request ID or URL match |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2679,6 +2681,35 @@ response bodies, and no request blocking/mocking (out of scope for v1).
 Always prompts for approval — request URLs can carry private data (a
 session token in a query param) and reveal what backend APIs a page
 talks to, same rationale as `browser_console_logs`.
+
+## browser_select
+
+Select an option in a native `<select>` element by its CSS selector. Set
+exactly one of `value` or `label`.
+
+| Param | Type | Default |
+|---|---|---|
+| `selector` | string | — |
+| `value` | string | — |
+| `label` | string | — |
+
+Always prompts for approval because it changes page state.
+
+## browser_response_body
+
+Return a buffered HTTP response body. Identify the request with
+`request_id`, or use `url_contains` to select the most recent matching
+request. Binary responses are described but their bytes are not returned.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `request_id` | string | — | Exact buffered request ID |
+| `url_contains` | string | — | Select the most recent request whose URL contains this text |
+| `max_bytes` | integer | `1048576` | Maximum body bytes to return |
+| `offset` | integer | `0` | Byte offset into the response body |
+
+Always prompts for approval. Response bodies may contain private data and
+are wrapped as untrusted web content.
 
 ---
 
