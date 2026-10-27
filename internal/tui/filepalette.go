@@ -97,6 +97,9 @@ func walkFiles(root string) []fileEntry {
 				return fs.SkipDir
 			}
 		}
+		if !d.IsDir() && isSensitiveFilePath(rel) {
+			return nil
+		}
 		if len(out) >= fileWalkMaxEntries {
 			return fs.SkipAll
 		}
@@ -138,6 +141,23 @@ func filterFilePalette(query string, entries []fileEntry) []fileEntry {
 	if query == "" {
 		out := make([]fileEntry, len(entries))
 		copy(out, entries)
+		return out
+	}
+	// A slash means the user is navigating a path, not searching for a
+	// filename. Keep completion scoped to that path or its descendants so
+	// an input such as @roadmap/ cannot surface unrelated fuzzy matches.
+	if strings.Contains(query, "/") {
+		prefix := filepath.ToSlash(filepath.Clean(query))
+		prefix = strings.TrimPrefix(prefix, "./")
+		prefixLower := strings.ToLower(prefix)
+		out := make([]fileEntry, 0, len(entries))
+		for _, e := range entries {
+			path := filepath.ToSlash(e.Path)
+			pathLower := strings.ToLower(path)
+			if pathLower == prefixLower || strings.HasPrefix(pathLower, prefixLower+"/") {
+				out = append(out, e)
+			}
+		}
 		return out
 	}
 	q := strings.ToLower(query)
@@ -227,6 +247,19 @@ func wordInitialsMatch(query, candidate string) bool {
 	return false
 }
 
+func isSensitiveFilePath(path string) bool {
+	base := strings.ToLower(filepath.Base(filepath.ToSlash(path)))
+	if base == ".env" || strings.HasPrefix(base, ".env.") || base == "credentials" || base == "credentials.json" || base == "authorized_keys" || base == "id_rsa" || base == "id_ed25519" || base == "id_ecdsa" || base == "id_dsa" {
+		return true
+	}
+	for _, suffix := range []string{".pem", ".key", ".p12", ".pfx", ".kdbx"} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 func isWordSeparator(r rune) bool {
 	switch r {
 	case '-', '_', '/', '.', ' ':
@@ -262,14 +295,17 @@ const filePaletteVisible = 8
 // view as the user arrows past the window edge.
 func renderFilePalette(items []fileEntry, idx, offset, width int) string {
 	if len(items) == 0 {
-		return stylePaletteBox.Width(width).Render(styleEmpty.Render("(no matching files)"))
+		return stylePaletteBox.Width(width).Render(styleEmpty.Render("(no matching files) · Esc to close"))
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(items) {
+		offset = len(items) - 1
 	}
 	end := offset + filePaletteVisible
 	if end > len(items) {
 		end = len(items)
-	}
-	if offset < 0 {
-		offset = 0
 	}
 	var lines []string
 	lines = append(lines, styleSplashTitle.Render(filePaletteTitle))
@@ -316,7 +352,7 @@ func extractFileQuery(value string) (query string, atIdx int, found bool) {
 	// The active token starts at the last whitespace before the end of
 	// input, plus one (or 0 if no whitespace). Everything from there
 	// to the end is the active token.
-	last := strings.LastIndexAny(value, " \t\n")
+	last := strings.LastIndexAny(value, " \t\n([{,;")
 	tokenStart := last + 1
 	token := value[tokenStart:]
 	if !strings.HasPrefix(token, "@") {

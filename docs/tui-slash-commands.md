@@ -46,6 +46,14 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/theme` | `[set <name> \| <name>]` | Change the theme — opens the picker with arrow-key live preview across every registered palette (`terminal`, `catppuccin`, `dimmed`, `gruvbox`, `high-contrast`, `low-contrast`, `no-color`, `nord`, `one-dark`, `solarized-dark`, `studio-dark`, `tokyo-night`). Enter applies and persists to `~/.yottacode/config.toml`; Esc reverts. Scriptable shortcuts: `/theme set <name>` and `/theme <name>` bypass the picker. See [themes.md](themes.md). |
 | `/loop` | `<interval> [Nx] [--budget <tokens>] [--verify] <prompt>` | Repeat a prompt or slash command on an explicit interval. `/loop 5m <prompt>` fires every 5 minutes; `/loop 30s /context` runs a slash command every 30 seconds; `/loop 3x <prompt>` is rejected because the interval is required; `/loop pause` / `/loop resume` hold and restart it; `--budget` caps its token spend; `--verify` makes the agent's stop wait for a passing verification; `/loop stop` (or `Esc` / `Ctrl+C`) ends it. Each iteration is an ordinary turn — output streams to scrollback and is saved to the session, and the standard per-tool approval gates apply. In-memory only (ends on quit). See [Recurring loops](#recurring-loops-loop). |
 
+## `@` file references
+
+Type `@` at the start of a word to open the file picker. The picker searches the current working directory and skips common generated/dependency directories. Use `↑`/`↓` to select, `Tab` to attach the highlighted file, and `Esc` to close the picker without changing the input. `Enter` submits the prompt; it does not attach a file.
+
+Typing a slash scopes the search as a directory prefix: `@internal/tui/` only shows entries beneath `internal/tui/`. The picker refreshes when the session enters or exits a worktree. Large repositories may show a bounded candidate list, and directory references produce bounded listings.
+
+For safety, common secret files such as `.env`, credential files, private-key files, and certificate containers are hidden from the picker and rejected if referenced directly. Put non-sensitive excerpts in a safe project file before attaching them.
+
 Beyond the built-ins, you can ship your own slash commands by dropping markdown files in a `commands/` directory — see [Custom commands](#custom-commands).
 
 > `Shift+Tab` cycles `normal → plan → auto → yolo → normal`. The same states are slash-addressable with `/auto`, `/plan`, and `/yolo`; `/auto` keeps the auto safety floor, while `/yolo` is the explicit always-approve path with no safety floor. See [Auto mode](#auto-mode) and [Yolo mode](#yolo-mode) below.

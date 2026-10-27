@@ -39,8 +39,10 @@ const Marker = "## Referenced files (auto-injected from @-prefixed paths)"
 // load and short-circuits the rest once breached. Both are deliberate
 // (small) so the system prompt never balloons.
 const (
-	MaxFileSize  = 200 * 1024  // 200 KiB per file
-	MaxTotalSize = 1024 * 1024 // 1 MiB total per turn
+	MaxFileSize       = 200 * 1024  // 200 KiB per file
+	MaxTotalSize      = 1024 * 1024 // 1 MiB total per turn
+	MaxDirEntries     = 2000        // bounded directory listings
+	MaxDirListingSize = 64 * 1024   // bounded rendered directory listings
 )
 
 // Ref describes a single @-prefixed reference detected in user input.
@@ -142,6 +144,10 @@ func Load(refs []Ref, cwd string) []Ref {
 			ref.Error = "home-relative paths (~) are not supported; use a path relative to the working directory"
 			continue
 		}
+		if isSensitivePath(ref.Path) {
+			ref.Error = "sensitive files are not attached automatically; copy the relevant content into a safe project file"
+			continue
+		}
 		joined := filepath.Join(rootAbs, ref.Path)
 		// Resolve any traversal in the joined path and check the
 		// result still falls under cwd. We use Clean here rather than
@@ -178,11 +184,12 @@ func Load(refs []Ref, cwd string) []Ref {
 			ref.Loaded = true
 			totalSize += ref.Size
 			if totalSize > MaxTotalSize {
+				loadedSize := ref.Size
 				ref.Loaded = false
 				ref.Content = ""
 				ref.Size = 0
 				ref.Error = fmt.Sprintf("total reference budget (%d bytes) exhausted before this entry", MaxTotalSize)
-				totalSize -= len(ref.Content)
+				totalSize -= loadedSize
 			}
 			continue
 		}
@@ -253,6 +260,21 @@ func readFull(r interface{ Read([]byte) (int, error) }, buf []byte) (int, error)
 	return total, nil
 }
 
+// isSensitivePath identifies common credential and secret-file patterns that
+// should not be sent to a model accidentally through @ references.
+func isSensitivePath(path string) bool {
+	base := strings.ToLower(filepath.Base(filepath.ToSlash(path)))
+	if base == ".env" || strings.HasPrefix(base, ".env.") || base == "credentials" || base == "credentials.json" || base == "authorized_keys" || base == "id_rsa" || base == "id_ed25519" || base == "id_ecdsa" || base == "id_dsa" {
+		return true
+	}
+	for _, suffix := range []string{".pem", ".key", ".p12", ".pfx", ".kdbx"} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
 // pathContains reports whether child is the root or a descendant of
 // root. Both are expected to be absolute and Clean'd. Equality counts
 // as containment — referencing the cwd itself (`@.`) is allowed.
@@ -274,7 +296,11 @@ func pathContains(root, child string) bool {
 func renderDirListing(entries []os.DirEntry) string {
 	var b strings.Builder
 	b.WriteString("(directory listing)\n")
+	shown := 0
 	for _, e := range entries {
+		if shown >= MaxDirEntries || b.Len() >= MaxDirListingSize {
+			break
+		}
 		marker := "f"
 		if e.IsDir() {
 			marker = "d"
@@ -282,6 +308,10 @@ func renderDirListing(entries []os.DirEntry) string {
 			marker = "l"
 		}
 		fmt.Fprintf(&b, "%s %s\n", marker, e.Name())
+		shown++
+	}
+	if shown < len(entries) {
+		fmt.Fprintf(&b, "... [directory listing truncated; showing %d of %d entries]\n", shown, len(entries))
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -352,13 +382,35 @@ func BuildSection(refs []Ref) string {
 			continue
 		}
 		if r.IsDir {
-			fmt.Fprintf(&b, "```\n%s\n```\n\n", r.Content)
+			fence := markdownFence(r.Content)
+			fmt.Fprintf(&b, "%s\n%s\n%s\n\n", fence, r.Content, fence)
 			continue
 		}
 		lang := languageFromPath(r.Path)
-		fmt.Fprintf(&b, "```%s\n%s\n```\n\n", lang, r.Content)
+		fence := markdownFence(r.Content)
+		fmt.Fprintf(&b, "%s%s\n%s\n%s\n\n", fence, lang, r.Content, fence)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// markdownFence returns a fence longer than any contiguous backtick run in
+// content, preventing referenced files from escaping the injected block.
+func markdownFence(content string) string {
+	maxRun := 0
+	for _, line := range strings.Split(content, "\n") {
+		run := 0
+		for _, r := range line {
+			if r == '`' {
+				run++
+				if run > maxRun {
+					maxRun = run
+				}
+			} else {
+				run = 0
+			}
+		}
+	}
+	return strings.Repeat("`", maxRun+3)
 }
 
 // StripSection removes a prior auto-injected file-refs block from a

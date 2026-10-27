@@ -1,6 +1,7 @@
 package filerefs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,6 +157,17 @@ func TestLoad_RejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestLoad_RejectsSensitiveFiles(t *testing.T) {
+	tmp := t.TempDir()
+	for _, name := range []string{".env", ".env.local", "server.pem", "credentials.json", "id_ed25519", "authorized_keys"} {
+		mustWrite(t, filepath.Join(tmp, name), "secret")
+		refs := Load([]Ref{{Token: "@" + name, Path: name}}, tmp)
+		if refs[0].Loaded || !strings.Contains(refs[0].Error, "sensitive") {
+			t.Fatalf("Load(%q) = loaded=%v error=%q", name, refs[0].Loaded, refs[0].Error)
+		}
+	}
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	tmp := t.TempDir()
 	refs := Load([]Ref{{Token: "@nope.go", Path: "nope.go"}}, tmp)
@@ -181,6 +193,20 @@ func TestLoad_TruncatesLargeFile(t *testing.T) {
 	}
 }
 
+func TestLoad_DirectoryListingIsBounded(t *testing.T) {
+	tmp := t.TempDir()
+	for i := 0; i < MaxDirEntries+10; i++ {
+		mustWrite(t, filepath.Join(tmp, fmt.Sprintf("entry-%04d", i)), "")
+	}
+	refs := Load([]Ref{{Token: "@.", Path: "."}}, tmp)
+	if !refs[0].Loaded {
+		t.Fatalf("directory should load: %s", refs[0].Error)
+	}
+	if !strings.Contains(refs[0].Content, "directory listing truncated") {
+		t.Fatalf("expected truncation marker: %q", tail(refs[0].Content, 100))
+	}
+}
+
 func TestLoad_DirectoryListing(t *testing.T) {
 	tmp := t.TempDir()
 	mustMkdir(t, filepath.Join(tmp, "sub"))
@@ -196,6 +222,13 @@ func TestLoad_DirectoryListing(t *testing.T) {
 	}
 	if !strings.Contains(refs[0].Content, "a.go") || !strings.Contains(refs[0].Content, "b.txt") {
 		t.Fatalf("dir listing missing entries: %q", refs[0].Content)
+	}
+}
+
+func TestBuildSection_UsesSafeFenceForEmbeddedBackticks(t *testing.T) {
+	got := BuildSection([]Ref{{Token: "@x.go", Path: "x.go", Loaded: true, Content: "before\n```\nafter"}})
+	if !strings.Contains(got, "``````go\nbefore\n```\nafter\n``````") {
+		t.Fatalf("expected a fence longer than the embedded backticks: %q", got)
 	}
 }
 
