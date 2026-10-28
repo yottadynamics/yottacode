@@ -154,5 +154,6 @@ session/new request, not from CLI flags.`,
 	cmd.Flags().DurationVar(&tokenExpires, "token-expires", 30*24*time.Hour, "Lifetime for a created token")
 	cmd.Flags().BoolVar(&tokenCreate, "token-create", false, "Create and persist a bearer token, then exit")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Use stdio ACP transport instead of WSS")
+	cmd.AddCommand(newAcpAttachCmd())
 	return cmd
 }

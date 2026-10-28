@@ -20,9 +20,18 @@ Authorization: Bearer <token>
 Sec-WebSocket-Protocol: yottacode.acp.v1
 ```
 
-Supported initial scopes are `read`, `prompt`, `approve`, and `admin`. Scope
-enforcement beyond transport admission and the `acp attach` terminal client
-are subsequent experimental phases. Do not expose the endpoint to an
+Supported initial scopes are `read`, `prompt`, `approve`, and `admin`.
+Remote ACP methods now enforce `read` for loading sessions and `prompt` for
+creating, prompting, cancelling, closing, or changing session configuration.
+The terminal recovery client is available as:
+
+```bash
+yottacode acp attach <session-id> --server wss://127.0.0.1:8443/acp --token "$TOKEN"
+```
+
+The attach client is intentionally minimal in this phase: it loads one session,
+prints streamed assistant text, and submits newline-delimited terminal prompts.
+Reconnect/replay cursors and controller takeover remain subsequent phases. Do not expose the endpoint to an
 untrusted network yet; production deployment still requires connection limits,
 rate limiting, project/session authorization, and daemon lifecycle controls.
 

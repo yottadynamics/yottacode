@@ -31,7 +31,8 @@ type WSSHandler struct {
 // ServeHTTP upgrades one authenticated request and runs ACP until the peer
 // disconnects. TLS is intentionally owned by net/http's caller.
 func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !h.authorized(r) {
+	record, scopes := h.identity(r)
+	if len(scopes) == 0 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -42,20 +43,31 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upgraded := &upgradedStream{conn: conn, rw: rw}
 	stream := NewWebSocketStream(upgraded)
 	ref := acp.NewConnectionRef()
-	agentConn := coderacp.NewAgentSideConnection(h.Server.Agent(ref), stream, stream)
+	_ = record
+	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(ref, scopes), stream, stream)
 	ref.Set(agentConn)
 	<-agentConn.Done()
 	_ = upgraded.Close()
 }
 
-func (h *WSSHandler) authorized(r *http.Request) bool {
+func (h *WSSHandler) identity(r *http.Request) (acpauth.TokenRecord, []string) {
 	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if h.TokenStore != nil {
-		_, err := h.TokenStore.Authenticate(got, time.Now())
-		return err == nil
+		record, err := h.TokenStore.Authenticate(got, time.Now())
+		if err == nil {
+			scopes := make([]string, 0, len(record.Scopes))
+			for _, scope := range record.Scopes {
+				scopes = append(scopes, string(scope))
+			}
+			return record, scopes
+		}
+		return acpauth.TokenRecord{}, nil
 	}
 	want := strings.TrimSpace(h.BearerToken)
-	return want != "" && len(got) == len(want) && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	if want != "" && len(got) == len(want) && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+		return acpauth.TokenRecord{Scopes: []acpauth.Scope{acpauth.ScopeAdmin}}, []string{"admin"}
+	}
+	return acpauth.TokenRecord{}, nil
 }
 
 // upgradedStream preserves bytes buffered by the HTTP upgrade while exposing

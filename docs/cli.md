@@ -42,6 +42,7 @@ creation and connection requirements.
 ```bash
 yottacode acp --stdio
 yottacode acp --token-create --token-name laptop
+yottacode acp attach <session-id> --server wss://127.0.0.1:8443/acp --token <token>
 yottacode acp --listen 127.0.0.1:8443 --tls-cert server.crt --tls-key server.key --token <token>
 ```
 
