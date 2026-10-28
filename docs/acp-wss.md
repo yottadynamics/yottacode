@@ -13,6 +13,9 @@ yottacode acp --listen 127.0.0.1:8443 \
 The token command prints the opaque secret once. The daemon stores only a
 salted hash under `~/.yottacode/acp-tokens.json` with mode `0600`.
 
+See [ACP architecture](acp-architecture.md) for the transport, session
+ownership, extension-method, and security design.
+
 WSS clients must send:
 
 ```http

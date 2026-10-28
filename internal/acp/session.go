@@ -36,10 +36,12 @@ const closeSessionDrainTimeout = 5 * time.Second
 // (map[string]*agentSession{cancel context.CancelFunc}) — see
 // roadmap/acp-adapter.md's Concurrency section.
 type acpSession struct {
-	id   string
-	srv  *Server
-	rt   *agentruntime.Runtime
-	conn outbound
+	id         string
+	srv        *Server
+	rt         *agentruntime.Runtime
+	conn       outbound
+	controller outbound
+	observers  []outbound
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session
@@ -96,6 +98,10 @@ func newACPSession(srv *Server, rt *agentruntime.Runtime, conn outbound) *acpSes
 		rt.Cfg.Checkpoints = cp
 	}
 	sess := &acpSession{srv: srv, rt: rt, id: rt.Session.ID, conn: conn}
+	if conn != nil {
+		sess.controller = conn
+		sess.conn = sess.routing()
+	}
 	// Agent.Turn uses this lock for every history mutation, keeping ACP's
 	// per-turn persistence and prompt recomposition from racing the loop.
 	rt.Cfg.HistoryLock = &sess.historyMu
@@ -185,6 +191,17 @@ func (s *Server) Prompt(ctx context.Context, params coderacp.PromptRequest) (cod
 		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
 	}
 	return sess.prompt(ctx, sess.conn, params)
+}
+
+func (s *Server) promptFrom(ctx context.Context, conn outbound, params coderacp.PromptRequest) (coderacp.PromptResponse, error) {
+	sess, ok := s.session(string(params.SessionId))
+	if !ok {
+		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
+	}
+	if err := sess.controlError(conn); err != nil {
+		return coderacp.PromptResponse{}, coderacp.NewAuthRequired(map[string]any{"error": err.Error()})
+	}
+	return sess.prompt(ctx, sess.routing(), params)
 }
 
 func (s *acpSession) prompt(ctx context.Context, conn outbound, params coderacp.PromptRequest) (coderacp.PromptResponse, error) {

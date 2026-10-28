@@ -1,0 +1,17 @@
+---
+title: yottacode ACP WSS architecture
+---
+flowchart LR
+    Client[ACP clients\neditor · remote UI · acp attach]
+    WSS[WSS/TLS endpoint\nBearer authentication]
+    Adapter[ACP transport adapter\nWebSocket text frames]
+    SDK[ACP SDK\nJSON-RPC + extensions]
+    Registry[internal/acp.Server\nshared session registry]
+    Ownership[Session ownership\ncontroller + observers]
+    Runtime[Agent runtime\ntools · permissions · persistence]
+    Tokens[(~/.yottacode/acp-tokens.json)]
+    Sessions[(durable sessions)]
+
+    Client --> WSS --> Adapter --> SDK --> Registry --> Ownership --> Runtime
+    WSS --> Tokens
+    Runtime --> Sessions

@@ -144,6 +144,10 @@ func (s *Server) newSession(ctx context.Context, params coderacp.NewSessionReque
 		rt.Session.Name = sessionTitleName(strings.TrimSpace(title), rt.Session.Created)
 	}
 	sess := newACPSession(s, rt, conn)
+	if conn != nil {
+		sess.controller = conn
+		sess.conn = sess.routing()
+	}
 	s.mu.Lock()
 	s.sessions[rt.Session.ID] = sess
 	s.mu.Unlock()
@@ -200,6 +204,10 @@ func (s *Server) loadSession(ctx context.Context, params coderacp.LoadSessionReq
 		_ = agentruntime.RebuildAdapterForModel(rt, saved)
 	}
 	sess := newACPSession(s, rt, conn)
+	if conn != nil {
+		sess.controller = conn
+		sess.conn = sess.routing()
+	}
 
 	s.mu.Lock()
 	old, hadOld := s.sessions[rt.Session.ID]

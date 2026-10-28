@@ -107,7 +107,7 @@ func (a *connectionAgent) Prompt(ctx context.Context, params coderacp.PromptRequ
 	if err := a.require("prompt"); err != nil {
 		return coderacp.PromptResponse{}, err
 	}
-	return a.Server.Prompt(ctx, params)
+	return a.Server.promptFrom(ctx, a.conn, params)
 }
 
 func (a *connectionAgent) Cancel(ctx context.Context, params coderacp.CancelNotification) error {
