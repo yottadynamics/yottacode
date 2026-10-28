@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -53,7 +53,7 @@ type TokenRecord struct {
 // owner. The file is user-only (0600); the containing directory is 0700.
 type Store struct {
 	path string
-	mu   sync.Mutex
+	mu   syncutil.Mutex
 }
 
 // NewStore returns the default ~/.yottacode/acp-tokens.json store.

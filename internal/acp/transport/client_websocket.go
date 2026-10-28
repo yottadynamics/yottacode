@@ -4,17 +4,18 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"sync"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // ClientWebSocketStream adapts a client-side WebSocket to the ACP SDK stream.
 type ClientWebSocketStream struct {
 	conn    io.ReadWriteCloser
-	readMu  sync.Mutex
-	writeMu sync.Mutex
+	readMu  syncutil.Mutex
+	writeMu syncutil.Mutex
 	current []byte
 }
 

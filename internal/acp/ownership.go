@@ -41,11 +41,14 @@ func (s *acpSession) canControl(conn outbound) bool {
 	return s.controller == nil || sameOutbound(s.controller, conn)
 }
 
-func (s *acpSession) replay(ctx context.Context, conn outbound) (int, error) {
+func (s *acpSession) replay(ctx context.Context, conn outbound, afterSeq uint64) (int, uint64, error) {
 	s.historyMu.Lock()
 	messages := append([]adapter.Message(nil), s.rt.Session.Messages...)
 	s.historyMu.Unlock()
 	count := 0
+	if afterSeq > 0 {
+		return s.replayEvents(ctx, conn, afterSeq)
+	}
 	for _, msg := range messages {
 		var update coderacp.SessionUpdate
 		switch msg.Role {
@@ -60,11 +63,11 @@ func (s *acpSession) replay(ctx context.Context, conn outbound) (int, error) {
 			continue
 		}
 		if err := replayUpdate(ctx, conn, s.id, update); err != nil {
-			return count, err
+			return count, s.latestSeq(), err
 		}
 		count++
 	}
-	return count, nil
+	return count, s.latestSeq(), nil
 }
 
 func (s *acpSession) controlError(conn outbound) error {

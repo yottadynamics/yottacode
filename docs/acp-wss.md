@@ -14,7 +14,8 @@ The token command prints the opaque secret once. The daemon stores only a
 salted hash under `~/.yottacode/acp-tokens.json` with mode `0600`.
 
 See [ACP architecture](acp-architecture.md) for the transport, session
-ownership, extension-method, and security design.
+ownership, extension-method, and security design. See [ACP replay](acp-replay.md)
+for event sequencing and reconnect cursors.
 
 WSS clients must send:
 

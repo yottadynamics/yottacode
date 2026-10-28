@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"sync"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 const maxMessageSize = 8 << 20
@@ -20,8 +21,8 @@ var ErrBinaryMessage = errors.New("acp transport: binary WebSocket messages are 
 // each newline-delimited write becomes one text message.
 type WebSocketStream struct {
 	conn    io.ReadWriteCloser
-	readMu  sync.Mutex
-	writeMu sync.Mutex
+	readMu  syncutil.Mutex
+	writeMu syncutil.Mutex
 	current []byte
 }
 

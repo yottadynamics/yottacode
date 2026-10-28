@@ -2,9 +2,10 @@ package acp
 
 import (
 	"context"
-	"sync"
 
 	coderacp "github.com/coder/acp-go-sdk"
+
+	"github.com/yottadynamics/yottacode/internal/syncutil"
 )
 
 // outbound is the small portion of an ACP client connection needed by a
@@ -20,7 +21,7 @@ type outbound interface {
 // an outbound connection, while NewAgentSideConnection needs the inbound
 // agent. It is set immediately after the SDK connection is constructed.
 type ConnectionRef struct {
-	mu   sync.RWMutex
+	mu   syncutil.RWMutex
 	conn outbound
 }
 

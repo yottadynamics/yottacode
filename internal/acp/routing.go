@@ -11,6 +11,7 @@ import (
 type sessionOutbound struct{ session *acpSession }
 
 func (o sessionOutbound) SessionUpdate(ctx context.Context, n coderacp.SessionNotification) error {
+	o.session.appendEvent(n.Update)
 	var firstErr error
 	for _, target := range o.session.targets() {
 		if err := target.SessionUpdate(ctx, n); err != nil && firstErr == nil {

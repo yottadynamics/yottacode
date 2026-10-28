@@ -42,6 +42,9 @@ type acpSession struct {
 	conn       outbound
 	controller outbound
 	observers  []outbound
+	eventMu    syncutil.Mutex
+	seq        uint64
+	events     []sessionEvent
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session

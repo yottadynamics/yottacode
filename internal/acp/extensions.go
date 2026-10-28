@@ -26,15 +26,18 @@ type sessionAttachResponse struct {
 	SessionID string `json:"sessionId"`
 	Role      string `json:"role"`
 	Owner     bool   `json:"owner"`
+	LatestSeq uint64 `json:"latestSeq"`
 }
 
 type sessionReplayRequest struct {
 	SessionID string `json:"sessionId"`
+	AfterSeq  uint64 `json:"afterSeq,omitempty"`
 }
 
 type sessionReplayResponse struct {
 	SessionID string `json:"sessionId"`
 	Messages  int    `json:"messages"`
+	LatestSeq uint64 `json:"latestSeq"`
 }
 
 func (a *connectionAgent) HandleExtensionMethod(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -94,7 +97,7 @@ func (a *connectionAgent) attach(ctx context.Context, req sessionAttachRequest) 
 	if err != nil {
 		return sessionAttachResponse{}, err
 	}
-	return sessionAttachResponse{SessionID: req.SessionID, Role: role, Owner: role == "controller"}, nil
+	return sessionAttachResponse{SessionID: req.SessionID, Role: role, Owner: role == "controller", LatestSeq: sess.latestSeq()}, nil
 }
 
 func (a *connectionAgent) replay(ctx context.Context, req sessionReplayRequest) (sessionReplayResponse, error) {
@@ -105,11 +108,11 @@ func (a *connectionAgent) replay(ctx context.Context, req sessionReplayRequest) 
 	if !ok {
 		return sessionReplayResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
 	}
-	count, err := sess.replay(ctx, a.conn)
+	count, latest, err := sess.replay(ctx, a.conn, req.AfterSeq)
 	if err != nil {
 		return sessionReplayResponse{}, err
 	}
-	return sessionReplayResponse{SessionID: req.SessionID, Messages: count}, nil
+	return sessionReplayResponse{SessionID: req.SessionID, Messages: count, LatestSeq: latest}, nil
 }
 
 func sameOutbound(a, b outbound) bool {
