@@ -21,7 +21,7 @@ import (
 // approve or deny a tool call, always offering reject_once (clients
 // match on kind, never a hardcoded optionId — see
 // roadmap/acp-adapter.md §Permissions).
-func requestToolPermission(ctx context.Context, conn *coderacp.AgentSideConnection, sessionID string, tracker *toolCallTracker, e agent.ApprovalNeeded) agent.Decision {
+func requestToolPermission(ctx context.Context, conn outbound, sessionID string, tracker *toolCallTracker, e agent.ApprovalNeeded) agent.Decision {
 	id := tracker.idFor(e.ToolName, e.ArgsJSON)
 	resp, err := conn.RequestPermission(ctx, coderacp.RequestPermissionRequest{
 		SessionId: coderacp.SessionId(sessionID),
@@ -51,7 +51,7 @@ func requestToolPermission(ctx context.Context, conn *coderacp.AgentSideConnecti
 // session/request_permission RPC; the valid agent.Decision values differ
 // (PathAllowOnce/PathTrustSession/Deny, not AllowOnce/AllowAlways/Deny/
 // DenyAlways).
-func requestPathElevation(ctx context.Context, conn *coderacp.AgentSideConnection, sessionID string, e agent.PathTrustElevationNeeded) agent.Decision {
+func requestPathElevation(ctx context.Context, conn outbound, sessionID string, e agent.PathTrustElevationNeeded) agent.Decision {
 	resp, err := conn.RequestPermission(ctx, coderacp.RequestPermissionRequest{
 		SessionId: coderacp.SessionId(sessionID),
 		ToolCall: coderacp.ToolCallUpdate{

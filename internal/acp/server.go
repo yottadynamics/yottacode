@@ -31,8 +31,6 @@ import (
 // over a single stdio pair is coderacp.AgentSideConnection's job, not
 // this package's — see roadmap/acp-adapter.md's Concurrency section.
 type Server struct {
-	conn *coderacp.AgentSideConnection
-
 	// BaseOpts carries process-level defaults (model, provider, API key,
 	// reasoning effort, search flags, etc.) resolved from flags/env
 	// before the acp server starts. ACP's session/new has no equivalent
@@ -75,15 +73,6 @@ func NewServer(baseOpts cli.ChatOptions) *Server {
 		return authenticateVertex(ctx, s.BaseOpts)
 	}
 	return s
-}
-
-// SetConnection wires the connection the Server uses for outbound calls
-// (session/update, session/request_permission). Must be called before
-// any inbound request can be serviced — cmd/yottacode/acp.go does this
-// immediately after constructing the connection, mirroring
-// coder/acp-go-sdk's own example/agent pattern (SetAgentConnection).
-func (s *Server) SetConnection(conn *coderacp.AgentSideConnection) {
-	s.conn = conn
 }
 
 // Initialize negotiates protocol version and capabilities. Exactly once,
@@ -134,6 +123,10 @@ func (s *Server) ResumeSession(_ context.Context, _ coderacp.ResumeSessionReques
 
 // NewSession creates a session via agentruntime.Builder and registers it.
 func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionRequest) (coderacp.NewSessionResponse, error) {
+	return s.newSession(ctx, params, nil)
+}
+
+func (s *Server) newSession(ctx context.Context, params coderacp.NewSessionRequest, conn outbound) (coderacp.NewSessionResponse, error) {
 	if err := validateMCPServers(params.McpServers); err != nil {
 		return coderacp.NewSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
 	}
@@ -150,11 +143,11 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 		// from the same agent stay distinguishable and resumable by name.
 		rt.Session.Name = sessionTitleName(strings.TrimSpace(title), rt.Session.Created)
 	}
-	sess := newACPSession(s, rt)
+	sess := newACPSession(s, rt, conn)
 	s.mu.Lock()
 	s.sessions[rt.Session.ID] = sess
 	s.mu.Unlock()
-	if err := s.sendAvailableCommands(ctx, rt.Session.ID); err != nil {
+	if err := sendAvailableCommands(ctx, conn, rt.Session.ID); err != nil {
 		sess.requestCancel()
 		sess.waitForTurn(ctx, closeSessionDrainTimeout)
 		sess.rt.Close(context.Background())
@@ -163,9 +156,9 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 		s.mu.Unlock()
 		return coderacp.NewSessionResponse{}, coderacp.NewInternalError(map[string]any{"error": "send available commands: " + err.Error()})
 	}
-	if s.conn != nil {
+	if conn != nil {
 		for _, warning := range rt.Warnings {
-			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText("[warning] "+truncateOneLine(warning, 240)+"\n")); err != nil {
+			if err := replayUpdate(ctx, conn, rt.Session.ID, coderacp.UpdateAgentMessageText("[warning] "+truncateOneLine(warning, 240)+"\n")); err != nil {
 				rt.Close(context.Background())
 				s.mu.Lock()
 				delete(s.sessions, rt.Session.ID)
@@ -184,6 +177,10 @@ func (s *Server) NewSession(ctx context.Context, params coderacp.NewSessionReque
 // LoadSession resumes a persisted session by id — session/load becomes
 // session.Load via SessionSpec.Resume, same as the TUI's --continue.
 func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionRequest) (coderacp.LoadSessionResponse, error) {
+	return s.loadSession(ctx, params, nil)
+}
+
+func (s *Server) loadSession(ctx context.Context, params coderacp.LoadSessionRequest, conn outbound) (coderacp.LoadSessionResponse, error) {
 	if err := validateMCPServers(params.McpServers); err != nil {
 		return coderacp.LoadSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
 	}
@@ -202,7 +199,7 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 		}
 		_ = agentruntime.RebuildAdapterForModel(rt, saved)
 	}
-	sess := newACPSession(s, rt)
+	sess := newACPSession(s, rt, conn)
 
 	s.mu.Lock()
 	old, hadOld := s.sessions[rt.Session.ID]
@@ -233,7 +230,7 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 	s.sessions[rt.Session.ID] = sess
 	s.mu.Unlock()
 
-	if err := s.sendAvailableCommands(ctx, rt.Session.ID); err != nil {
+	if err := sendAvailableCommands(ctx, conn, rt.Session.ID); err != nil {
 		rt.Close(context.Background())
 		s.mu.Lock()
 		delete(s.sessions, rt.Session.ID)
@@ -246,7 +243,7 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 	for _, msg := range rt.Session.Messages {
 		switch msg.Role {
 		case adapter.RoleUser:
-			if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateUserMessageText(msg.Content)); err != nil {
+			if err := replayUpdate(ctx, conn, rt.Session.ID, coderacp.UpdateUserMessageText(msg.Content)); err != nil {
 				rt.Close(context.Background())
 				s.mu.Lock()
 				delete(s.sessions, rt.Session.ID)
@@ -255,7 +252,7 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 			}
 		case adapter.RoleAssistant:
 			if msg.Content != "" {
-				if err := s.replayUpdate(ctx, rt.Session.ID, coderacp.UpdateAgentMessageText(msg.Content)); err != nil {
+				if err := replayUpdate(ctx, conn, rt.Session.ID, coderacp.UpdateAgentMessageText(msg.Content)); err != nil {
 					rt.Close(context.Background())
 					s.mu.Lock()
 					delete(s.sessions, rt.Session.ID)
@@ -374,11 +371,11 @@ func httpHeadersToMap(headers []coderacp.HttpHeader) map[string]string {
 
 // replayUpdate sends one load transcript update and keeps outbound failures
 // visible to the caller.
-func (s *Server) replayUpdate(ctx context.Context, id string, update coderacp.SessionUpdate) error {
-	if s.conn == nil {
+func replayUpdate(ctx context.Context, conn outbound, id string, update coderacp.SessionUpdate) error {
+	if conn == nil {
 		return nil
 	}
-	return s.conn.SessionUpdate(ctx, coderacp.SessionNotification{SessionId: coderacp.SessionId(id), Update: update})
+	return conn.SessionUpdate(ctx, coderacp.SessionNotification{SessionId: coderacp.SessionId(id), Update: update})
 }
 
 // session looks up a registered session by id under the read lock.

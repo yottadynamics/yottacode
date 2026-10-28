@@ -36,9 +36,10 @@ const closeSessionDrainTimeout = 5 * time.Second
 // (map[string]*agentSession{cancel context.CancelFunc}) — see
 // roadmap/acp-adapter.md's Concurrency section.
 type acpSession struct {
-	id  string
-	srv *Server
-	rt  *agentruntime.Runtime
+	id   string
+	srv  *Server
+	rt   *agentruntime.Runtime
+	conn outbound
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session
@@ -88,13 +89,13 @@ func (s *acpSession) waitForTurn(ctx context.Context, timeout time.Duration) boo
 	}
 }
 
-func newACPSession(srv *Server, rt *agentruntime.Runtime) *acpSession {
+func newACPSession(srv *Server, rt *agentruntime.Runtime, conn outbound) *acpSession {
 	// Checkpoint setup is soft, matching the TUI: an unavailable store must
 	// not make an ACP session unusable.
 	if cp, err := checkpoint.New(""); err == nil {
 		rt.Cfg.Checkpoints = cp
 	}
-	sess := &acpSession{srv: srv, rt: rt, id: rt.Session.ID}
+	sess := &acpSession{srv: srv, rt: rt, id: rt.Session.ID, conn: conn}
 	// Agent.Turn uses this lock for every history mutation, keeping ACP's
 	// per-turn persistence and prompt recomposition from racing the loop.
 	rt.Cfg.HistoryLock = &sess.historyMu
@@ -183,10 +184,10 @@ func (s *Server) Prompt(ctx context.Context, params coderacp.PromptRequest) (cod
 	if !ok {
 		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
 	}
-	return sess.prompt(ctx, s.conn, params)
+	return sess.prompt(ctx, sess.conn, params)
 }
 
-func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnection, params coderacp.PromptRequest) (coderacp.PromptResponse, error) {
+func (s *acpSession) prompt(ctx context.Context, conn outbound, params coderacp.PromptRequest) (coderacp.PromptResponse, error) {
 	if !s.claimTurn() {
 		return coderacp.PromptResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "a turn is already in progress for this session"})
 	}
@@ -370,10 +371,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 			if tr, ok := ev.(agent.ToolResult); ok && (tr.ToolName == "enter_plan_mode" || tr.ToolName == "exit_plan_mode") {
 				if mode := currentModeID(s.rt); mode != lastMode {
 					lastMode = mode
-					_ = conn.SessionUpdate(ctx, coderacp.SessionNotification{
-						SessionId: coderacp.SessionId(s.id),
-						Update:    coderacp.SessionUpdate{CurrentModeUpdate: &coderacp.SessionCurrentModeUpdate{CurrentModeId: mode}},
-					})
+					if conn != nil {
+						_ = conn.SessionUpdate(ctx, coderacp.SessionNotification{
+							SessionId: coderacp.SessionId(s.id),
+							Update:    coderacp.SessionUpdate{CurrentModeUpdate: &coderacp.SessionCurrentModeUpdate{CurrentModeId: mode}},
+						})
+					}
 				}
 			}
 		}

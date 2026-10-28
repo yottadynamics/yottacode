@@ -94,7 +94,7 @@ func (t *toolCallTracker) result(toolName string) (coderacp.ToolCallId, bool) {
 // PathTrustElevationNeeded never reach here — they need a
 // decisions-channel round trip (see acpSession.requestPermission /
 // requestPathElevation in permissions.go), not a fire-and-forget update.
-func emitUpdate(ctx context.Context, conn *coderacp.AgentSideConnection, sessionID string, tracker *toolCallTracker, ev agent.Event) error {
+func emitUpdate(ctx context.Context, conn outbound, sessionID string, tracker *toolCallTracker, ev agent.Event) error {
 	sid := coderacp.SessionId(sessionID)
 	send := func(u coderacp.SessionUpdate) error {
 		return conn.SessionUpdate(ctx, coderacp.SessionNotification{SessionId: sid, Update: u})

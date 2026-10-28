@@ -33,11 +33,11 @@ func availableCommands() []coderacp.AvailableCommand {
 // goes back — mirrors how CurrentModeUpdate is pushed via
 // session/update rather than folded into the session/new response
 // itself (see modes.go).
-func (s *Server) sendAvailableCommands(ctx context.Context, sessionID string) error {
-	if s.conn == nil {
+func sendAvailableCommands(ctx context.Context, conn outbound, sessionID string) error {
+	if conn == nil {
 		return nil
 	}
-	return s.conn.SessionUpdate(ctx, coderacp.SessionNotification{
+	return conn.SessionUpdate(ctx, coderacp.SessionNotification{
 		SessionId: coderacp.SessionId(sessionID),
 		Update: coderacp.SessionUpdate{
 			AvailableCommandsUpdate: &coderacp.SessionAvailableCommandsUpdate{

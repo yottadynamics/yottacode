@@ -157,9 +157,10 @@ func newTestHarness(t *testing.T) *testHarness {
 		serverWriter.Close()
 	})
 
-	agentConn := coderacp.NewAgentSideConnection(srv, serverWriter, serverReader)
+	ref := NewConnectionRef()
+	agentConn := coderacp.NewAgentSideConnection(srv.Agent(ref), serverWriter, serverReader)
 	agentConn.SetLogger(discardLogger)
-	srv.SetConnection(agentConn)
+	ref.Set(agentConn)
 	clientConn := coderacp.NewClientSideConnection(client, clientWriter, clientReader)
 	clientConn.SetLogger(discardLogger)
 

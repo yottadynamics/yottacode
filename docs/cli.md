@@ -33,6 +33,18 @@ These work for the TUI and `run` mode.
 
 Precedence is flags, then environment variables, then config file where supported, then a clean error for missing required values.
 
+## ACP server
+
+The ACP command supports the existing stdio editor transport and an
+experimental remote WSS transport. See [ACP WSS](acp-wss.md) for token
+creation and connection requirements.
+
+```bash
+yottacode acp --stdio
+yottacode acp --token-create --token-name laptop
+yottacode acp --listen 127.0.0.1:8443 --tls-cert server.crt --tls-key server.key --token <token>
+```
+
 ## Interactive TUI
 
 ```bash
