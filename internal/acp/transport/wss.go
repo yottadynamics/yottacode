@@ -44,7 +44,7 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stream := NewWebSocketStream(upgraded)
 	ref := acp.NewConnectionRef()
 	_ = record
-	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(ref, scopes), stream, stream)
+	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(ref, scopes, record.AllowsProject), stream, stream)
 	ref.Set(agentConn)
 	<-agentConn.Done()
 	_ = upgraded.Close()

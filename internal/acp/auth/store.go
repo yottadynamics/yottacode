@@ -152,6 +152,37 @@ func (s *Store) List() ([]TokenRecord, error) {
 }
 
 // Revoke marks a token unusable without deleting its audit metadata.
+// AllowsProject reports whether cwd is within one of the token's allowed roots.
+// An empty root list means the token is not project-pinned.
+func (r TokenRecord) AllowsProject(cwd string) bool {
+	if len(r.ProjectRoots) == 0 {
+		return true
+	}
+	cwd, err := filepath.Abs(cwd)
+	if err != nil {
+		return false
+	}
+	cwd, err = filepath.EvalSymlinks(cwd)
+	if err != nil {
+		return false
+	}
+	for _, root := range r.ProjectRoots {
+		root, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		root, err = filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, cwd)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) Revoke(id string, now time.Time) error {
 	return s.update(func(records *[]TokenRecord) error {
 		for i := range *records {

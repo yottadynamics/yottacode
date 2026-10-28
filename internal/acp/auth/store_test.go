@@ -54,6 +54,24 @@ func TestStoreRejectsExpiredAndRevokedTokens(t *testing.T) {
 	}
 }
 
+func TestTokenRecordAllowsProject(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := TokenRecord{ProjectRoots: []string{root}}
+	if !record.AllowsProject(root) || !record.AllowsProject(nested) {
+		t.Fatal("expected project root and descendants to be allowed")
+	}
+	if record.AllowsProject(t.TempDir()) {
+		t.Fatal("unexpected project outside allowed root")
+	}
+	if (TokenRecord{}).AllowsProject(t.TempDir()) == false {
+		t.Fatal("unpinned token should allow all projects")
+	}
+}
+
 func TestStoreRotateRevokesOldToken(t *testing.T) {
 	store := NewStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
 	old, raw, err := store.Create("laptop", []Scope{ScopeRead}, nil, time.Now().Add(time.Hour))

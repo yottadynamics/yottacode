@@ -37,7 +37,7 @@ func newAcpAttachCmd() *cobra.Command {
 				return err
 			}
 			defer conn.Close()
-			client := &terminalACPClient{out: cmd.OutOrStdout()}
+			client := &terminalACPClient{in: cmd.InOrStdin(), out: cmd.OutOrStdout()}
 			acpConn := coderacp.NewClientSideConnection(client, conn, conn)
 			ctx := cmd.Context()
 			if _, err := acpConn.Initialize(ctx, coderacp.InitializeRequest{ProtocolVersion: coderacp.ProtocolVersionNumber}); err != nil {
@@ -48,14 +48,18 @@ func newAcpAttachCmd() *cobra.Command {
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "attached; enter prompts, Ctrl-D to exit")
 			for {
-				var prompt string
-				if _, err := fmt.Fscanln(cmd.InOrStdin(), &prompt); err != nil {
+				line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+				if err != nil && !errors.Is(err, io.EOF) {
+					return err
+				}
+				prompt := strings.TrimSpace(line)
+				if line == "" && errors.Is(err, io.EOF) {
+					return nil
+				}
+				if prompt == "" {
 					if errors.Is(err, io.EOF) {
 						return nil
 					}
-					return err
-				}
-				if strings.TrimSpace(prompt) == "" {
 					continue
 				}
 				if _, err := acpConn.Prompt(ctx, coderacp.PromptRequest{SessionId: coderacp.SessionId(args[0]), Prompt: []coderacp.ContentBlock{coderacp.TextBlock(prompt)}}); err != nil {
@@ -69,7 +73,10 @@ func newAcpAttachCmd() *cobra.Command {
 	return cmd
 }
 
-type terminalACPClient struct{ out io.Writer }
+type terminalACPClient struct {
+	in  io.Reader
+	out io.Writer
+}
 
 func (c *terminalACPClient) ReadTextFile(context.Context, coderacp.ReadTextFileRequest) (coderacp.ReadTextFileResponse, error) {
 	return coderacp.ReadTextFileResponse{}, coderacp.NewMethodNotFound("fs/read_text_file")
@@ -78,7 +85,20 @@ func (c *terminalACPClient) WriteTextFile(context.Context, coderacp.WriteTextFil
 	return coderacp.WriteTextFileResponse{}, coderacp.NewMethodNotFound("fs/write_text_file")
 }
 func (c *terminalACPClient) RequestPermission(_ context.Context, p coderacp.RequestPermissionRequest) (coderacp.RequestPermissionResponse, error) {
-	fmt.Fprintf(c.out, "permission required: %s\n", *p.ToolCall.Title)
+	title := "permission required"
+	if p.ToolCall.Title != nil {
+		title = *p.ToolCall.Title
+	}
+	fmt.Fprintf(c.out, "%s [y/N]: ", title)
+	var answer string
+	if _, err := fmt.Fscanln(c.in, &answer); err != nil {
+		return coderacp.RequestPermissionResponse{Outcome: coderacp.NewRequestPermissionOutcomeCancelled()}, nil
+	}
+	for _, option := range p.Options {
+		if strings.EqualFold(answer, "y") && option.Kind == coderacp.PermissionOptionKindAllowOnce {
+			return coderacp.RequestPermissionResponse{Outcome: coderacp.NewRequestPermissionOutcomeSelected(option.OptionId)}, nil
+		}
+	}
 	return coderacp.RequestPermissionResponse{Outcome: coderacp.NewRequestPermissionOutcomeCancelled()}, nil
 }
 func (c *terminalACPClient) SessionUpdate(_ context.Context, p coderacp.SessionNotification) error {

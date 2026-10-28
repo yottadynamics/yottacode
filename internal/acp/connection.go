@@ -61,8 +61,9 @@ func (r *ConnectionRef) RequestPermission(ctx context.Context, req coderacp.Requ
 // ordinary methods remain shared Server behavior.
 type connectionAgent struct {
 	*Server
-	conn   outbound
-	scopes map[string]bool
+	conn      outbound
+	scopes    map[string]bool
+	rootCheck func(string) bool
 }
 
 func (a *connectionAgent) require(scope string) error {
@@ -72,6 +73,13 @@ func (a *connectionAgent) require(scope string) error {
 	return coderacp.NewAuthRequired(map[string]any{"scope": scope})
 }
 
+func (a *connectionAgent) requireCwd(cwd string) error {
+	if a.rootCheck != nil && !a.rootCheck(cwd) {
+		return coderacp.NewAuthRequired(map[string]any{"error": "token is not authorized for this project"})
+	}
+	return nil
+}
+
 var _ coderacp.Agent = (*connectionAgent)(nil)
 var _ coderacp.AgentLoader = (*connectionAgent)(nil)
 
@@ -79,11 +87,17 @@ func (a *connectionAgent) NewSession(ctx context.Context, params coderacp.NewSes
 	if err := a.require("prompt"); err != nil {
 		return coderacp.NewSessionResponse{}, err
 	}
+	if err := a.requireCwd(params.Cwd); err != nil {
+		return coderacp.NewSessionResponse{}, err
+	}
 	return a.Server.newSession(ctx, params, a.conn)
 }
 
 func (a *connectionAgent) LoadSession(ctx context.Context, params coderacp.LoadSessionRequest) (coderacp.LoadSessionResponse, error) {
 	if err := a.require("read"); err != nil {
+		return coderacp.LoadSessionResponse{}, err
+	}
+	if err := a.requireCwd(params.Cwd); err != nil {
 		return coderacp.LoadSessionResponse{}, err
 	}
 	return a.Server.loadSession(ctx, params, a.conn)
@@ -132,10 +146,10 @@ func (s *Server) Agent(conn outbound) coderacp.Agent {
 
 // AgentWithScopes returns an ACP handler for an authenticated remote client.
 // The scope set is enforced before session-mutating operations are dispatched.
-func (s *Server) AgentWithScopes(conn outbound, scopes []string) coderacp.Agent {
+func (s *Server) AgentWithScopes(conn outbound, scopes []string, rootCheck func(string) bool) coderacp.Agent {
 	allowed := make(map[string]bool, len(scopes))
 	for _, scope := range scopes {
 		allowed[scope] = true
 	}
-	return &connectionAgent{Server: s, conn: conn, scopes: allowed}
+	return &connectionAgent{Server: s, conn: conn, scopes: allowed, rootCheck: rootCheck}
 }

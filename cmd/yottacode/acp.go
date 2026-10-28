@@ -43,6 +43,7 @@ func newAcpCmd(opts *cli.ChatOptions) *cobra.Command {
 	var tlsKey string
 	var tokenName string
 	var tokenScopes []string
+	var tokenProjects []string
 	var tokenExpires time.Duration
 	var tokenCreate bool
 	var stdio bool
@@ -81,7 +82,7 @@ session/new request, not from CLI flags.`,
 				for _, scope := range tokenScopes {
 					scopes = append(scopes, acpauth.Scope(scope))
 				}
-				record, raw, err := store.Create(tokenName, scopes, nil, time.Now().Add(tokenExpires))
+				record, raw, err := store.Create(tokenName, scopes, tokenProjects, time.Now().Add(tokenExpires))
 				if err != nil {
 					return err
 				}
@@ -152,6 +153,7 @@ session/new request, not from CLI flags.`,
 	cmd.Flags().StringVar(&tokenName, "token-name", "", "Create a named ACP bearer token")
 	cmd.Flags().StringSliceVar(&tokenScopes, "token-scope", []string{"read", "prompt", "approve"}, "Scopes for a created token")
 	cmd.Flags().DurationVar(&tokenExpires, "token-expires", 30*24*time.Hour, "Lifetime for a created token")
+	cmd.Flags().StringSliceVar(&tokenProjects, "token-project", nil, "Project root allowed for a created token; repeatable")
 	cmd.Flags().BoolVar(&tokenCreate, "token-create", false, "Create and persist a bearer token, then exit")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Use stdio ACP transport instead of WSS")
 	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd())
