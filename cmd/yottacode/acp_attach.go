@@ -111,7 +111,7 @@ func dialWSS(ctx context.Context, rawURL, token string) (io.ReadWriteCloser, err
 		Timeout:   10 * time.Second,
 		Protocols: []string{transport.ACPSubprotocol},
 		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12},
-		Header:    ws.HandshakeHeaderString(fmt.Sprintf("Authorization: Bearer %s", token)),
+		Header:    ws.HandshakeHeaderString(fmt.Sprintf("Authorization: Bearer %s\r\n", token)),
 	}
 	conn, buffered, _, err := dialer.Dial(ctx, rawURL)
 	if err != nil {

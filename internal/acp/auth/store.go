@@ -164,7 +164,34 @@ func (s *Store) Revoke(id string, now time.Time) error {
 	})
 }
 
+// Rotate revokes an existing token and creates a replacement with the same
+// name, scopes, project roots, and expiration. The replacement secret is
+// returned once; the old token becomes invalid before this call returns.
+func (s *Store) Rotate(id string, now time.Time) (TokenRecord, string, error) {
+	var previous TokenRecord
+	if err := s.withRecords(func(records *[]TokenRecord) error {
+		for i := range *records {
+			if (*records)[i].ID == id {
+				previous = (*records)[i]
+				if !previous.RevokedAt.IsZero() {
+					return ErrRevokedToken
+				}
+				(*records)[i].RevokedAt = now.UTC()
+				return nil
+			}
+		}
+		return fmt.Errorf("token %q not found", id)
+	}); err != nil {
+		return TokenRecord{}, "", err
+	}
+	return s.Create(previous.Name, previous.Scopes, previous.ProjectRoots, previous.ExpiresAt)
+}
+
 func (s *Store) update(fn func(*[]TokenRecord) error) error {
+	return s.withRecords(fn)
+}
+
+func (s *Store) withRecords(fn func(*[]TokenRecord) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records, err := s.loadLocked()

@@ -54,6 +54,27 @@ func TestStoreRejectsExpiredAndRevokedTokens(t *testing.T) {
 	}
 }
 
+func TestStoreRotateRevokesOldToken(t *testing.T) {
+	store := NewStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
+	old, raw, err := store.Create("laptop", []Scope{ScopeRead}, nil, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	replacement, next, err := store.Rotate(old.ID, time.Now())
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if replacement.ID == old.ID || next == raw {
+		t.Fatal("rotation did not create a new secret")
+	}
+	if _, err := store.Authenticate(raw, time.Now()); err != ErrRevokedToken {
+		t.Fatalf("old token error = %v, want %v", err, ErrRevokedToken)
+	}
+	if got, err := store.Authenticate(next, time.Now()); err != nil || got.Name != "laptop" {
+		t.Fatalf("new token = %+v, %v", got, err)
+	}
+}
+
 func TestStoreRejectsUnknownScope(t *testing.T) {
 	store := NewStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
 	if _, _, err := store.Create("bad", []Scope{"admin:all"}, nil, time.Time{}); err == nil {

@@ -154,6 +154,63 @@ session/new request, not from CLI flags.`,
 	cmd.Flags().DurationVar(&tokenExpires, "token-expires", 30*24*time.Hour, "Lifetime for a created token")
 	cmd.Flags().BoolVar(&tokenCreate, "token-create", false, "Create and persist a bearer token, then exit")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Use stdio ACP transport instead of WSS")
-	cmd.AddCommand(newAcpAttachCmd())
+	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd())
 	return cmd
+}
+
+func newAcpTokenCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "token", Short: "Manage ACP bearer tokens", Args: cobra.NoArgs}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use: "list", Short: "List ACP tokens", Args: cobra.NoArgs,
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				store, err := acpauth.NewStore()
+				if err != nil {
+					return err
+				}
+				records, err := store.List()
+				if err != nil {
+					return err
+				}
+				for _, record := range records {
+					fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%v\t%v\n", record.ID, record.Name, strings.Join(scopeStrings(record.Scopes), ","), record.ExpiresAt, record.RevokedAt)
+				}
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use: "revoke <token-id>", Short: "Revoke an ACP token", Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, err := acpauth.NewStore()
+				if err != nil {
+					return err
+				}
+				return store.Revoke(args[0], time.Now())
+			},
+		},
+		&cobra.Command{
+			Use: "rotate <token-id>", Short: "Rotate an ACP token", Args: cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				store, err := acpauth.NewStore()
+				if err != nil {
+					return err
+				}
+				record, raw, err := store.Rotate(args[0], time.Now())
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "token_id=%s\nname=%s\nscopes=%s\ntoken=%s\n", record.ID, record.Name, strings.Join(scopeStrings(record.Scopes), ","), raw)
+				return nil
+			},
+		},
+	)
+	return cmd
+}
+
+func scopeStrings(scopes []acpauth.Scope) []string {
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		out = append(out, string(scope))
+	}
+	return out
 }
