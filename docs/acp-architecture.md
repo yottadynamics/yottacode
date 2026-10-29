@@ -6,17 +6,10 @@ CLI reference because it defines protocol boundaries and invariants.
 
 ## Scope
 
-`yottacode acp` supports two transports and a daemon management surface:
-
-```bash
-yottacode acp daemon status
-yottacode acp daemon stop
-yottacode acp daemon clean-stale
-```
-
-The daemon state file records the PID and WSS address. `status` reports whether
-that PID is alive; `clean-stale` removes a state file only when its PID is no
-longer running.
+`yottacode acp` is the ACP server entry point. Run the WSS server in the
+foreground and supervise it with the host's service manager when needed (for
+example, a systemd unit). The command also retains explicit stdio mode for
+local editor integrations.
 
 `yottacode acp` supports two transports:
 
@@ -144,8 +137,7 @@ ACP `session/new`, `session/load`, `session/prompt`, or `session/cancel`.
 The implementation remains experimental. Implemented hardening now includes
 bounded persisted event cursors, replay-gap signaling, controller generations,
 parked permission requests, WSS server timeouts, attach role/takeover flags,
-and a PID/address daemon state file with SIGTERM stop support.
-Full connection registries, rate limiting, restart supervision, and polished
-background start/process supervision remain operational follow-up work. The
-current lifecycle commands manage an existing foreground daemon through its
-state file.
+and WSS server timeouts. Process supervision is intentionally out of scope;
+production deployments can use systemd or another host service manager.
+Full connection registries, rate limiting, and restart supervision remain
+operational follow-up work.

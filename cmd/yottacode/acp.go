@@ -12,7 +12,6 @@ import (
 	coderacp "github.com/coder/acp-go-sdk"
 	"github.com/spf13/cobra"
 
-	"github.com/yottadynamics/yottacode/internal/acp/daemon"
 	"github.com/yottadynamics/yottacode/internal/acp/transport"
 
 	"github.com/yottadynamics/yottacode/internal/acp"
@@ -48,7 +47,6 @@ func newAcpCmd(opts *cli.ChatOptions) *cobra.Command {
 	var tokenExpires time.Duration
 	var tokenCreate bool
 	var stdio bool
-	var daemonState string
 	cmd := &cobra.Command{
 		Use:   "acp",
 		Short: "Run yottacode as an Agent Client Protocol server (for editor embedding)",
@@ -75,12 +73,6 @@ Each session's working directory and MCP servers come from the client's
 session/new request, not from CLI flags.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if daemonState != "" {
-				if err := daemon.WriteState(daemonState, listenAddr); err != nil {
-					return err
-				}
-				defer os.Remove(daemonState)
-			}
 			if tokenCreate {
 				store, err := acpauth.NewStore()
 				if err != nil {
@@ -172,8 +164,7 @@ session/new request, not from CLI flags.`,
 	cmd.Flags().StringSliceVar(&tokenProjects, "token-project", nil, "Project root allowed for a created token; repeatable")
 	cmd.Flags().BoolVar(&tokenCreate, "token-create", false, "Create and persist a bearer token, then exit")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Use stdio ACP transport instead of WSS")
-	cmd.Flags().StringVar(&daemonState, "daemon-state", "", "Write daemon PID/address state to this file")
-	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd(), newAcpDaemonCmd(opts))
+	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd())
 	return cmd
 }
 

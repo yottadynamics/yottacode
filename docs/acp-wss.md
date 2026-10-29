@@ -10,8 +10,10 @@ yottacode acp --listen 127.0.0.1:8443 \
   --tls-cert server.crt --tls-key server.key --token "$TOKEN"
 ```
 
-The token command prints the opaque secret once. The daemon stores only a
+The token command prints the opaque secret once. The server stores only a
 salted hash under `~/.yottacode/acp-tokens.json` with mode `0600`.
+Run the WSS server in the foreground; use systemd or another service manager
+if a background service is required.
 
 See [ACP architecture](acp-architecture.md) for the transport, session
 ownership, extension-method, and security design. See [ACP replay](acp-replay.md)
