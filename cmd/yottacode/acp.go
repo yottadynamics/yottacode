@@ -116,7 +116,15 @@ session/new request, not from CLI flags.`,
 					return err
 				}
 				handler := &transport.WSSHandler{Server: srv, BearerToken: bearerToken, TokenStore: store}
-				server := &http.Server{Addr: listenAddr, Handler: http.HandlerFunc(handler.ServeHTTP)}
+				server := &http.Server{
+					Addr:              listenAddr,
+					Handler:           http.HandlerFunc(handler.ServeHTTP),
+					ReadHeaderTimeout: 10 * time.Second,
+					ReadTimeout:       5 * time.Minute,
+					WriteTimeout:      5 * time.Minute,
+					IdleTimeout:       2 * time.Minute,
+					MaxHeaderBytes:    16 << 10,
+				}
 				go func() {
 					<-cmd.Context().Done()
 					_ = server.Close()

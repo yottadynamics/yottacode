@@ -22,6 +22,7 @@ func (s *acpSession) attach(conn outbound, role string, takeover bool) (string, 
 			return "", errControllerOwned
 		}
 		s.controller = conn
+		s.controllerGeneration++
 		s.conn = s.routing()
 		return role, nil
 	}

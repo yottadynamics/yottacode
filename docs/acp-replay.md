@@ -35,6 +35,12 @@ sequenceDiagram
 
 The journal is deliberately an in-memory delivery/reconnect layer, not the
 source of truth for agent history. Durable session persistence remains the
-source of truth for transcript recovery. Future hardening will add an explicit
-`replay_gap` response when the requested cursor predates the bounded journal,
-followed by a transcript snapshot and a live-update handoff.
+source of truth for transcript recovery. If the cursor predates the bounded
+journal, the extension returns an error identifying that a replay gap requires
+a snapshot. The client can then issue standard `session/load` to recover the
+persisted transcript before resuming live updates.
+
+Controller takeover increments an internal ownership generation. Pending
+permission requests are parked in the session and routed to the current
+controller; a disconnected controller cannot silently approve a request after
+takeover.

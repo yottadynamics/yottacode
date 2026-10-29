@@ -23,7 +23,7 @@ import (
 // roadmap/acp-adapter.md §Permissions).
 func requestToolPermission(ctx context.Context, conn outbound, sessionID string, tracker *toolCallTracker, e agent.ApprovalNeeded) agent.Decision {
 	id := tracker.idFor(e.ToolName, e.ArgsJSON)
-	resp, err := conn.RequestPermission(ctx, coderacp.RequestPermissionRequest{
+	req := coderacp.RequestPermissionRequest{
 		SessionId: coderacp.SessionId(sessionID),
 		ToolCall: coderacp.ToolCallUpdate{
 			ToolCallId: id,
@@ -36,7 +36,8 @@ func requestToolPermission(ctx context.Context, conn outbound, sessionID string,
 			{Kind: coderacp.PermissionOptionKindRejectOnce, Name: "Reject", OptionId: "reject_once"},
 			{Kind: coderacp.PermissionOptionKindRejectAlways, Name: "Reject always", OptionId: "reject_always"},
 		},
-	})
+	}
+	resp, err := conn.RequestPermission(ctx, req)
 	if err != nil {
 		// Treat a transport-level failure as a deny — never silently
 		// proceed with a tool call nobody actually approved.

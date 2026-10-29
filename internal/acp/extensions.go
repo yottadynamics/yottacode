@@ -35,9 +35,11 @@ type sessionReplayRequest struct {
 }
 
 type sessionReplayResponse struct {
-	SessionID string `json:"sessionId"`
-	Messages  int    `json:"messages"`
-	LatestSeq uint64 `json:"latestSeq"`
+	SessionID        string `json:"sessionId"`
+	Messages         int    `json:"messages"`
+	LatestSeq        uint64 `json:"latestSeq"`
+	ReplayGap        bool   `json:"replayGap,omitempty"`
+	SnapshotRequired bool   `json:"snapshotRequired,omitempty"`
 }
 
 func (a *connectionAgent) HandleExtensionMethod(ctx context.Context, method string, params json.RawMessage) (any, error) {

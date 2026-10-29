@@ -22,11 +22,7 @@ func (o sessionOutbound) SessionUpdate(ctx context.Context, n coderacp.SessionNo
 }
 
 func (o sessionOutbound) RequestPermission(ctx context.Context, req coderacp.RequestPermissionRequest) (coderacp.RequestPermissionResponse, error) {
-	target := o.session.controllerTarget()
-	if target == nil {
-		return coderacp.RequestPermissionResponse{}, context.Canceled
-	}
-	return target.RequestPermission(ctx, req)
+	return o.session.requestPermission(ctx, req)
 }
 
 func (s *acpSession) routing() outbound { return sessionOutbound{session: s} }

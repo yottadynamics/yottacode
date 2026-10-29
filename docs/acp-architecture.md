@@ -25,10 +25,14 @@ flowchart LR
     Server[internal/acp.Server\nshared session registry]
     Session[acpSession\nruntime + lifecycle + ownership]
     Runtime[agentruntime.Runtime\nagent turn + tools + persistence]
+    Journal[(bounded event journal\nseq + replay gap)]
+    Approvals[approval hub\ncontroller generation]
     Store[(Session persistence)]
     Tokens[(Token store\nhashed secrets + scopes)]
 
     Client --> TLS --> Adapter --> SDK --> Server --> Session --> Runtime
+    Session --> Journal
+    Session --> Approvals
     Runtime --> Store
     TLS --> Tokens
 ```
@@ -125,7 +129,9 @@ ACP `session/new`, `session/load`, `session/prompt`, or `session/cancel`.
 
 ## Current limitations
 
-The implementation remains experimental. Replay currently re-emits the
-persisted conversational transcript; durable event sequence cursors,
-reconnect-with-`afterSeq`, pending approval parking, connection limits, and
-full daemon lifecycle management are subsequent hardening work.
+The implementation remains experimental. Implemented hardening now includes
+bounded in-memory event cursors, replay-gap signaling, controller generations,
+parked permission requests, WSS server timeouts, and attach role/takeover flags.
+Durable event storage across daemon restarts, connection registries, rate
+limiting, daemon start/stop/status commands, and full reconnect backoff remain
+operational follow-up work.

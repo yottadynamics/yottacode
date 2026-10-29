@@ -36,15 +36,18 @@ const closeSessionDrainTimeout = 5 * time.Second
 // (map[string]*agentSession{cancel context.CancelFunc}) — see
 // roadmap/acp-adapter.md's Concurrency section.
 type acpSession struct {
-	id         string
-	srv        *Server
-	rt         *agentruntime.Runtime
-	conn       outbound
-	controller outbound
-	observers  []outbound
-	eventMu    syncutil.Mutex
-	seq        uint64
-	events     []sessionEvent
+	id                   string
+	srv                  *Server
+	rt                   *agentruntime.Runtime
+	conn                 outbound
+	controller           outbound
+	observers            []outbound
+	controllerGeneration uint64
+	approvalSeq          uint64
+	pendingApprovals     map[string]*pendingApproval
+	eventMu              syncutil.Mutex
+	seq                  uint64
+	events               []sessionEvent
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session
@@ -331,7 +334,7 @@ func (s *acpSession) prompt(ctx context.Context, conn outbound, params coderacp.
 	for ev := range events {
 		switch e := ev.(type) {
 		case agent.ApprovalNeeded:
-			d := requestToolPermission(turnCtx, conn, s.id, tracker, e)
+			d := requestToolPermission(turnCtx, s.routing(), s.id, tracker, e)
 			select {
 			case decisions <- d:
 			default: // turn already ended; drop rather than block
