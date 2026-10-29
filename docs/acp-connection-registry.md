@@ -27,8 +27,8 @@ scanning every session:
 - per-connection audit events and metrics;
 - mapping a WSS disconnect to all attached sessions.
 
-The implementation now has a registry package with connection limits and
-bounded per-connection outbound queues. The remaining integration work is to
-register every WSS connection with the server and route session fan-out
-through registry connections. Until that wiring is complete, session ownership
-still provides the authoritative attach/detach behavior.
+The implementation now has a lightweight registry integrated at the WSS
+boundary. Authenticated connections are admitted through a bounded registry,
+receive queue-backed outbound delivery, and are removed on disconnect. Session
+ownership remains authoritative for controller/observer roles; the registry is
+only the deployment-level connection and backpressure control plane.

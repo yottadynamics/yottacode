@@ -18,6 +18,7 @@ import (
 
 	coderacp "github.com/coder/acp-go-sdk"
 
+	registry "github.com/yottadynamics/yottacode/internal/acp/registry"
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
 	"github.com/yottadynamics/yottacode/internal/cli"
@@ -51,9 +52,10 @@ type Server struct {
 	// needs this session's configured provider kind and base URL.
 	authenticateVertex func(ctx context.Context) error
 
-	mu       syncutil.RWMutex
-	loadMu   syncutil.Mutex
-	sessions map[string]*acpSession
+	mu          syncutil.RWMutex
+	loadMu      syncutil.Mutex
+	sessions    map[string]*acpSession
+	connections *registry.Registry
 }
 
 var (
@@ -68,6 +70,7 @@ func NewServer(baseOpts cli.ChatOptions) *Server {
 	s := &Server{
 		BaseOpts:           baseOpts,
 		sessions:           make(map[string]*acpSession),
+		connections:        registry.New(registry.DefaultMaxConnections),
 		authenticateOpenAI: authenticateOpenAIChatGPT,
 	}
 	s.authenticateVertex = func(ctx context.Context) error {
@@ -390,6 +393,19 @@ func replayUpdate(ctx context.Context, conn outbound, id string, update coderacp
 }
 
 // session looks up a registered session by id under the read lock.
+func (s *Server) RegisterConnection(id, tokenID string, scopes []string, target outbound) (outbound, error) {
+	if s.connections == nil {
+		s.connections = registry.New(registry.DefaultMaxConnections)
+	}
+	return s.connections.Add(id, tokenID, scopes, target)
+}
+
+func (s *Server) RemoveConnection(id string) {
+	if s.connections != nil {
+		s.connections.Remove(id)
+	}
+}
+
 func (s *Server) Detach(conn outbound) {
 	s.mu.RLock()
 	sessions := make([]*acpSession, 0, len(s.sessions))

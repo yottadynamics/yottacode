@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -43,11 +44,18 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	upgraded := &upgradedStream{conn: conn, rw: rw}
 	stream := NewWebSocketStream(upgraded)
 	ref := acp.NewConnectionRef()
-	_ = record
-	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(ref, scopes, record.AllowsProject), stream, stream)
+	connectionID := fmt.Sprintf("%s-%d", record.ID, time.Now().UnixNano())
+	queued, err := h.Server.RegisterConnection(connectionID, record.ID, scopes, ref)
+	if err != nil {
+		_ = upgraded.Close()
+		http.Error(w, "connection limit reached", http.StatusServiceUnavailable)
+		return
+	}
+	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(queued, scopes, record.AllowsProject), stream, stream)
 	ref.Set(agentConn)
 	<-agentConn.Done()
 	if h.Server != nil {
+		h.Server.RemoveConnection(connectionID)
 		h.Server.Detach(ref)
 	}
 	_ = upgraded.Close()
