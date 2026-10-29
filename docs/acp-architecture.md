@@ -6,6 +6,18 @@ CLI reference because it defines protocol boundaries and invariants.
 
 ## Scope
 
+`yottacode acp` supports two transports and a daemon management surface:
+
+```bash
+yottacode acp daemon status
+yottacode acp daemon stop
+yottacode acp daemon clean-stale
+```
+
+The daemon state file records the PID and WSS address. `status` reports whether
+that PID is alive; `clean-stale` removes a state file only when its PID is no
+longer running.
+
 `yottacode acp` supports two transports:
 
 - stdio for local editor embedding;
@@ -134,4 +146,6 @@ bounded persisted event cursors, replay-gap signaling, controller generations,
 parked permission requests, WSS server timeouts, attach role/takeover flags,
 and a PID/address daemon state file with SIGTERM stop support.
 Full connection registries, rate limiting, restart supervision, and polished
-start/stop/status command UX remain operational follow-up work.
+background start/process supervision remain operational follow-up work. The
+current lifecycle commands manage an existing foreground daemon through its
+state file.

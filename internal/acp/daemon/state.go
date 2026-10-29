@@ -43,6 +43,10 @@ func Stop(path string) error {
 	if err != nil {
 		return err
 	}
+	if !Alive(state.PID) {
+		_ = os.Remove(path)
+		return fmt.Errorf("daemon is not running")
+	}
 	process, err := os.FindProcess(state.PID)
 	if err != nil {
 		return err
@@ -51,6 +55,28 @@ func Stop(path string) error {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
 	return nil
+}
+
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return process.Signal(syscall.Signal(0)) == nil
+}
+
+func RemoveStale(path string) error {
+	state, err := ReadState(path)
+	if err != nil {
+		return err
+	}
+	if Alive(state.PID) {
+		return fmt.Errorf("daemon already running with pid %d", state.PID)
+	}
+	return os.Remove(path)
 }
 
 func filepathDir(path string) string { return filepath.Dir(path) }

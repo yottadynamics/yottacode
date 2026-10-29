@@ -173,7 +173,7 @@ session/new request, not from CLI flags.`,
 	cmd.Flags().BoolVar(&tokenCreate, "token-create", false, "Create and persist a bearer token, then exit")
 	cmd.Flags().BoolVar(&stdio, "stdio", false, "Use stdio ACP transport instead of WSS")
 	cmd.Flags().StringVar(&daemonState, "daemon-state", "", "Write daemon PID/address state to this file")
-	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd())
+	cmd.AddCommand(newAcpAttachCmd(), newAcpTokenCmd(), newAcpDaemonCmd(opts))
 	return cmd
 }
 
