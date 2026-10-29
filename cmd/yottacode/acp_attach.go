@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,62 +35,8 @@ func newAcpAttachCmd() *cobra.Command {
 			if strings.TrimSpace(token) == "" {
 				return errors.New("acp attach: --token is required")
 			}
-			conn, err := dialWSS(cmd.Context(), serverURL, token)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
 			client := &terminalACPClient{in: cmd.InOrStdin(), out: cmd.OutOrStdout()}
-			acpConn := coderacp.NewClientSideConnection(client, conn, conn)
-			ctx := cmd.Context()
-			if _, err := acpConn.Initialize(ctx, coderacp.InitializeRequest{ProtocolVersion: coderacp.ProtocolVersionNumber}); err != nil {
-				return fmt.Errorf("initialize ACP connection: %w", err)
-			}
-			if takeover {
-				role = "controller"
-			}
-			_ = role
-			_ = afterSeq
-			params, _ := json.Marshal(map[string]any{"sessionId": args[0], "role": role, "takeover": takeover})
-			if _, err := acpConn.CallExtension(ctx, "_yottacode/session/attach", params); err != nil {
-				return fmt.Errorf("attach session %s: %w", args[0], err)
-			}
-			if afterSeq == 0 && role != "observer" {
-				if _, err := acpConn.LoadSession(ctx, coderacp.LoadSessionRequest{SessionId: coderacp.SessionId(args[0]), Cwd: "."}); err != nil {
-					return fmt.Errorf("load session %s: %w", args[0], err)
-				}
-			} else if afterSeq == 0 {
-				params, _ := json.Marshal(map[string]any{"sessionId": args[0], "afterSeq": 0})
-				if _, err := acpConn.CallExtension(ctx, "_yottacode/session/replay", params); err != nil {
-					return fmt.Errorf("replay session %s: %w", args[0], err)
-				}
-			} else {
-				params, _ := json.Marshal(map[string]any{"sessionId": args[0], "afterSeq": afterSeq})
-				if _, err := acpConn.CallExtension(ctx, "_yottacode/session/replay", params); err != nil {
-					return fmt.Errorf("replay session %s: %w", args[0], err)
-				}
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), "attached; enter prompts, Ctrl-D to exit")
-			input := bufio.NewReader(cmd.InOrStdin())
-			for {
-				line, err := input.ReadString('\n')
-				if err != nil && !errors.Is(err, io.EOF) {
-					return err
-				}
-				prompt := strings.TrimSpace(line)
-				if line == "" && errors.Is(err, io.EOF) {
-					return nil
-				}
-				if prompt == "" {
-					if errors.Is(err, io.EOF) {
-						return nil
-					}
-					continue
-				}
-				if _, err := acpConn.Prompt(ctx, coderacp.PromptRequest{SessionId: coderacp.SessionId(args[0]), Prompt: []coderacp.ContentBlock{coderacp.TextBlock(prompt)}}); err != nil {
-					return err
-				}
-			}
+			return runAttach(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), attachOptions{serverURL: serverURL, token: token, role: role, takeover: takeover, sessionID: args[0], afterSeq: afterSeq, client: client})
 		},
 	}
 	cmd.Flags().StringVar(&serverURL, "server", "wss://127.0.0.1:8443/acp", "WSS ACP server URL")
