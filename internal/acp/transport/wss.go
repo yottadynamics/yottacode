@@ -47,6 +47,9 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	agentConn := coderacp.NewAgentSideConnection(h.Server.AgentWithScopes(ref, scopes, record.AllowsProject), stream, stream)
 	ref.Set(agentConn)
 	<-agentConn.Done()
+	if h.Server != nil {
+		h.Server.Detach(ref)
+	}
 	_ = upgraded.Close()
 }
 

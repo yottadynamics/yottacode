@@ -44,6 +44,7 @@ type acpSession struct {
 	rt                   *agentruntime.Runtime
 	conn                 outbound
 	controller           outbound
+	controllerScopes     map[string]bool
 	observers            []outbound
 	controllerGeneration uint64
 	approvalSeq          uint64
@@ -111,6 +112,7 @@ func newACPSession(srv *Server, rt *agentruntime.Runtime, conn outbound) *acpSes
 	if home, err := os.UserHomeDir(); err == nil {
 		if store, err := journal.New(filepath.Join(home, ".yottacode", "acp-journal", rt.Session.ID+".json")); err == nil {
 			sess.journal = store
+			sess.seq = store.Latest()
 		}
 	}
 	if conn != nil {

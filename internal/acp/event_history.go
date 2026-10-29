@@ -13,14 +13,17 @@ type sessionEvent struct {
 	update coderacp.SessionUpdate
 }
 
-type replayJournal struct {
-	NextSeq uint64         `json:"nextSeq"`
-	Events  []sessionEvent `json:"events"`
-}
-
 func (s *acpSession) appendEvent(update coderacp.SessionUpdate) uint64 {
 	if s.journal != nil {
-		_, _ = s.journal.Append(update)
+		if seq, err := s.journal.Append(update); err == nil {
+			s.eventMu.Lock()
+			s.seq = seq
+			s.eventMu.Unlock()
+		} else {
+			s.eventMu.Lock()
+			s.seq++
+			s.eventMu.Unlock()
+		}
 	}
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()

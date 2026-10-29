@@ -52,6 +52,7 @@ type Server struct {
 	authenticateVertex func(ctx context.Context) error
 
 	mu       syncutil.RWMutex
+	loadMu   syncutil.Mutex
 	sessions map[string]*acpSession
 }
 
@@ -185,6 +186,8 @@ func (s *Server) LoadSession(ctx context.Context, params coderacp.LoadSessionReq
 }
 
 func (s *Server) loadSession(ctx context.Context, params coderacp.LoadSessionRequest, conn outbound) (coderacp.LoadSessionResponse, error) {
+	s.loadMu.Lock()
+	defer s.loadMu.Unlock()
 	if err := validateMCPServers(params.McpServers); err != nil {
 		return coderacp.LoadSessionResponse{}, coderacp.NewInvalidParams(map[string]any{"error": err.Error()})
 	}
@@ -387,6 +390,18 @@ func replayUpdate(ctx context.Context, conn outbound, id string, update coderacp
 }
 
 // session looks up a registered session by id under the read lock.
+func (s *Server) Detach(conn outbound) {
+	s.mu.RLock()
+	sessions := make([]*acpSession, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		sessions = append(sessions, sess)
+	}
+	s.mu.RUnlock()
+	for _, sess := range sessions {
+		sess.detach(conn)
+	}
+}
+
 func (s *Server) session(id string) (*acpSession, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

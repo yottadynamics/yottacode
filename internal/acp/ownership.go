@@ -11,7 +11,24 @@ import (
 
 var errControllerOwned = coderacp.NewInvalidParams(map[string]any{"error": "session already has a controller"})
 
-func (s *acpSession) attach(conn outbound, role string, takeover bool) (string, error) {
+func (s *acpSession) detach(conn outbound) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sameOutbound(s.controller, conn) {
+		s.controller = nil
+		s.controllerScopes = nil
+		s.controllerGeneration++
+	}
+	filtered := s.observers[:0]
+	for _, observer := range s.observers {
+		if !sameOutbound(observer, conn) {
+			filtered = append(filtered, observer)
+		}
+	}
+	s.observers = filtered
+}
+
+func (s *acpSession) attach(conn outbound, scopes map[string]bool, role string, takeover bool) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed || s.closing {
@@ -22,6 +39,7 @@ func (s *acpSession) attach(conn outbound, role string, takeover bool) (string, 
 			return "", errControllerOwned
 		}
 		s.controller = conn
+		s.controllerScopes = scopes
 		s.controllerGeneration++
 		s.conn = s.routing()
 		return role, nil
@@ -36,6 +54,12 @@ func (s *acpSession) attach(conn outbound, role string, takeover bool) (string, 
 }
 
 // canControl reports whether conn currently owns the session controller role.
+func (s *acpSession) setControllerScopes(scopes map[string]bool) {
+	s.mu.Lock()
+	s.controllerScopes = scopes
+	s.mu.Unlock()
+}
+
 func (s *acpSession) canControl(conn outbound) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

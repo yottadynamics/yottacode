@@ -34,7 +34,9 @@ sequenceDiagram
 ```
 
 The journal is a bounded persisted delivery/reconnect layer, not the source
-of truth for agent history. Durable session persistence remains the
+of truth for agent history. Journal sequence continuity is restored when a
+session is loaded after restart, and append failures fall back to a local
+sequence while remaining visible to future durability diagnostics. Durable session persistence remains the
 source of truth for transcript recovery. If the cursor predates the bounded
 journal, the extension returns an error identifying that a replay gap requires
 a snapshot. The client can then issue standard `session/load` to recover the

@@ -131,13 +131,19 @@ ACP `session/new`, `session/load`, `session/prompt`, or `session/cancel`.
 - Project-root restrictions are checked for session creation, loading, and attach.
 - Session IDs do not grant access by themselves.
 - A client disconnect does not implicitly approve a pending permission request.
+- Approval requests require the controller token to carry `approve` or `admin` scope.
+- Observer attach never calls standard `session/load`; it replays without replacing the runtime.
+- Project authorization is checked against the persisted session cwd.
+- WSS disconnect detaches stale controller and observer references.
 
 ## Current limitations
 
 The implementation remains experimental. Implemented hardening now includes
 bounded persisted event cursors, replay-gap signaling, controller generations,
-parked permission requests, WSS server timeouts, attach role/takeover flags,
-and WSS server timeouts. Process supervision is intentionally out of scope;
+parked permission requests, approval-scope enforcement, persisted-project
+authorization, serialized session loading, disconnect cleanup, WSS server
+timeouts, and attach role/takeover flags. Process supervision is intentionally
+out of scope;
 production deployments can use systemd or another host service manager.
 Full connection registries, rate limiting, and restart supervision remain
 operational follow-up work.

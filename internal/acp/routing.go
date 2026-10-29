@@ -22,6 +22,12 @@ func (o sessionOutbound) SessionUpdate(ctx context.Context, n coderacp.SessionNo
 }
 
 func (o sessionOutbound) RequestPermission(ctx context.Context, req coderacp.RequestPermissionRequest) (coderacp.RequestPermissionResponse, error) {
+	o.session.mu.Lock()
+	allowed := o.session.controllerScopes == nil || o.session.controllerScopes["admin"] || o.session.controllerScopes["approve"]
+	o.session.mu.Unlock()
+	if !allowed {
+		return coderacp.RequestPermissionResponse{}, context.Canceled
+	}
 	return o.session.requestPermission(ctx, req)
 }
 
@@ -36,10 +42,4 @@ func (s *acpSession) targets() []outbound {
 	}
 	out = append(out, s.observers...)
 	return out
-}
-
-func (s *acpSession) controllerTarget() outbound {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.controller
 }

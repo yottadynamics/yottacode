@@ -47,6 +47,8 @@ func (s *Store) Append(update coderacp.SessionUpdate) (uint64, error) {
 	return s.next, nil
 }
 
+func (s *Store) Latest() uint64 { s.mu.Lock(); defer s.mu.Unlock(); return s.next }
+
 func (s *Store) Since(after uint64) ([]Event, uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

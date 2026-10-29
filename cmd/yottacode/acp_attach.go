@@ -56,9 +56,14 @@ func newAcpAttachCmd() *cobra.Command {
 			if _, err := acpConn.CallExtension(ctx, "_yottacode/session/attach", params); err != nil {
 				return fmt.Errorf("attach session %s: %w", args[0], err)
 			}
-			if afterSeq == 0 {
+			if afterSeq == 0 && role != "observer" {
 				if _, err := acpConn.LoadSession(ctx, coderacp.LoadSessionRequest{SessionId: coderacp.SessionId(args[0]), Cwd: "."}); err != nil {
 					return fmt.Errorf("load session %s: %w", args[0], err)
+				}
+			} else if afterSeq == 0 {
+				params, _ := json.Marshal(map[string]any{"sessionId": args[0], "afterSeq": 0})
+				if _, err := acpConn.CallExtension(ctx, "_yottacode/session/replay", params); err != nil {
+					return fmt.Errorf("replay session %s: %w", args[0], err)
 				}
 			} else {
 				params, _ := json.Marshal(map[string]any{"sessionId": args[0], "afterSeq": afterSeq})
@@ -67,8 +72,9 @@ func newAcpAttachCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "attached; enter prompts, Ctrl-D to exit")
+			input := bufio.NewReader(cmd.InOrStdin())
 			for {
-				line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+				line, err := input.ReadString('\n')
 				if err != nil && !errors.Is(err, io.EOF) {
 					return err
 				}

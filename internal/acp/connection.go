@@ -91,7 +91,13 @@ func (a *connectionAgent) NewSession(ctx context.Context, params coderacp.NewSes
 	if err := a.requireCwd(params.Cwd); err != nil {
 		return coderacp.NewSessionResponse{}, err
 	}
-	return a.Server.newSession(ctx, params, a.conn)
+	resp, err := a.Server.newSession(ctx, params, a.conn)
+	if err == nil {
+		if sess, ok := a.Server.session(string(resp.SessionId)); ok {
+			sess.setControllerScopes(a.scopes)
+		}
+	}
+	return resp, err
 }
 
 func (a *connectionAgent) LoadSession(ctx context.Context, params coderacp.LoadSessionRequest) (coderacp.LoadSessionResponse, error) {
@@ -100,6 +106,9 @@ func (a *connectionAgent) LoadSession(ctx context.Context, params coderacp.LoadS
 	}
 	if err := a.requireCwd(params.Cwd); err != nil {
 		return coderacp.LoadSessionResponse{}, err
+	}
+	if existing, ok := a.Server.session(string(params.SessionId)); ok && !sessAllowsProject(existing, a.rootCheck) {
+		return coderacp.LoadSessionResponse{}, coderacp.NewAuthRequired(map[string]any{"error": "token is not authorized for this project"})
 	}
 	return a.Server.loadSession(ctx, params, a.conn)
 }

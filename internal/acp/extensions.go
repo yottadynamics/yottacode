@@ -90,16 +90,29 @@ func (a *connectionAgent) attach(ctx context.Context, req sessionAttachRequest) 
 	if !ok {
 		return sessionAttachResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
 	}
+	if !sessAllowsProject(sess, a.rootCheck) {
+		return sessionAttachResponse{}, coderacp.NewAuthRequired(map[string]any{"error": "token is not authorized for this project"})
+	}
 	if req.Cwd != "" {
 		if err := a.requireCwd(req.Cwd); err != nil {
 			return sessionAttachResponse{}, err
 		}
 	}
-	role, err := sess.attach(a.conn, req.Role, req.Takeover)
+	role, err := sess.attach(a.conn, a.scopes, req.Role, req.Takeover)
 	if err != nil {
 		return sessionAttachResponse{}, err
 	}
 	return sessionAttachResponse{SessionID: req.SessionID, Role: role, Owner: role == "controller", LatestSeq: sess.latestSeq()}, nil
+}
+
+func sessAllowsProject(sess *acpSession, check func(string) bool) bool {
+	if check == nil {
+		return true
+	}
+	sess.historyMu.Lock()
+	cwd := sess.rt.Session.Cwd
+	sess.historyMu.Unlock()
+	return check(cwd)
 }
 
 func (a *connectionAgent) replay(ctx context.Context, req sessionReplayRequest) (sessionReplayResponse, error) {
@@ -109,6 +122,9 @@ func (a *connectionAgent) replay(ctx context.Context, req sessionReplayRequest) 
 	sess, ok := a.Server.session(req.SessionID)
 	if !ok {
 		return sessionReplayResponse{}, coderacp.NewInvalidParams(map[string]any{"error": "unknown session id"})
+	}
+	if !sessAllowsProject(sess, a.rootCheck) {
+		return sessionReplayResponse{}, coderacp.NewAuthRequired(map[string]any{"error": "token is not authorized for this project"})
 	}
 	count, latest, err := sess.replay(ctx, a.conn, req.AfterSeq)
 	if err != nil {
