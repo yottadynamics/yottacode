@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	coderacp "github.com/coder/acp-go-sdk"
 
+	"github.com/yottadynamics/yottacode/internal/acp/journal"
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	"github.com/yottadynamics/yottacode/internal/agentruntime"
@@ -48,6 +51,7 @@ type acpSession struct {
 	eventMu              syncutil.Mutex
 	seq                  uint64
 	events               []sessionEvent
+	journal              *journal.Store
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session
@@ -104,6 +108,11 @@ func newACPSession(srv *Server, rt *agentruntime.Runtime, conn outbound) *acpSes
 		rt.Cfg.Checkpoints = cp
 	}
 	sess := &acpSession{srv: srv, rt: rt, id: rt.Session.ID, conn: conn}
+	if home, err := os.UserHomeDir(); err == nil {
+		if store, err := journal.New(filepath.Join(home, ".yottacode", "acp-journal", rt.Session.ID+".json")); err == nil {
+			sess.journal = store
+		}
+	}
 	if conn != nil {
 		sess.controller = conn
 		sess.conn = sess.routing()

@@ -130,8 +130,8 @@ ACP `session/new`, `session/load`, `session/prompt`, or `session/cancel`.
 ## Current limitations
 
 The implementation remains experimental. Implemented hardening now includes
-bounded in-memory event cursors, replay-gap signaling, controller generations,
-parked permission requests, WSS server timeouts, and attach role/takeover flags.
-Durable event storage across daemon restarts, connection registries, rate
-limiting, daemon start/stop/status commands, and full reconnect backoff remain
-operational follow-up work.
+bounded persisted event cursors, replay-gap signaling, controller generations,
+parked permission requests, WSS server timeouts, attach role/takeover flags,
+and a PID/address daemon state file with SIGTERM stop support.
+Full connection registries, rate limiting, restart supervision, and polished
+start/stop/status command UX remain operational follow-up work.

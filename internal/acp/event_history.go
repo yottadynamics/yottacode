@@ -19,6 +19,9 @@ type replayJournal struct {
 }
 
 func (s *acpSession) appendEvent(update coderacp.SessionUpdate) uint64 {
+	if s.journal != nil {
+		_, _ = s.journal.Append(update)
+	}
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
 	s.seq++
@@ -36,6 +39,20 @@ func (s *acpSession) latestSeq() uint64 {
 }
 
 func (s *acpSession) replayEvents(ctx context.Context, conn outbound, after uint64) (int, uint64, error) {
+	if s.journal != nil {
+		persisted, latest, gap := s.journal.Since(after)
+		if gap {
+			return 0, latest, coderacp.NewInvalidParams(map[string]any{"error": "replay cursor is too old; snapshot required", "replayGap": true, "snapshotRequired": true})
+		}
+		count := 0
+		for _, event := range persisted {
+			if err := conn.SessionUpdate(ctx, coderacp.SessionNotification{SessionId: coderacp.SessionId(s.id), Update: event.Update}); err != nil {
+				return count, latest, err
+			}
+			count++
+		}
+		return count, latest, nil
+	}
 	s.eventMu.Lock()
 	events := append([]sessionEvent(nil), s.events...)
 	latest := s.seq
