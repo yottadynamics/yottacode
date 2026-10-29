@@ -17,6 +17,8 @@ A reconnecting client first attaches, then requests:
 The server replays journal entries with sequence numbers greater than `42`
 and returns the latest sequence. The current implementation also retains the
 persisted conversational transcript as the fallback when no cursor is given.
+The terminal attach client uses bounded reconnect backoff and reattaches with
+its last known cursor when the WSS peer disconnects.
 
 ```mermaid
 sequenceDiagram
