@@ -20,6 +20,7 @@ import (
 )
 
 const ACPSubprotocol = "yottacode.acp.v1"
+const ACPBrowserAuthSubprotocol = "yottacode.bearer"
 
 // WSSHandler accepts authenticated WebSocket ACP connections and binds each
 // connection to a fresh SDK AgentSideConnection backed by the shared server.
@@ -37,7 +38,9 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	conn, rw, _, err := (ws.HTTPUpgrader{Protocol: func(protocol string) bool { return protocol == ACPSubprotocol }}).Upgrade(r, w)
+	conn, rw, _, err := (ws.HTTPUpgrader{Protocol: func(protocol string) bool {
+		return protocol == ACPSubprotocol || protocol == ACPBrowserAuthSubprotocol || strings.HasPrefix(protocol, ACPBrowserAuthSubprotocol+".")
+	}}).Upgrade(r, w)
 	if err != nil {
 		return
 	}
@@ -63,6 +66,9 @@ func (h *WSSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *WSSHandler) identity(r *http.Request) (acpauth.TokenRecord, []string) {
 	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if got == "" {
+		got = bearerFromSubprotocol(r.Header.Values("Sec-WebSocket-Protocol"))
+	}
 	if h.TokenStore != nil {
 		record, err := h.TokenStore.Authenticate(got, time.Now())
 		if err == nil {

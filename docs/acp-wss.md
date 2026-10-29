@@ -21,11 +21,18 @@ for service-manager deployment and the production checklist. See [ACP connection
 for the remaining connection-management design. See [ACP replay](acp-replay.md)
 for event sequencing and reconnect cursors.
 
-WSS clients must send:
+WSS clients should send:
 
 ```http
 Authorization: Bearer <token>
 Sec-WebSocket-Protocol: yottacode.acp.v1
+```
+
+For desktop/browser clients that cannot set custom WebSocket headers, the
+server also accepts the bearer token through a subprotocol token form such as:
+
+```text
+Sec-WebSocket-Protocol: yottacode.acp.v1, yottacode.bearer.<token>
 ```
 
 Supported initial scopes are `read`, `prompt`, `approve`, and `admin`.
