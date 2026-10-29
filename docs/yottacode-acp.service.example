@@ -1,0 +1,23 @@
+// Project-local ACP WSS deployment example. Install as a user or system
+// service after replacing the paths, account, and token environment source.
+
+[Unit]
+Description=yottacode ACP WSS server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ppetkov
+WorkingDirectory=/home/ppetkov/go/src/github.com/yottadynamics/yottacode
+Environment=YOTTACODE_ACP_TOKEN_FILE=/etc/yottacode/acp-token
+ExecStart=/usr/local/bin/yottacode acp --listen 127.0.0.1:8443 --tls-cert /etc/yottacode/server.crt --tls-key /etc/yottacode/server.key --token ${YOTTACODE_ACP_TOKEN}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

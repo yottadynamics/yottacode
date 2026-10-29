@@ -16,7 +16,8 @@ Run the WSS server in the foreground; use systemd or another service manager
 if a background service is required.
 
 See [ACP architecture](acp-architecture.md) for the transport, session
-ownership, extension-method, and security design. See [ACP replay](acp-replay.md)
+ownership, extension-method, and security design. See [ACP production](acp-production.md)
+for service-manager deployment and the production checklist. See [ACP replay](acp-replay.md)
 for event sequencing and reconnect cursors.
 
 WSS clients must send:

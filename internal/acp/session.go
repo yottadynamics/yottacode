@@ -53,6 +53,7 @@ type acpSession struct {
 	seq                  uint64
 	events               []sessionEvent
 	journal              *journal.Store
+	journalHealthy       bool
 
 	// mu guards cancel and turnActive: session/prompt sets cancel for the
 	// duration of one turn, session/cancel reads and calls it. A session
@@ -113,6 +114,7 @@ func newACPSession(srv *Server, rt *agentruntime.Runtime, conn outbound) *acpSes
 		if store, err := journal.New(filepath.Join(home, ".yottacode", "acp-journal", rt.Session.ID+".json")); err == nil {
 			sess.journal = store
 			sess.seq = store.Latest()
+			sess.journalHealthy = true
 		}
 	}
 	if conn != nil {

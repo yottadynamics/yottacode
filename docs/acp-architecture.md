@@ -135,6 +135,7 @@ ACP `session/new`, `session/load`, `session/prompt`, or `session/cancel`.
 - Observer attach never calls standard `session/load`; it replays without replacing the runtime.
 - Project authorization is checked against the persisted session cwd.
 - WSS disconnect detaches stale controller and observer references.
+- Journal durability degradation is tracked when append persistence fails.
 
 ## Current limitations
 

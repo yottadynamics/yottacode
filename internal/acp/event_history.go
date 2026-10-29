@@ -14,21 +14,26 @@ type sessionEvent struct {
 }
 
 func (s *acpSession) appendEvent(update coderacp.SessionUpdate) uint64 {
-	if s.journal != nil {
-		if seq, err := s.journal.Append(update); err == nil {
-			s.eventMu.Lock()
-			s.seq = seq
-			s.eventMu.Unlock()
-		} else {
-			s.eventMu.Lock()
-			s.seq++
-			s.eventMu.Unlock()
-		}
-	}
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	s.seq++
-	s.events = append(s.events, sessionEvent{seq: s.seq, update: update})
+	var seq uint64
+	if s.journal != nil {
+		if persisted, err := s.journal.Append(update); err == nil {
+			seq = persisted
+			s.journalHealthy = true
+		} else {
+			s.seq++
+			seq = s.seq
+			s.journalHealthy = false
+		}
+	} else {
+		s.seq++
+		seq = s.seq
+	}
+	if seq > s.seq {
+		s.seq = seq
+	}
+	s.events = append(s.events, sessionEvent{seq: seq, update: update})
 	if len(s.events) > maxSessionEvents {
 		s.events = s.events[len(s.events)-maxSessionEvents:]
 	}
