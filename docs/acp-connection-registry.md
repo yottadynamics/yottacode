@@ -27,7 +27,8 @@ scanning every session:
 - per-connection audit events and metrics;
 - mapping a WSS disconnect to all attached sessions.
 
-The current implementation has per-session ownership and disconnect cleanup,
-but no centralized registry or bounded outbound queues yet. That is the next
-server-hardening phase. Until then, a slow observer can still participate in
-the direct fan-out path and operational connection limits are host-level only.
+The implementation now has a registry package with connection limits and
+bounded per-connection outbound queues. The remaining integration work is to
+register every WSS connection with the server and route session fan-out
+through registry connections. Until that wiring is complete, session ownership
+still provides the authoritative attach/detach behavior.

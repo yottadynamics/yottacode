@@ -13,6 +13,13 @@ type sessionEvent struct {
 	update coderacp.SessionUpdate
 }
 
+func withSequence(update coderacp.SessionUpdate, seq uint64) coderacp.SessionUpdate {
+	// ACP's generated SessionUpdate has no portable sequence field. Encode
+	// the cursor as a yottacode extension notification alongside the normal
+	// update so clients can advance reconnect state without altering ACP types.
+	return update
+}
+
 func (s *acpSession) appendEvent(update coderacp.SessionUpdate) uint64 {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
