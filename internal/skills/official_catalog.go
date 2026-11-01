@@ -1,12 +1,17 @@
 package skills
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -131,37 +136,40 @@ func fetchOfficialCatalog(opts OfficialCatalogOptions) ([]Skill, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	base := githubAPIBase() + "/repos/" + OfficialSkillsOwner + "/" + OfficialSkillsRepo + "/contents/skills"
-	items, err := ghList(client, base)
+	// Use the repository archive instead of the Contents API. Refreshing the
+	// catalog used to make one API request per directory and skill file, which
+	// exhausted GitHub's unauthenticated rate limit quickly for a public repo.
+	archiveURL := githubCodeloadURL(OfficialSkillsOwner, OfficialSkillsRepo, "heads", "main")
+	body, err := httpGet(client, archiveURL, "application/zip")
 	if err != nil {
-		return nil, fmt.Errorf("list official skills: %w", err)
+		return nil, fmt.Errorf("download official skills archive: %w", err)
 	}
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return nil, fmt.Errorf("read official skills archive: %w", err)
+	}
+
 	var out []Skill
-	for _, item := range items {
-		if item.Type != "dir" {
+	for _, file := range zr.File {
+		name, ok := officialSkillArchiveName(file.Name)
+		if !ok || file.FileInfo().IsDir() {
 			continue
 		}
-		children, err := ghList(client, base+"/"+item.Name)
+		rc, err := file.Open()
 		if err != nil {
-			return nil, fmt.Errorf("list official skill %s: %w", item.Name, err)
+			return nil, fmt.Errorf("open official skill %s: %w", name, err)
 		}
-		var skillFile *ghContent
-		for i := range children {
-			if children[i].Type == "file" && children[i].Name == "SKILL.md" {
-				skillFile = &children[i]
-				break
-			}
+		data, readErr := io.ReadAll(io.LimitReader(rc, 5*1024*1024))
+		closeErr := rc.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("read official skill %s: %w", name, readErr)
 		}
-		if skillFile == nil || skillFile.DownloadURL == "" {
-			continue
+		if closeErr != nil {
+			return nil, fmt.Errorf("close official skill %s: %w", name, closeErr)
 		}
-		body, err := httpGet(client, skillFile.DownloadURL, "application/octet-stream")
+		sk, err := ParseSkillFile(data, name)
 		if err != nil {
-			return nil, fmt.Errorf("fetch official skill %s: %w", item.Name, err)
-		}
-		sk, err := ParseSkillFile(body, item.Name)
-		if err != nil {
-			return nil, fmt.Errorf("parse official skill %s: %w", item.Name, err)
+			return nil, fmt.Errorf("parse official skill %s: %w", name, err)
 		}
 		sk.Source = ScopeOfficial
 		sk.SourcePath, _ = OfficialSource(sk.Name)
@@ -170,4 +178,22 @@ func fetchOfficialCatalog(opts OfficialCatalogOptions) ([]Skill, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// officialSkillArchiveName extracts a top-level skill name from a GitHub zip
+// entry such as repo-main/skills/seo-audit/SKILL.md. Other files are ignored so
+// the catalog remains one metadata row per skill directory.
+func officialSkillArchiveName(name string) (string, bool) {
+	name = strings.TrimPrefix(path.Clean(name), "./")
+	marker := "/skills/"
+	idx := strings.Index(name, marker)
+	if idx < 0 || !strings.HasSuffix(name, "/SKILL.md") {
+		return "", false
+	}
+	rel := strings.TrimPrefix(name[idx+len(marker):], "/")
+	parts := strings.Split(rel, "/")
+	if len(parts) != 2 || parts[1] != "SKILL.md" || parts[0] == "" {
+		return "", false
+	}
+	return parts[0], true
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -269,25 +268,27 @@ func TestSkillsCLI_CatalogRefresh(t *testing.T) {
 	t.Setenv("YOTTACODE_HOME", home)
 	t.Setenv("HOME", home)
 
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/yottadynamics/yottacode-skills/contents/skills":
-			_ = json.NewEncoder(w).Encode([]map[string]string{{"name": "sample", "type": "dir"}})
-		case "/repos/yottadynamics/yottacode-skills/contents/skills/sample":
-			_ = json.NewEncoder(w).Encode([]map[string]string{{
-				"name":         "SKILL.md",
-				"type":         "file",
-				"download_url": srv.URL + "/raw/skills/sample/SKILL.md",
-			}})
-		case "/raw/skills/sample/SKILL.md":
-			_, _ = w.Write([]byte(sampleSkillBody))
-		default:
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("repo-main/skills/sample/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte(sampleSkillBody))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/yottadynamics/yottacode-skills/zip/refs/heads/main" {
 			http.NotFound(w, r)
+			return
 		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
 	}))
 	defer srv.Close()
-	t.Setenv("YOTTACODE_GITHUB_API_URL", srv.URL)
+	t.Setenv("YOTTACODE_GITHUB_CODELOAD_URL", srv.URL)
 
 	out, err := runSkillsCmd(t, "catalog", "refresh")
 	if err != nil {

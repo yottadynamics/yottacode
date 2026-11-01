@@ -296,6 +296,20 @@ func TestCatalogPicker_RefreshShowsBusyThenUpdatesRows(t *testing.T) {
 	}
 }
 
+func TestCatalogPicker_StatusWrapsToPopupWidth(t *testing.T) {
+	status := "refresh failed: fetch https://api.github.com/repos/yottadynamics/yottacode-skills/contents/skills: 403 Forbidden — {\"message\":\"API rate limit exceeded\"}"
+	got := stripANSI(renderSkillsPickerStatus(status, 40))
+	for _, line := range strings.Split(got, "\n") {
+		if runeLen(line) > 36 {
+			t.Fatalf("status line width = %d, want <= 36: %q", runeLen(line), line)
+		}
+	}
+	flat := strings.Join(strings.Fields(got), " ")
+	if !strings.Contains(flat, "API rate limit exceeded") {
+		t.Fatalf("wrapped status lost error detail: %q", got)
+	}
+}
+
 func TestCatalogPicker_BusyIgnoresKeys(t *testing.T) {
 	withOfficialCatalogStub(t, []skills.Skill{{Name: "official-alpha", Description: "o", Source: skills.ScopeOfficial}})
 	m := newTestModel(t)

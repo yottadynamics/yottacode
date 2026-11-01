@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/config"
@@ -835,7 +836,7 @@ func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits
 		}
 		body += styleEmpty.Render(empty) + "\n"
 		if state.status != "" {
-			body += "\n" + styleMeta.Render("  "+state.status)
+			body += "\n" + renderSkillsPickerStatus(state.status, width)
 		}
 		return body
 	}
@@ -892,9 +893,18 @@ func renderSkillsPicker(state *skillsPickerState, width int, hits ...*pickerHits
 		}) + "\n"
 	}
 	if state.status != "" {
-		body += "\n" + styleMeta.Render("  "+state.status)
+		body += "\n" + renderSkillsPickerStatus(state.status, width)
 	}
 	return body
+}
+
+// renderSkillsPickerStatus wraps picker feedback to the popup's content width.
+// Status text can contain long URLs and GitHub JSON, so letting it remain a
+// single line makes the popup overflow horizontally instead of explaining the
+// failure inside the visible frame.
+func renderSkillsPickerStatus(status string, width int) string {
+	contentWidth := max(width-4, 1)
+	return styleMeta.Render(ansi.Hardwrap("  "+status, contentWidth, true))
 }
 
 // renderSkillsTabs draws the tab bar shown above the catalog rows.
