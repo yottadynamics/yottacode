@@ -19,10 +19,10 @@ func workflowText(t *testing.T, path string) string {
 func TestSandboxImageEmbedsModuleGoToolchain(t *testing.T) {
 	containerfile := workflowText(t, "infra/sandbox.Containerfile")
 	mod := workflowText(t, "go.mod")
-	if !strings.Contains(mod, "go 1.26.10") {
-		t.Fatal("go.mod must declare Go 1.26.10")
+	if !strings.Contains(mod, "go 1.26.11") {
+		t.Fatal("go.mod must declare Go 1.26.11")
 	}
-	if !strings.Contains(containerfile, "ARG GO_VERSION=1.26.10") {
+	if !strings.Contains(containerfile, "ARG GO_VERSION=1.26.11") {
 		t.Fatal("sandbox image must embed the Go version declared by go.mod")
 	}
 }
