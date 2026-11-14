@@ -16,6 +16,17 @@ func workflowText(t *testing.T, path string) string {
 	return string(data)
 }
 
+func TestSandboxImageEmbedsModuleGoToolchain(t *testing.T) {
+	containerfile := workflowText(t, "infra/sandbox.Containerfile")
+	mod := workflowText(t, "go.mod")
+	if !strings.Contains(mod, "go 1.26.10") {
+		t.Fatal("go.mod must declare Go 1.26.10")
+	}
+	if !strings.Contains(containerfile, "ARG GO_VERSION=1.26.10") {
+		t.Fatal("sandbox image must embed the Go version declared by go.mod")
+	}
+}
+
 func TestSandboxImageWorkflowPublishesReleaseTaggedPackage(t *testing.T) {
 	text := workflowText(t, ".github/workflows/sandbox-image.yml")
 	for _, want := range []string{
