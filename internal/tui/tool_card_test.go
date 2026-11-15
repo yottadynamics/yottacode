@@ -493,8 +493,8 @@ func TestRenderToolCard_EditFileOldStringMissIsCompact(t *testing.T) {
 		"",
 		0,
 	))
-	if !strings.Contains(got, "stale edit target") {
-		t.Fatalf("card should classify stale edit target: %q", got)
+	if !strings.Contains(got, "edit target not found") {
+		t.Fatalf("card should classify missing edit target: %q", got)
 	}
 	if !strings.Contains(got, "closest line: 3910") {
 		t.Fatalf("card should retain closest-line hint: %q", got)

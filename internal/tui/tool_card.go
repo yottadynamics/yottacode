@@ -1115,9 +1115,15 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 			}
 			line := closestLineHint(trimmed)
 			if line != "" {
-				return []string{"stale edit target — re-read the file and retry with exact current text", line}
+				return []string{"edit target not found — re-read the file and retry with exact current text", line}
 			}
-			return []string{"stale edit target — re-read the file and retry with exact current text"}
+			return []string{"edit target not found — re-read the file and retry with exact current text"}
+		case agent.EditFailureTargetNotFound:
+			line := closestLineHint(trimmed)
+			if line != "" {
+				return []string{"edit target not found — re-read the file and retry with exact current text", line}
+			}
+			return []string{"edit target not found — re-read the file and retry with exact current text"}
 		case agent.EditFailureAmbiguous:
 			return []string{"ambiguous edit target — re-read a larger unique range with anchors=true and retry"}
 		case agent.EditFailureInvalidRange:
@@ -1139,9 +1145,9 @@ func recoverableToolErrorBody(toolName, output, cwd string) []string {
 		if strings.Contains(trimmed, "old_string not found") {
 			line := closestLineHint(trimmed)
 			if line != "" {
-				return []string{"stale edit target — re-read the file and retry with exact current text", line}
+				return []string{"edit target not found — re-read the file and retry with exact current text", line}
 			}
-			return []string{"stale edit target — re-read the file and retry with exact current text"}
+			return []string{"edit target not found — re-read the file and retry with exact current text"}
 		}
 	case "edit_anchored":
 		if strings.Contains(trimmed, "anchor is required") {
@@ -1195,16 +1201,17 @@ func recoverableToolErrorFooter(toolName, output string) string {
 	}
 	if kind := agent.ClassifyEditFailure(toolName, output); kind != agent.EditFailureUnknown {
 		labels := map[agent.EditFailureKind]string{
-			agent.EditFailureRepeated:      "recoverable: request cannot make progress",
-			agent.EditFailureMissingAnchor: "recoverable: missing anchor",
-			agent.EditFailureStale:         "recoverable: stale edit target",
-			agent.EditFailureAmbiguous:     "recoverable: ambiguous edit target",
-			agent.EditFailureInvalidRange:  "recoverable: invalid edit range",
-			agent.EditFailureInvalidText:   "recoverable: invalid edit text",
-			agent.EditFailureOverlap:       "recoverable: overlapping edits",
-			agent.EditFailureInvalidHash:   "recoverable: invalid hash",
-			agent.EditFailureHashMismatch:  "recoverable: old/hash mismatch",
-			agent.EditFailureMalformed:     "recoverable: malformed patch",
+			agent.EditFailureRepeated:       "recoverable: request cannot make progress",
+			agent.EditFailureMissingAnchor:  "recoverable: missing anchor",
+			agent.EditFailureStale:          "recoverable: stale file/anchor",
+			agent.EditFailureTargetNotFound: "recoverable: edit target not found",
+			agent.EditFailureAmbiguous:      "recoverable: ambiguous edit target",
+			agent.EditFailureInvalidRange:   "recoverable: invalid edit range",
+			agent.EditFailureInvalidText:    "recoverable: invalid edit text",
+			agent.EditFailureOverlap:        "recoverable: overlapping edits",
+			agent.EditFailureInvalidHash:    "recoverable: invalid hash",
+			agent.EditFailureHashMismatch:   "recoverable: old/hash mismatch",
+			agent.EditFailureMalformed:      "recoverable: malformed patch",
 		}
 		if label := labels[kind]; label != "" {
 			return label
@@ -1213,7 +1220,7 @@ func recoverableToolErrorFooter(toolName, output string) string {
 	switch toolName {
 	case "edit_file":
 		if strings.Contains(output, "old_string not found") {
-			return "recoverable: stale edit target"
+			return "recoverable: edit target not found"
 		}
 	case "edit_anchored":
 		if strings.Contains(output, "anchor is required") {

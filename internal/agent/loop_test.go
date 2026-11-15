@@ -385,13 +385,21 @@ func TestLoop_RepeatedToolFailureAddsStrategyGuidance(t *testing.T) {
 		t.Fatalf("Turn: %v", err)
 	}
 	var guided bool
+	var failureResults int
 	for _, m := range hist {
-		if m.Role == adapter.RoleTool && strings.Contains(m.Content, "repeated tool failure (3×)") && strings.Contains(m.Content, "read the current file contents") {
+		if m.Role != adapter.RoleTool {
+			continue
+		}
+		failureResults++
+		if failureResults == 1 && strings.Contains(m.Content, "repeated tool failure") {
+			t.Fatalf("first failure should not include repeated-failure guidance: %q", m.Content)
+		}
+		if failureResults == 2 && strings.Contains(m.Content, "repeated tool failure (2×)") && strings.Contains(m.Content, "read the current file contents") {
 			guided = true
 		}
 	}
 	if !guided {
-		t.Fatalf("expected repeated failure guidance in history: %+v", hist)
+		t.Fatalf("expected repeated failure guidance on second failure: %+v", hist)
 	}
 }
 
