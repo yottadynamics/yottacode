@@ -19,8 +19,8 @@ func TestEditFileAmbiguousErrorListsMatchLines(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "appears 3 times") || !strings.Contains(err.Error(), "lines 2, 4, 6") {
 		t.Fatalf("err = %v", err)
 	}
-	// Classifier must still see this as a stale/ambiguous edit failure.
-	if got := ClassifyEditFailure("edit_file", "error: "+err.Error()); got != EditFailureStale {
+	// A repeated text match is ambiguous, not evidence of a missing target.
+	if got := ClassifyEditFailure("edit_file", "error: "+err.Error()); got != EditFailureAmbiguous {
 		t.Errorf("classified as %v", got)
 	}
 }
@@ -38,12 +38,20 @@ func TestMissingPathErrorsNameTheCwd(t *testing.T) {
 	}
 }
 
+func TestEditFileMissingTargetClassification(t *testing.T) {
+	if got := ClassifyEditFailure("edit_file", "error: edit_file: old_string not found in f.txt"); got != EditFailureTargetNotFound {
+		t.Fatalf("classification = %v, want target not found", got)
+	}
+}
+
 func TestEditFileAlreadyAppliedIsNamed(t *testing.T) {
+	// Already-applied edits are still missing-target failures; the diagnostic
+	// tells the model to re-read and confirm before attempting another edit.
 	_, err := runEdit(t, "keep\nreturn computeTotal(a, b)\nkeep\n", `{"path":"f.txt","old_string":"return compute(a, b)","new_string":"return computeTotal(a, b)"}`)
 	if err == nil || !strings.Contains(err.Error(), "already present") || !strings.Contains(err.Error(), "old_string not found") {
 		t.Fatalf("err = %v", err)
 	}
-	if got := ClassifyEditFailure("edit_file", "error: "+err.Error()); got != EditFailureStale {
+	if got := ClassifyEditFailure("edit_file", "error: "+err.Error()); got != EditFailureTargetNotFound {
 		t.Errorf("classified as %v", got)
 	}
 }

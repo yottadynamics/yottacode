@@ -304,7 +304,9 @@ const (
 )
 
 const (
-	repeatedToolFailureThreshold = 3
+	// The second identical failure is already a retry; guide the model before
+	// it spends a third tool round repeating the same stale edit request.
+	repeatedToolFailureThreshold = 2
 	repeatedReadCallThreshold    = 3
 )
 
@@ -336,7 +338,7 @@ func repeatedToolFailureMessage(toolName, output string, count int) string {
 	case "apply_diff":
 		guidance = "rebuild a valid unified diff with correct file headers and hunk ranges, or make a smaller edit_file change"
 	}
-	return fmt.Sprintf("%s\n\n%s%d×): %s", output, RepeatedToolFailureMarker, count, guidance)
+	return fmt.Sprintf("%s\n\n%s%d×): %s. Do not submit the same tool call again without fresh evidence", output, RepeatedToolFailureMarker, count, guidance)
 }
 
 func applyRepeatedToolFailureGuard(toolName, output string, failures map[string]int) string {
@@ -1476,7 +1478,7 @@ approved:
 		if tool.Name() == "edit_file" || tool.Name() == "edit_anchored" || tool.Name() == "apply_hashline" || tool.Name() == "apply_diff" {
 			kind = ClassifyEditFailure(tool.Name(), msg)
 		}
-		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true, FailureKind: string(kind), Retryable: kind == EditFailureStale || kind == EditFailureHashMismatch})
+		_ = send(ctx, events, ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: msg, Errored: true, FailureKind: string(kind), Retryable: kind == EditFailureStale || kind == EditFailureTargetNotFound || kind == EditFailureHashMismatch})
 		return msg, nil, false, approvalSource, nil
 	}
 	resultEvent := ToolResult{ToolCallID: toolCallID(tc), ToolName: tool.Name(), Output: out, Errored: false}

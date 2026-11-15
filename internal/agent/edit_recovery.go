@@ -7,17 +7,18 @@ import "strings"
 type EditFailureKind string
 
 const (
-	EditFailureUnknown       EditFailureKind = "unknown"
-	EditFailureStale         EditFailureKind = "stale"
-	EditFailureMissingAnchor EditFailureKind = "missing_anchor"
-	EditFailureAmbiguous     EditFailureKind = "ambiguous"
-	EditFailureInvalidRange  EditFailureKind = "invalid_range"
-	EditFailureInvalidText   EditFailureKind = "invalid_text"
-	EditFailureOverlap       EditFailureKind = "overlap"
-	EditFailureInvalidHash   EditFailureKind = "invalid_hash"
-	EditFailureHashMismatch  EditFailureKind = "hash_mismatch"
-	EditFailureMalformed     EditFailureKind = "malformed"
-	EditFailureRepeated      EditFailureKind = "repeated"
+	EditFailureUnknown        EditFailureKind = "unknown"
+	EditFailureStale          EditFailureKind = "stale"
+	EditFailureTargetNotFound EditFailureKind = "target_not_found"
+	EditFailureMissingAnchor  EditFailureKind = "missing_anchor"
+	EditFailureAmbiguous      EditFailureKind = "ambiguous"
+	EditFailureInvalidRange   EditFailureKind = "invalid_range"
+	EditFailureInvalidText    EditFailureKind = "invalid_text"
+	EditFailureOverlap        EditFailureKind = "overlap"
+	EditFailureInvalidHash    EditFailureKind = "invalid_hash"
+	EditFailureHashMismatch   EditFailureKind = "hash_mismatch"
+	EditFailureMalformed      EditFailureKind = "malformed"
+	EditFailureRepeated       EditFailureKind = "repeated"
 )
 
 // ClassifyEditFailure maps textual tool results to the stable recovery
@@ -31,8 +32,11 @@ func ClassifyEditFailure(toolName, output string) EditFailureKind {
 		if strings.Contains(s, "byte-for-byte identical") || strings.Contains(s, "no-op") {
 			return EditFailureRepeated
 		}
-		if strings.Contains(s, "old_string not found") || strings.Contains(s, "appears ") {
-			return EditFailureStale
+		if strings.Contains(s, "old_string appears") {
+			return EditFailureAmbiguous
+		}
+		if strings.Contains(s, "old_string not found") {
+			return EditFailureTargetNotFound
 		}
 	case "edit_anchored":
 		if strings.Contains(s, "anchor is required") {
