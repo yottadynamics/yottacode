@@ -260,6 +260,36 @@ func TestQuestionNeeded_FullRoundTripSubmitsAllAnswers(t *testing.T) {
 	}
 }
 
+func TestQuestionNeeded_SubmitClearsPopupBeforeDecisionIsConsumed(t *testing.T) {
+	m := setupQuestionModel(t, []agent.Question{{
+		Header:   "Auth",
+		Question: "How should we authenticate?",
+		Options:  []agent.QuestionOption{{Label: "OAuth"}, {Label: "API key"}},
+	}})
+	m.questionPicker.answers[0].cursor = m.questionPicker.otherRowIndex()
+	m.questionPicker.startEditingOther()
+	m.questionPicker.appendToOther(strings.Repeat("custom response ", 40))
+
+	// First Enter confirms the editor; the review tab owns final submit.
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.awaitingQuestion {
+		t.Fatal("submitting a custom response must close the popup immediately")
+	}
+	if m.questionReq.Reply != nil || len(m.questionPicker.questions) != 0 {
+		t.Fatal("question decision state must be cleared after submit")
+	}
+	select {
+	case d := <-m.decisions:
+		if d != agent.AllowOnce {
+			t.Fatalf("decision = %v, want AllowOnce", d)
+		}
+	default:
+		t.Fatal("custom response submit did not send AllowOnce")
+	}
+}
+
 func TestQuestionNeeded_OtherRowFreeTextEndToEnd(t *testing.T) {
 	m := setupQuestionModel(t, []agent.Question{{
 		Header:   "Auth",
@@ -395,6 +425,33 @@ func TestQuestionPickerState_SummaryLineTruncatesLongFreeText(t *testing.T) {
 	}
 	if !strings.Contains(line, "…") {
 		t.Errorf("expected an ellipsis on the truncated answer; got %q", line)
+	}
+}
+
+func TestRenderQuestionPicker_CustomResponsePromptIsMultilineAndVisible(t *testing.T) {
+	p := newQuestionPickerState([]agent.Question{{
+		Header:   "Auth",
+		Question: "How should we authenticate?",
+		Options:  []agent.QuestionOption{{Label: "OAuth"}},
+	}})
+	p.answers[0].cursor = p.otherRowIndex()
+	p.startEditingOther()
+	p.answers[0].freeTextBuf = strings.Repeat("custom response ", 12)
+
+	out := stripANSI(renderQuestionPicker(&p, 50))
+	if !strings.Contains(out, "Custom response: type a detailed answer") {
+		t.Fatalf("custom-response prompt missing:\n%s", out)
+	}
+	if !strings.Contains(out, "Press Enter to confirm") {
+		t.Fatalf("custom-response prompt should explain confirmation:\n%s", out)
+	}
+	if !strings.Contains(out, "context, constraints") || !strings.Contains(out, "desired outcome") {
+		t.Fatalf("long prompt should wrap across multiple lines:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if ansi.StringWidth(line) > 42 {
+			t.Fatalf("content line exceeds popup content width: %d: %q", ansi.StringWidth(line), line)
+		}
 	}
 }
 
