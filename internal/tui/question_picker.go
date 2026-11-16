@@ -18,8 +18,10 @@ const questionFreeTextMaxLen = 500
 const questionSummaryValueMax = 60
 
 // questionAnswerVisibleLines keeps the modal height fixed while still showing
-// enough of a long answer or note to confirm that input was captured.
-const questionAnswerVisibleLines = 4
+// enough of a long answer or note to confirm that input was captured. The
+// newest lines remain visible while the user types, so the cursor does not
+// disappear below the visible portion of a long custom response.
+const questionAnswerVisibleLines = 6
 
 type questionAnswerState struct {
 	selected      map[int]bool
@@ -449,6 +451,8 @@ func questionOptionRows(q agent.Question, descWidth int) int {
 			rows += strings.Count(wrapQuestionText(strings.TrimSpace(opt.Description), descWidth), "\n") + 1
 		}
 	}
+	// Editing adds a wrapped explanatory prompt above the response field.
+	rows += strings.Count(wrapQuestionText(questionOtherPrompt, max(descWidth-2, 1)), "\n") + 1
 	return rows
 }
 
@@ -458,8 +462,8 @@ func questionAnswerLines(prefix, value string, width int) []string {
 	budget := max(width-ansi.StringWidth(prefix), 1)
 	wrapped := strings.Split(wrapQuestionText(value, budget), "\n")
 	if len(wrapped) > questionAnswerVisibleLines {
-		wrapped = wrapped[:questionAnswerVisibleLines]
-		wrapped[len(wrapped)-1] = truncateDisplay(wrapped[len(wrapped)-1], max(budget-1, 1)) + "…"
+		wrapped = wrapped[len(wrapped)-questionAnswerVisibleLines:]
+		wrapped[0] = truncateDisplay("…"+strings.TrimPrefix(wrapped[0], "…"), max(budget, 1))
 	}
 	lines := make([]string, 0, len(wrapped))
 	for i, line := range wrapped {
@@ -473,6 +477,10 @@ func questionAnswerLines(prefix, value string, width int) []string {
 }
 
 const questionDescIndent = 7
+
+// questionOtherPrompt explains the custom-response field in enough detail to
+// remain useful on a narrow terminal, instead of relying on a one-line hint.
+const questionOtherPrompt = "Custom response: type a detailed answer below. Include the context, constraints, and desired outcome when they matter. Press Enter to confirm your response, or Esc to cancel editing."
 
 func renderQuestionOptions(p *questionPickerState, width int) string {
 	q := p.questions[p.activeTab]
@@ -518,12 +526,19 @@ func renderQuestionOptions(p *questionPickerState, width int) string {
 	otherPrefix := "✎ "
 	otherValue := "Type your own answer…"
 	if a.editingOther {
-		otherValue = "Type your own answer: " + a.freeTextBuf + "█"
+		otherValue = a.freeTextBuf + "█"
 	} else if a.usingFreeText {
-		otherValue = "Your answer: " + a.freeText
+		otherValue = a.freeText
+	}
+	if a.editingOther {
+		for _, promptLine := range strings.Split(wrapQuestionText(questionOtherPrompt, max(width-2, 1)), "\n") {
+			lines = append(lines, styleMeta.Render("  "+promptLine))
+		}
 	}
 	for i, line := range questionAnswerLines(otherPrefix, otherValue, width) {
-		if i == 0 && a.cursor == p.otherRowIndex() {
+		if a.editingOther {
+			lines = append(lines, cursorStyle.Render(line))
+		} else if i == 0 && a.cursor == p.otherRowIndex() {
 			lines = append(lines, cursorStyle.Render(line))
 		} else {
 			lines = append(lines, stylePaletteItem.Render(line))
@@ -586,6 +601,21 @@ func (p *questionPickerState) summaryLine() string {
 	return "✓ " + strings.Join(parts, " · ")
 }
 
+// submitQuestionPicker clears the modal before handing the answer back to the
+// agent. The agent may emit its next thinking event immediately after the
+// decision is received; clearing first prevents a stale popup from surviving
+// that transition. The existing finishDecisionUI call then resumes the event
+// pump for the rest of the turn.
+func (m Model) submitQuestionPicker() (Model, tea.Cmd) {
+	summary := m.questionPicker.summaryLine()
+	m.clearPendingDecisionUI()
+	if !m.sendDecision(agent.AllowOnce) {
+		return m, nil
+	}
+	m.appendLine(styleAuto.Render(summary))
+	return m, m.finishDecisionUI()
+}
+
 func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := &m.questionPicker
 	if p.isEditing() {
@@ -622,6 +652,10 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		if m.questionReq.Reply != nil {
 			m.questionReq.Reply.Cancelled = true
 		}
+		// Clear the popup before sending the decision. The agent can resume
+		// immediately, and a failed/non-blocking send must not leave stale
+		// question chrome on screen.
+		m.clearPendingDecisionUI()
 		if !m.sendDecision(agent.Deny) {
 			return m, nil
 		}
@@ -666,15 +700,10 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			if !p.allAnswered() {
 				return m, nil
 			}
-			summary := p.summaryLine()
 			if m.questionReq.Reply != nil {
 				*m.questionReq.Reply = *p.buildAnswer()
 			}
-			if !m.sendDecision(agent.AllowOnce) {
-				return m, nil
-			}
-			m.appendLine(styleAuto.Render(summary))
-			return m, m.finishDecisionUI()
+			return m.submitQuestionPicker()
 		case p.onOtherRow():
 			p.startEditingOther()
 		case p.questions[p.activeTab].MultiSelect:
