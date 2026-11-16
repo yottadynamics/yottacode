@@ -26,9 +26,10 @@ type fakeDevTools struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu    syncutil.Mutex
-	conn  net.Conn
-	calls []cdpMsg
+	mu      syncutil.Mutex
+	writeMu syncutil.Mutex
+	conn    net.Conn
+	calls   []cdpMsg
 	// handle returns false to take over replying itself; the default replies {}.
 	handle func(f *fakeDevTools, m cdpMsg) bool
 	// onBrowserAttach runs when the browser-level auto-attach arrives, before
@@ -87,6 +88,12 @@ func (f *fakeDevTools) write(v any) {
 	conn := f.conn
 	f.mu.Unlock()
 	if conn != nil {
+		// The guard may answer several paused requests concurrently. Serialize
+		// fake-server writes just as the production guard serializes its CDP
+		// writes; concurrent WebSocket frames can otherwise interleave and make
+		// timing-sensitive CI failures look like ownership bugs.
+		f.writeMu.Lock()
+		defer f.writeMu.Unlock()
 		_ = wsutil.WriteServerText(conn, b)
 	}
 }
