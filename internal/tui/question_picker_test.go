@@ -315,8 +315,9 @@ func TestQuestionNeeded_OtherRowFreeTextEndToEnd(t *testing.T) {
 		t.Fatalf("free-text answer should count as answered")
 	}
 
-	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyRight}) // -> Submit tab
-	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
+	if m.awaitingQuestion {
+		t.Fatalf("committing a custom answer to a lone question should close the popup")
+	}
 
 	<-m.decisions
 	if len(reply.Selections) != 1 || reply.Selections[0].FreeText != "dev" {
@@ -703,5 +704,97 @@ func TestRenderQuestionPicker_NeverExceedsContentWidth(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func singleQuestion(multi bool) []agent.Question {
+	return []agent.Question{{
+		Header:      "Where",
+		Question:    "Where to save?",
+		MultiSelect: multi,
+		Options:     []agent.QuestionOption{{Label: "A"}, {Label: "B"}},
+	}}
+}
+
+// A lone question has no tab strip, so every way of answering it must submit
+// and close the popup rather than parking on a hidden review tab.
+func TestQuestionNeeded_LoneQuestionSubmitsOnEveryAnswerPath(t *testing.T) {
+	cases := map[string]struct {
+		multi bool
+		keys  []tea.KeyPressMsg
+		check func(*testing.T, agent.QuestionSelection)
+	}{
+		"enter on option": {false, []tea.KeyPressMsg{{Code: tea.KeyEnter}}, func(t *testing.T, s agent.QuestionSelection) {
+			if len(s.Labels) != 1 || s.Labels[0] != "A" {
+				t.Fatalf("got %+v", s)
+			}
+		}},
+		"digit": {false, []tea.KeyPressMsg{{Code: '2', Text: "2"}}, func(t *testing.T, s agent.QuestionSelection) {
+			if len(s.Labels) != 1 || s.Labels[0] != "B" {
+				t.Fatalf("got %+v", s)
+			}
+		}},
+		"skip": {false, []tea.KeyPressMsg{{Code: 's', Text: "s"}}, func(t *testing.T, s agent.QuestionSelection) {
+			if !s.Skipped {
+				t.Fatalf("got %+v", s)
+			}
+		}},
+		"multi-select enter": {true, []tea.KeyPressMsg{{Code: tea.KeySpace}, {Code: tea.KeyEnter}}, func(t *testing.T, s agent.QuestionSelection) {
+			if len(s.Labels) != 1 || s.Labels[0] != "A" {
+				t.Fatalf("got %+v", s)
+			}
+		}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := setupQuestionModel(t, singleQuestion(c.multi))
+			reply := m.questionReq.Reply
+			for _, k := range c.keys {
+				m, _ = applyMsg(m, k)
+			}
+			if m.awaitingQuestion {
+				t.Fatalf("popup should close")
+			}
+			<-m.decisions
+			if len(reply.Selections) != 1 {
+				t.Fatalf("reply not filled: %+v", reply)
+			}
+			c.check(t, reply.Selections[0])
+		})
+	}
+}
+
+func TestQuestionNeeded_LoneMultiSelectEnterWithNothingChosenStaysOpen(t *testing.T) {
+	m := setupQuestionModel(t, singleQuestion(true))
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.awaitingQuestion {
+		t.Fatalf("an unanswered lone question must not submit")
+	}
+}
+
+func TestQuestionNeeded_CustomAnswerAdvancesWithMultipleQuestions(t *testing.T) {
+	m := setupQuestionModel(t, twoQuestions())
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown}) // Other row
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.awaitingQuestion || m.questionPicker.activeTab != 1 {
+		t.Fatalf("custom answer should move to next question; tab=%d", m.questionPicker.activeTab)
+	}
+}
+
+func TestQuestionNeeded_CtrlCCancelsEvenWhileEditing(t *testing.T) {
+	m := setupQuestionModel(t, singleQuestion(false))
+	reply := m.questionReq.Reply
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = applyMsg(m, tea.KeyPressMsg{Text: "x"}) // editing Other
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	if m.awaitingQuestion {
+		t.Fatalf("Ctrl+C should close the popup")
+	}
+	<-m.decisions
+	if !reply.Cancelled {
+		t.Fatalf("reply should be marked cancelled")
 	}
 }
