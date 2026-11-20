@@ -616,8 +616,48 @@ func (m Model) submitQuestionPicker() (Model, tea.Cmd) {
 	return m, m.finishDecisionUI()
 }
 
+// advanceQuestion moves past the question just answered. A lone question has
+// no tab strip to move along, so once it is answered the popup submits and
+// closes instead of parking on a hidden review tab; with several questions it
+// moves to the next tab (the last one leads to the review tab).
+func (m Model) advanceQuestion() (Model, tea.Cmd) {
+	p := &m.questionPicker
+	if len(p.questions) != 1 {
+		p.nextTab()
+		return m, nil
+	}
+	if !p.answered(0) {
+		return m, nil
+	}
+	if m.questionReq.Reply != nil {
+		*m.questionReq.Reply = *p.buildAnswer()
+	}
+	return m.submitQuestionPicker()
+}
+
+// cancelQuestionPicker declines every question and tells the agent.
+func (m Model) cancelQuestionPicker() (Model, tea.Cmd) {
+	if m.questionReq.Reply != nil {
+		m.questionReq.Reply.Cancelled = true
+	}
+	// Clear the popup before sending the decision. The agent can resume
+	// immediately, and a failed/non-blocking send must not leave stale
+	// question chrome on screen.
+	m.clearPendingDecisionUI()
+	if !m.sendDecision(agent.Deny) {
+		return m, nil
+	}
+	m.appendLine(styleMeta.Render("question cancelled"))
+	return m, m.finishDecisionUI()
+}
+
 func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	p := &m.questionPicker
+	// Ctrl+C is "get me out": it cancels the whole questionnaire at once,
+	// even mid-edit, rather than being swallowed by the modal.
+	if msg.String() == "ctrl+c" {
+		return m.cancelQuestionPicker()
+	}
 	if p.isEditing() {
 		switch {
 		case msg.Code == tea.KeyEsc:
@@ -625,7 +665,11 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		case msg.Code == tea.KeyEnter && p.answers[p.activeTab].editingNote:
 			p.commitNote()
 		case msg.Code == tea.KeyEnter:
+			committed := strings.TrimSpace(p.answers[p.activeTab].freeTextBuf) != ""
 			p.commitOther()
+			if committed && !p.questions[p.activeTab].MultiSelect {
+				return m.advanceQuestion()
+			}
 		case msg.Code == tea.KeyBackspace:
 			p.backspaceOther()
 		case msg.Text != "":
@@ -649,18 +693,7 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			p.escArmed = true
 			return m, nil
 		}
-		if m.questionReq.Reply != nil {
-			m.questionReq.Reply.Cancelled = true
-		}
-		// Clear the popup before sending the decision. The agent can resume
-		// immediately, and a failed/non-blocking send must not leave stale
-		// question chrome on screen.
-		m.clearPendingDecisionUI()
-		if !m.sendDecision(agent.Deny) {
-			return m, nil
-		}
-		m.appendLine(styleMeta.Render("question cancelled"))
-		return m, m.finishDecisionUI()
+		return m.cancelQuestionPicker()
 	case tea.KeyLeft:
 		p.prevTab()
 	case tea.KeyRight:
@@ -678,7 +711,7 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case '1', '2', '3', '4', '5', '6', '7', '8', '9':
 		if p.quickPick(int(msg.Code - '1')) {
 			if !p.questions[p.activeTab].MultiSelect {
-				p.nextTab()
+				return m.advanceQuestion()
 			}
 		}
 	case 'n':
@@ -686,7 +719,7 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	case 's':
 		if !p.onSubmitTab() {
 			p.skipCurrent()
-			p.nextTab()
+			return m.advanceQuestion()
 		}
 	case tea.KeySpace:
 		if p.onOtherRow() {
@@ -708,10 +741,10 @@ func (m Model) updateQuestionPicker(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			p.startEditingOther()
 		case p.questions[p.activeTab].MultiSelect:
 			// Space toggles; Enter just moves on once the user is done.
-			p.nextTab()
+			return m.advanceQuestion()
 		default:
 			p.selectCurrent()
-			p.nextTab()
+			return m.advanceQuestion()
 		}
 	}
 	return m, nil
