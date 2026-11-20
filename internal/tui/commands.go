@@ -1497,7 +1497,7 @@ func cmdClear(m Model, _ []string) (Model, tea.Cmd) {
 	if sysContent != "" {
 		newSess.Messages = append(newSess.Messages, adapter.Message{
 			Role:    adapter.RoleSystem,
-			Content: filerefs.Inject(sysContent, nil),
+			Content: filerefs.StripSection(sysContent),
 		})
 	}
 	m.sess = newSess
@@ -1560,7 +1560,8 @@ func rebuildTranscript(m *Model) {
 	for _, msg := range m.sess.Messages {
 		switch msg.Role {
 		case adapter.RoleUser:
-			m.appendLine(renderUserBlock(msg.Content, m.width))
+			// Attachment blocks are model context, not something the user typed.
+			m.appendLine(renderUserBlock(filerefs.StripAttachment(msg.Content), m.width))
 		case adapter.RoleAssistant:
 			if msg.Content != "" && len(msg.ToolCalls) == 0 {
 				m.appendLine(renderAssistantBlock(msg.Content))

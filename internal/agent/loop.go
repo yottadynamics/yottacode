@@ -149,6 +149,12 @@ type LoopConfig struct {
 	// tests") without cancelling the active turn.
 	UserMessages <-chan UserMessage
 
+	// PrepareUserMessage, when non-nil, is applied to a queued message's
+	// text at delivery time, on the loop's goroutine (so file reads never
+	// touch the UI goroutine). The TUI uses it to resolve @file
+	// references in steering messages typed mid-turn.
+	PrepareUserMessage func(msg UserMessage) PreparedUser
+
 	// HistoryLock, when non-nil, serializes this loop's mutations and
 	// snapshots of the history slice against concurrent reads on another
 	// goroutine. The TUI sets it to the session's lock: its bubbletea
@@ -181,6 +187,28 @@ type LoopConfig struct {
 type UserMessage struct {
 	Content   string
 	Timestamp time.Time
+
+	// RestrictRefs marks a message whose text includes pasted content.
+	// When set, only the @file references in TypedRefs (the ones the user
+	// typed) may resolve outside the working directory; references that
+	// appear only inside pasted text stay confined to the project.
+	RestrictRefs bool
+	TypedRefs    []string
+}
+
+// PreparedUser is a queued UserMessage after delivery-time preparation
+// (resolving @file references): the model-facing content, any image
+// attachments, and the notices to show the user.
+type PreparedUser struct {
+	Content string
+	Images  []adapter.ImageBlock
+	Notices []AttachNotice
+}
+
+// AttachNotice is one user-visible line about an attachment outcome.
+type AttachNotice struct {
+	Text  string
+	Error bool
 }
 
 // CompactionConfig parameterizes in-loop compaction (LoopConfig.Compaction).
@@ -613,12 +641,17 @@ func Turn(
 				select {
 				case msg := <-cfg.UserMessages:
 					if msg.Content != "" {
+						prep := PreparedUser{Content: msg.Content}
+						if cfg.PrepareUserMessage != nil {
+							prep = cfg.PrepareUserMessage(msg)
+						}
 						appendHistory(cfg, state.history, adapter.Message{
 							Role:      adapter.RoleUser,
-							Content:   msg.Content,
+							Content:   prep.Content,
+							Images:    prep.Images,
 							Timestamp: &msg.Timestamp,
 						})
-						_ = send(ctx, events, UserMessageAppended{Content: msg.Content})
+						_ = send(ctx, events, UserMessageAppended{Content: msg.Content, Notices: prep.Notices})
 					}
 				default:
 				}

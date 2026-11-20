@@ -137,6 +137,10 @@ func TestDefaultDenyReadPaths_PopulatesExpectedEntries(t *testing.T) {
 			filepath.Join(home, ".ssh"),
 			filepath.Join(home, ".aws"),
 			filepath.Join(home, ".yottacode", ".env"),
+			filepath.Join(home, ".npmrc"),
+			filepath.Join(home, ".pypirc"),
+			filepath.Join(home, ".git-credentials"),
+			filepath.Join(home, ".pgpass"),
 		)
 	}
 	for _, want := range mustContain {

@@ -491,6 +491,11 @@ func DefaultDenyReadPaths(cwd string) []string {
 			filepath.Join(home, ".config", "hub"),
 			filepath.Join(home, ".docker", "config.json"),
 			filepath.Join(home, ".kube", "config"),
+			// Package-registry and VCS credential stores.
+			filepath.Join(home, ".npmrc"),
+			filepath.Join(home, ".pypirc"),
+			filepath.Join(home, ".git-credentials"),
+			filepath.Join(home, ".pgpass"),
 		)
 	}
 	if cwd != "" {

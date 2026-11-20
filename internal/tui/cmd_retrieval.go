@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
-	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
 )
 
@@ -27,26 +26,23 @@ const summaryHeading = "\n\n## Prior session context (summarized)\n"
 // to freeze input when this ran synchronously on Enter. ctx is the
 // turn context, so Esc aborts an in-flight embed.
 //
-// Order of operations (startTurn appends the user message and injects
-// @-file refs on the Update goroutine BEFORE the turn goroutine calls
-// this):
+// Order of operations (startTurn appends the user message, with any
+// @-file attachments, on the Update goroutine BEFORE the turn goroutine
+// calls this; attachments live in the user message, not the system
+// prompt):
 //
 //  1. Read the current system content.
 //  2. Extract the "Prior session context (summarized)" block if any
 //     (must survive the rebuild — that block is the only memory of
-//     the prior session when --summarized was used), and the
-//     "Referenced files" block startTurn just injected (it would
-//     otherwise be silently dropped by the recompose, breaking the
-//     @-refs of the very turn being started).
+//     the prior session when --summarized was used).
 //  3. Re-Load memory from disk so mid-session edits to USER.md /
 //     YOTTACODE.md and memory_save / memory_forget writes show up
 //     immediately. A load error is non-fatal — we keep the existing
 //     prompt so the turn can still fire.
 //  4. Compose [provider hint + memory] via SystemPromptFor, filtering
 //     per-entry bodies down to the relevant subset.
-//  5. Re-append the preserved summary block, then the preserved
-//     file-refs block (canonical order: base → memory → summary →
-//     refs, matching extractSummarySection's boundary assumption).
+//  5. Re-append the preserved summary block (canonical order:
+//     base → memory → prior-convos → summary).
 //  6. Write back.
 func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 	if len(m.sess.Messages) == 0 || m.sess.Messages[0].Role != adapter.RoleSystem {
@@ -54,7 +50,6 @@ func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 	}
 	cur := m.sess.Messages[0].Content
 	summary := extractSummarySection(cur)
-	refsBlock := extractFileRefsBlock(cur)
 
 	mem, err := memory.Load(m.cwd)
 	if err != nil {
@@ -73,12 +68,9 @@ func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 	if summary != "" {
 		newSys = strings.TrimRight(newSys, "\n") + summaryHeading + summary
 	}
-	if refsBlock != "" {
-		newSys = strings.TrimRight(newSys, "\n") + "\n\n" + refsBlock
-	}
 	m.sess.Messages[0].Content = newSys
-	// composed is the stable head; the memory tail (and any summary /
-	// @-file refs appended later) follow it. Marking the head length
+	// composed is the stable head; the memory tail (and any summary
+	// appended later) follow it. Marking the head length
 	// lets the Anthropic adapter cache the static prefix across turns
 	// even as the tail churns. See Message.CacheHeadBytes.
 	m.sess.Messages[0].CacheHeadBytes = len(composed)
@@ -86,30 +78,11 @@ func (m *Model) rebuildSystemPromptForTurn(ctx context.Context, query string) {
 
 // extractSummarySection returns the body (without heading) of the
 // "## Prior session context (summarized)" block in the system prompt,
-// or "" if absent. The block is bounded on the right by the next
-// auto-injected section ("## Referenced files …") or end-of-string —
-// both possibilities matter because filerefs may have appended after
-// the summary on a prior turn.
+// or "" if absent. The summary is the prompt's tail.
 func extractSummarySection(content string) string {
 	idx := strings.Index(content, summaryHeading)
 	if idx < 0 {
 		return ""
 	}
-	body := content[idx+len(summaryHeading):]
-	if r := strings.Index(body, "\n\n"+filerefs.Marker); r >= 0 {
-		body = body[:r]
-	}
-	return strings.TrimSpace(body)
-}
-
-// extractFileRefsBlock returns the auto-injected "Referenced files"
-// block (marker heading included) from the system prompt, or "" if
-// absent. filerefs.Inject always appends the block as the prompt's
-// tail (StripSection + append), so marker-to-end is the whole block.
-func extractFileRefsBlock(content string) string {
-	idx := strings.Index(content, filerefs.Marker)
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(content[idx:])
+	return strings.TrimSpace(content[idx+len(summaryHeading):])
 }

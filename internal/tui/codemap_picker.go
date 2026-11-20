@@ -12,6 +12,7 @@ import (
 
 	"github.com/yottadynamics/yottacode/internal/codemap"
 	"github.com/yottadynamics/yottacode/internal/execguard"
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 )
 
 const codeMapVisibleRows = 28
@@ -289,7 +290,7 @@ func (m *Model) insertCodeMapRef(path string) {
 	if val != "" {
 		val += " "
 	}
-	m.textInput.SetValue(val + "@" + path + " ")
+	m.textInput.SetValue(val + "@" + filerefs.Quote(path) + " ")
 	m.textInput.CursorEnd()
 	m.refreshFilePalette(m.textInput.Value())
 }

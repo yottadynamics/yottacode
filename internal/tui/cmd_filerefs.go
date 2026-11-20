@@ -3,9 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/yottadynamics/yottacode/internal/adapter"
-	"github.com/yottadynamics/yottacode/internal/filerefs"
+	"time"
 )
 
 // refreshFilePalette is the per-keystroke driver for the @-palette.
@@ -33,11 +31,11 @@ func (m *Model) refreshFilePalette(value string) {
 		m.filePaletteFiltered = nil
 		return
 	}
-	if m.filePaletteEntries == nil {
-		m.filePaletteEntries = walkFiles(m.cwd)
-	}
 	prevQuery := m.filePaletteQuery
-	m.filePaletteFiltered = filterFilePalette(query, m.filePaletteEntries)
+	if !m.filePaletteOpen && time.Since(m.filePaletteWalkedAt) > filePaletteCacheTTL {
+		m.filePaletteEntries = nil // palette is (re)opening: drop a stale walk
+	}
+	m.filePaletteFiltered = m.filterPalette(query)
 	m.filePaletteQuery = query
 	m.filePaletteAt = atIdx
 	m.filePaletteOpen = true
@@ -53,6 +51,35 @@ func (m *Model) refreshFilePalette(value string) {
 		m.filePaletteOffset = 0
 	}
 }
+
+// filterPalette returns the candidates for the raw query typed after
+// `@`. Project-relative queries fuzzy-filter the cached cwd walk (built
+// lazily); absolute, `~/` and `../` queries browse that directory live.
+func (m *Model) filterPalette(raw string) []fileEntry {
+	q := decodePaletteQuery(raw)
+	if isExternalQuery(q) {
+		return listExternal(q, m.cwd)
+	}
+	if m.filePaletteEntries == nil {
+		m.filePaletteEntries, m.filePaletteCapped = walkFilesCapped(m.cwd)
+		m.filePaletteWalkedAt = time.Now()
+	}
+	// When the walk was capped, a path-style query ("big/dir/na") lists
+	// that directory live so nothing the caps dropped is unreachable.
+	if m.filePaletteCapped && strings.Contains(q, "/") {
+		if live := listExternal(q, m.cwd); len(live) > 0 {
+			return live
+		}
+	}
+	return filterFilePalette(q, m.filePaletteEntries)
+}
+
+// filePaletteCacheTTL bounds how stale the cached project walk may be
+// when the palette opens. Files created mid-session (a fresh export, a
+// new test) show up after at most this long, while rapid re-opens and
+// the per-keystroke refreshes never trigger a re-walk (which once made
+// typing lag on large trees).
+const filePaletteCacheTTL = 5 * time.Second
 
 // acceptFilePaletteChoice splices the highlighted entry into the
 // textarea, replacing the active `@<query>` span. Files are written
@@ -79,21 +106,17 @@ func (m *Model) acceptFilePaletteChoice() {
 		m.dropFilePalette()
 		return
 	}
-	suffix := "@" + choice.Path
-	if choice.IsDir {
-		suffix += "/"
-	} else {
-		suffix += " "
-	}
-	newVal := val[:m.filePaletteAt] + suffix
+	insert := paletteInsert(choice)
+	newVal := val[:m.filePaletteAt] + "@" + insert
 	m.textInput.SetValue(newVal)
 	m.textInput.CursorEnd()
 	if choice.IsDir {
 		// Re-anchor for the directory's children — keep the palette
-		// open so the user can keep tab-completing into it.
+		// open so the user can keep tab-completing into it. The query
+		// is the raw text after `@` (it may carry an open quote).
 		m.filePaletteAt = len(val[:m.filePaletteAt])
-		m.filePaletteQuery = choice.Path + "/"
-		m.filePaletteFiltered = filterFilePalette(m.filePaletteQuery, m.filePaletteEntries)
+		m.filePaletteQuery = insert
+		m.filePaletteFiltered = m.filterPalette(m.filePaletteQuery)
 		m.filePaletteIndex = 0
 		m.filePaletteOffset = 0
 		m.filePaletteOpen = true
@@ -120,65 +143,6 @@ func (m *Model) dropFilePalette() {
 	m.filePaletteQuery = ""
 	m.filePaletteAt = -1
 	m.filePaletteFiltered = nil
-}
-
-// injectFileRefs rewrites the active session's system message so it
-// contains the latest auto-injected `## Referenced files` block, and
-// emits a muted user-visible notice for each ref. Called once per
-// turn from startTurn when the user input contains @<path> tokens;
-// the injection is idempotent across turns because filerefs.Inject
-// strips any prior block before appending the new one.
-//
-// Load failures are surfaced as red notices but do NOT block the turn
-// — the model still sees the failed-ref entry in the injected block
-// (so it can ask a clarifying question) and the rest of the turn
-// proceeds. This mirrors how the agent's own tools handle bad paths:
-// report and continue.
-func (m *Model) injectFileRefs(refs []filerefs.Ref) {
-	if len(refs) == 0 {
-		return
-	}
-	m.rewriteSystemPromptWithRefs(refs)
-	for _, r := range refs {
-		switch {
-		case r.Loaded && r.IsDir:
-			m.appendLine(styleAuto.Render(fmt.Sprintf("· attached %s (directory, %d entries)",
-				r.Token, dirEntryCount(r.Content))))
-		case r.Loaded:
-			m.appendLine(styleAuto.Render(fmt.Sprintf("· attached %s (%s)",
-				r.Token, humanBytes(r.Size))))
-		default:
-			m.appendLine(styleError.Render(fmt.Sprintf("· could not attach %s: %s",
-				r.Token, r.Error)))
-		}
-	}
-}
-
-// clearFileRefs strips any auto-injected file-refs block from the
-// system prompt without adding a new one. Called from startTurn on
-// turns where the user did NOT reference any files — keeps the
-// previous turn's references from leaking into the next one when the
-// user has moved on.
-func (m *Model) clearFileRefs() {
-	m.rewriteSystemPromptWithRefs(nil)
-}
-
-// rewriteSystemPromptWithRefs is the shared mutator behind both
-// injectFileRefs and clearFileRefs. Walks sess.Messages for the
-// system role and replaces its content with the result of
-// filerefs.Inject. Prompt rewriting is a no-op if no system message is present
-// (which shouldn't happen in practice — Run always seeds one); the attribution
-// snapshot is still synchronized.
-func (m *Model) rewriteSystemPromptWithRefs(refs []filerefs.Ref) {
-	// Keep attribution independent of the loader's caller-owned slice: callers
-	// commonly reuse it, while /context may be opened after the turn starts.
-	m.activeFileRefs = append([]filerefs.Ref(nil), refs...)
-	for i := range m.sess.Messages {
-		if m.sess.Messages[i].Role == adapter.RoleSystem {
-			m.sess.Messages[i].Content = filerefs.Inject(m.sess.Messages[i].Content, refs)
-			return
-		}
-	}
 }
 
 // dirEntryCount counts non-empty lines in a directory listing string

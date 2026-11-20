@@ -23,6 +23,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/xuri/excelize/v2 v2.11.1-0.20261018005640-da3f2df1bb7f
 	github.com/ysmood/leakless v0.9.0
+	golang.org/x/image v0.44.0
 	golang.org/x/oauth2 v0.36.0
 	gopkg.in/yaml.v3 v3.0.1
 )

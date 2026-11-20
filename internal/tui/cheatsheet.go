@@ -24,7 +24,7 @@ var cheatsheet = []cheatsheetEntry{
 	{"Ctrl+C", "cancel the in-flight turn · stop an armed /loop (returns to prompt)"},
 	{"Ctrl+D", "exit yottacode"},
 	{"y / a / N", "approval response in modal (yes / always / no)"},
-	{"@", "open file picker — type to filter, Tab/Enter to insert, Esc to close"},
+	{"@", "open file picker — type to filter, Tab/Enter to attach, Esc to close; ~/ / ../ browse outside the project"},
 	{"@<path>", "attach a file's contents to the next message (cwd-confined)"},
 }
 
