@@ -96,6 +96,16 @@ type Store struct {
 
 	mu        syncutil.Mutex
 	openMetas map[string]*Meta // checkpointID -> in-memory Meta during a turn
+
+	// pending tracks in-flight background messages.json writes by checkpoint
+	// ID; the channel closes when the write finishes. writeErrs keeps the
+	// failure of a finished write so LoadMessages can report it.
+	pending   map[string]chan struct{}
+	writeErrs map[string]error
+
+	// manifestMu serializes manifest read-modify-write: Begin appends on the
+	// caller's goroutine while a failed background write removes its entry.
+	manifestMu syncutil.Mutex
 }
 
 // DefaultRoot returns ~/.yottacode/checkpoints/. Created on demand by New.
@@ -123,6 +133,8 @@ func New(root string) (*Store, error) {
 	return &Store{
 		root:      root,
 		openMetas: make(map[string]*Meta),
+		pending:   make(map[string]chan struct{}),
+		writeErrs: make(map[string]error),
 	}, nil
 }
 
@@ -181,9 +193,6 @@ func (s *Store) Begin(sessionID, userPrompt string, userMsgIdx int, history []ad
 		Captured:  meta.Created,
 		Messages:  cloneMessages(history),
 	}
-	if err := writeJSONAtomic(filepath.Join(cpDir, "messages.json"), snap); err != nil {
-		return "", err
-	}
 	if err := s.appendManifest(sessionID, ManifestEntry{
 		CheckpointID:  cpID,
 		Created:       meta.Created,
@@ -194,6 +203,31 @@ func (s *Store) Begin(sessionID, userPrompt string, userMsgIdx int, history []ad
 	s.mu.Lock()
 	s.openMetas[cpID] = meta
 	s.mu.Unlock()
+	// The history snapshot is cloned here (cheap) but marshalled and written
+	// on a background goroutine: it is O(history) and Begin runs on the TUI's
+	// Update loop at every Enter. Readers (LoadMessages, Sweep, Flush) wait for
+	// it. Compact, not indented: nothing reads the file by eye and indentation
+	// roughly doubles both the marshal time and the bytes written.
+	done := make(chan struct{})
+	s.mu.Lock()
+	s.pending[cpID] = done
+	s.mu.Unlock()
+	go func() {
+		err := writeSnapshotFn(filepath.Join(cpDir, "messages.json"), snap, "")
+		if err != nil {
+			// A checkpoint without its snapshot cannot be restored: drop it
+			// from the manifest so the picker never offers it. Started only after
+			// Begin's appendManifest, so the entry is already there to remove.
+			s.dropCheckpoint(sessionID, cpID)
+		}
+		s.mu.Lock()
+		delete(s.pending, cpID)
+		if err != nil {
+			s.writeErrs[cpID] = err
+		}
+		s.mu.Unlock()
+		close(done)
+	}()
 	return cpID, nil
 }
 
@@ -303,6 +337,13 @@ func (s *Store) LoadMeta(sessionID, cpID string) (Meta, error) {
 
 // LoadMessages returns the conversation snapshot bound to one checkpoint.
 func (s *Store) LoadMessages(sessionID, cpID string) ([]adapter.Message, error) {
+	s.waitPending(cpID)
+	s.mu.Lock()
+	werr := s.writeErrs[cpID]
+	s.mu.Unlock()
+	if werr != nil {
+		return nil, fmt.Errorf("checkpoint: writing messages.json: %w", werr)
+	}
 	b, err := os.ReadFile(filepath.Join(s.checkpointDir(sessionID, cpID), "messages.json"))
 	if err != nil {
 		return nil, err
@@ -382,6 +423,7 @@ func (s *Store) RestoreCode(sessionID, cpID string) ([]error, error) {
 // Sweep is opportunistic — callers should run it in a background
 // goroutine on session open. Idempotent and safe to call frequently.
 func (s *Store) Sweep(ttl time.Duration) (int, error) {
+	s.Flush()
 	cutoff := time.Now().UTC().Add(-ttl)
 	entries, err := os.ReadDir(s.root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -407,6 +449,8 @@ func (s *Store) Sweep(ttl time.Duration) (int, error) {
 }
 
 func (s *Store) sweepSession(sessionID string, cutoff time.Time) (int, error) {
+	s.manifestMu.Lock()
+	defer s.manifestMu.Unlock()
 	man, err := s.LoadManifest(sessionID)
 	if err != nil {
 		return 0, err
@@ -487,7 +531,33 @@ func (s *Store) loadMeta(sessionID, cpID string) (*Meta, error) {
 	return &m, nil
 }
 
+// writeSnapshotFn writes messages.json; a var so tests can inject a failure.
+var writeSnapshotFn = writeJSONAtomicIndent
+
+// dropCheckpoint removes cpID's manifest entry and directory. Best effort:
+// it is the cleanup path for a checkpoint whose snapshot write failed.
+func (s *Store) dropCheckpoint(sessionID, cpID string) {
+	s.manifestMu.Lock()
+	defer s.manifestMu.Unlock()
+	if man, err := s.LoadManifest(sessionID); err == nil {
+		keep := man.Entries[:0:0]
+		for _, en := range man.Entries {
+			if en.CheckpointID != cpID {
+				keep = append(keep, en)
+			}
+		}
+		man.Entries = keep
+		_ = writeJSONAtomic(s.manifestPath(sessionID), man)
+	}
+	_ = os.RemoveAll(s.checkpointDir(sessionID, cpID))
+	s.mu.Lock()
+	delete(s.openMetas, cpID)
+	s.mu.Unlock()
+}
+
 func (s *Store) appendManifest(sessionID string, entry ManifestEntry) error {
+	s.manifestMu.Lock()
+	defer s.manifestMu.Unlock()
 	man, err := s.LoadManifest(sessionID)
 	if err != nil {
 		return err
@@ -534,7 +604,19 @@ func cloneMessages(in []adapter.Message) []adapter.Message {
 }
 
 func writeJSONAtomic(path string, payload any) error {
-	b, err := json.MarshalIndent(payload, "", "  ")
+	return writeJSONAtomicIndent(path, payload, "  ")
+}
+
+// writeJSONAtomicIndent writes payload as JSON, indented by indent (empty for
+// compact output). LoadMessages parses either form.
+func writeJSONAtomicIndent(path string, payload any, indent string) error {
+	var b []byte
+	var err error
+	if indent == "" {
+		b, err = json.Marshal(payload)
+	} else {
+		b, err = json.MarshalIndent(payload, "", indent)
+	}
 	if err != nil {
 		return err
 	}
@@ -546,4 +628,33 @@ func writeJSONAtomic(path string, payload any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// waitPending blocks until the background messages.json write for cpID, if
+// any, has finished.
+func (s *Store) waitPending(cpID string) {
+	s.mu.Lock()
+	ch := s.pending[cpID]
+	s.mu.Unlock()
+	if ch != nil {
+		<-ch
+	}
+}
+
+// Flush blocks until every background messages.json write has finished. Call
+// before exit so the last prompt's snapshot is on disk.
+func (s *Store) Flush() {
+	for {
+		s.mu.Lock()
+		var ch chan struct{}
+		for _, c := range s.pending {
+			ch = c
+			break
+		}
+		s.mu.Unlock()
+		if ch == nil {
+			return
+		}
+		<-ch
+	}
 }

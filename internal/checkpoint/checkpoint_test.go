@@ -1,6 +1,8 @@
 package checkpoint
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +19,9 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// Begin writes messages.json in the background; finish it before the
+	// temp dir is removed.
+	t.Cleanup(s.Flush)
 	return s
 }
 
@@ -282,5 +287,77 @@ func TestLoadManifest_OrdersNewestFirst(t *testing.T) {
 	}
 	if man.Entries[1].CheckpointID != cp1 {
 		t.Errorf("entries[1] = %s, want %s", man.Entries[1].CheckpointID, cp1)
+	}
+}
+
+func TestBegin_MessagesFileIsCompactAndRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	hist := []adapter.Message{
+		{Role: adapter.RoleUser, Content: "hi"},
+		{Role: adapter.RoleAssistant, Content: "hello"},
+	}
+	id, err := s.Begin("sess", "hi", len(hist), hist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	raw, err := os.ReadFile(filepath.Join(s.checkpointDir("sess", id), "messages.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("\n")) {
+		t.Fatalf("messages.json should be compact, got newlines: %q", raw)
+	}
+	got, err := s.LoadMessages("sess", id)
+	if err != nil || len(got) != 2 || got[1].Content != "hello" {
+		t.Fatalf("round trip: %v %+v", err, got)
+	}
+}
+
+func TestBegin_AsyncWriteVisibleToLoadMessagesAndFlush(t *testing.T) {
+	s := newTestStore(t)
+	hist := []adapter.Message{{Role: adapter.RoleUser, Content: "x"}}
+	var ids []string
+	for i := 0; i < 20; i++ {
+		id, err := s.Begin("sess", "p", len(hist), hist)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	// LoadMessages must wait for the in-flight write rather than miss the file.
+	for _, id := range ids {
+		if got, err := s.LoadMessages("sess", id); err != nil || len(got) != 1 {
+			t.Fatalf("LoadMessages(%s): %v %v", id, err, got)
+		}
+	}
+	s.Flush()
+	if len(s.pending) != 0 {
+		t.Fatalf("Flush left %d pending writes", len(s.pending))
+	}
+}
+
+func TestBegin_FailedSnapshotWriteDropsCheckpointFromManifest(t *testing.T) {
+	old := writeSnapshotFn
+	writeSnapshotFn = func(string, any, string) error { return errors.New("disk full") }
+	t.Cleanup(func() { writeSnapshotFn = old })
+
+	s := newTestStore(t)
+	id, err := s.Begin("sess", "p", 1, []adapter.Message{{Role: adapter.RoleUser, Content: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	man, err := s.LoadManifest("sess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, en := range man.Entries {
+		if en.CheckpointID == id {
+			t.Fatalf("failed checkpoint still listed in manifest: %+v", man.Entries)
+		}
+	}
+	if _, err := s.LoadMessages("sess", id); err == nil {
+		t.Fatal("LoadMessages should report the failed write")
 	}
 }

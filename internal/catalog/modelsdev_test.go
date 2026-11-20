@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -146,5 +148,37 @@ func TestHostname(t *testing.T) {
 		if got := hostname(in); got != want {
 			t.Errorf("hostname(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A disk cache older than modelsDevMemTTL (but inside the disk TTL) must be
+// read once, not on every call: the in-memory timestamp is the load time, not
+// the file's fetched_at.
+func TestLoadModelsDev_OldDiskCacheParsedOnce(t *testing.T) {
+	oc, oa, ot, op := modelsDevCache, modelsDevCacheAt, modelsDevTriedNet, modelsDevCachePathFn
+	t.Cleanup(func() {
+		modelsDevCache, modelsDevCacheAt, modelsDevTriedNet, modelsDevCachePathFn = oc, oa, ot, op
+	})
+	path := filepath.Join(t.TempDir(), "models-dev-cache.json")
+	modelsDevCachePathFn = func() (string, error) { return path, nil }
+	modelsDevCache, modelsDevCacheAt, modelsDevTriedNet = nil, time.Time{}, true
+	env := diskCacheEnvelope{
+		FetchedAt: time.Now().Add(-3 * time.Hour),
+		Catalog:   modelsDevCatalog{"p": {ID: "p"}},
+	}
+	b, _ := json.Marshal(env)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := loadModelsDev()
+	if first == nil {
+		t.Fatal("expected disk catalog")
+	}
+	// Replace the file; a second call must serve the in-memory copy.
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadModelsDev(); len(got) != len(first) || got["p"].ID != "p" {
+		t.Fatalf("second call re-read the disk cache: %v", got)
 	}
 }

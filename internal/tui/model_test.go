@@ -46,6 +46,10 @@ func newTestModel(t *testing.T) Model {
 		Cwd:         cwd,
 	})
 	m, _ = applyMsg(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	// Turn-end / summarize handlers save in the background; finish those
+	// writes before t.TempDir (HOME) is removed. Registered after TempDir, so
+	// it runs first.
+	t.Cleanup(session.FlushAll)
 	return m
 }
 

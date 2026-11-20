@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yottadynamics/yottacode/internal/recall"
+	"github.com/yottadynamics/yottacode/internal/session"
 )
 
 // priorConvosHeading marks the auto-recall block injected into the system
@@ -31,16 +32,51 @@ const priorConvosHeading = "\n\n## Prior conversations (background — do not na
 // not race the session; writes serialize through the index's write mutex.
 // Typically embeds just the turn's one or two new messages.
 func (m Model) embedCurrentSessionAsync() {
+	if embed := m.embedCurrentSessionFunc(); embed != nil {
+		embed()
+	}
+}
+
+// embedCurrentSessionFunc returns the embed kick-off embedCurrentSessionAsync
+// would run, or nil when it would be a no-op. Splitting it out lets the
+// background session save run it after IndexSession has written the FTS rows.
+func (m Model) embedCurrentSessionFunc() func() {
 	if m.recall == nil || m.embedClient == nil || m.sess == nil {
-		return
+		return nil
 	}
 	if !m.fileCfg.Retrieval.SessionRecall.Auto {
-		return
+		return nil
 	}
 	idx, ec, sessionID := m.recall, m.embedClient, m.sess.ID
-	go func() {
-		_ = idx.BackfillVectorsForSession(context.Background(), ec, ec.Model, sessionID)
-	}()
+	return func() {
+		go func() {
+			_ = idx.BackfillVectorsForSession(context.Background(), ec, ec.Model, sessionID)
+		}()
+	}
+}
+
+// persistSessionAsync saves the session and refreshes the recall index off the
+// UI thread. Both are O(history): at thousands of turns the synchronous version
+// froze typing for most of a second at every turn end. A failure from an
+// earlier background save is reported now, on the next call.
+func (m *Model) persistSessionAsync(saveErrLabel, indexErrLabel string) {
+	if err := m.sess.TakeAsyncErr(); err != nil {
+		m.appendLine(styleError.Render(fmt.Sprintf("⚠ %s: %v", saveErrLabel, err)))
+	}
+	idx, embed := m.recall, m.embedCurrentSessionFunc()
+	// SaveAsync snapshots under histMu: a wake turn may already be appending.
+	m.sess.SaveAsync(m.histMu, func(snap *session.Session) error {
+		if idx == nil {
+			return nil
+		}
+		if err := idx.IndexSession(snap); err != nil {
+			return fmt.Errorf("%s: %w", indexErrLabel, err)
+		}
+		if embed != nil {
+			embed()
+		}
+		return nil
+	})
 }
 
 // priorConversationsBlock semantically searches past sessions for context

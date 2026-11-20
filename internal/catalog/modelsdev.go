@@ -124,7 +124,12 @@ func loadModelsDev() modelsDevCatalog {
 
 	// Fresh disk cache → use without touching the network.
 	if env, ok := readModelsDevDisk(); ok && time.Since(env.FetchedAt) < modelsDevDiskTTL {
-		modelsDevCache, modelsDevCacheAt = env.Catalog, env.FetchedAt
+		// modelsDevCacheAt is the IN-MEMORY age (what modelsDevMemTTL bounds),
+		// not the file's fetched_at: stamping it with fetched_at made a disk
+		// cache older than the mem TTL look expired on every call, so each
+		// lookup re-read and re-parsed the whole file (~17ms) — and the TUI
+		// resolves the context window on every render.
+		modelsDevCache, modelsDevCacheAt = env.Catalog, time.Now()
 		return modelsDevCache
 	}
 
@@ -141,8 +146,12 @@ func loadModelsDev() modelsDevCatalog {
 	// Network failed/skipped → fall back to a stale disk cache if any.
 	if modelsDevCache == nil {
 		if env, ok := readModelsDevDisk(); ok {
-			modelsDevCache, modelsDevCacheAt = env.Catalog, env.FetchedAt
+			modelsDevCache, modelsDevCacheAt = env.Catalog, time.Now()
 		}
+	} else {
+		// Expired in memory, disk stale, network skipped: keep serving what we
+		// have and re-check after another mem TTL instead of on every call.
+		modelsDevCacheAt = time.Now()
 	}
 
 	// Offline-first floor: the committed snapshot embedded in the binary.
