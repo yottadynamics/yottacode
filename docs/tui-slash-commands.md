@@ -48,9 +48,21 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 
 ## `@` file references
 
-Type `@` at the start of a word to open the file picker. The picker searches the current working directory and skips common generated/dependency directories. Use `↑`/`↓` to select, `Tab` to attach the highlighted file, and `Esc` to close the picker without changing the input. `Enter` submits the prompt; it does not attach a file.
+Type `@` at the start of a word to open the file picker. The picker searches the current working directory and skips common generated/dependency directories. Use `↑`/`↓` to select, `Tab` or `Enter` to attach the highlighted file (or step into a directory), and `Esc` to close the picker without changing the input. With no match, `Enter` submits the prompt as typed.
 
-Typing a slash scopes the search as a directory prefix: `@internal/tui/` only shows entries beneath `internal/tui/`. The picker refreshes when the session enters or exits a worktree. Large repositories may show a bounded candidate list, and directory references produce bounded listings.
+Typing a slash scopes the search to that path: `@internal/tui/` shows only entries beneath `internal/tui/`, and a partial final segment prefix-matches (`@docs/RE` finds `docs/README.md`). The picker refreshes when the session enters or exits a worktree. It lists the project breadth-first with a bounded candidate list (2000 entries, at most 400 per directory); when a project is big enough to hit those bounds, a path-style query such as `@big/dir/na` lists that directory live, so nothing is unreachable. Directory references produce bounded listings.
+
+### How attachments reach the model
+
+Referenced files are attached to **your message**, not the system prompt: the model sees your text (with the leading `@` removed from each attached path) followed by a `## Referenced files` block holding the contents. Two consequences: file contents are treated as your data, not as instructions with system authority, and the provider's prompt cache stays valid because the system prompt is never edited. The attachment stays in the conversation, so later turns still see the file. The transcript, `/resume` and the ↑ history show only what you typed (history keeps the `@` tokens, so resending an entry re-attaches the files). A `@file` typed while a turn is running is resolved when the steering message is delivered (the `delivered` line is followed by the attach notices); pasted images cannot ride a queued message and are reported as dropped. When you press Enter on a message with `@` references, the files are loaded in the background: the transcript shows `· attaching files… (Esc to cancel)`, typing stays responsive, and the turn starts when loading finishes. `Esc` cancels the send and puts your text back in the input box (Enter is ignored while loading). The whole load has a 5-second limit, so a hung network mount produces an error notice instead of a stall.
+
+### What can be referenced
+
+- **Outside the project (interactive only).** `@~/Pictures/`, `@/var/log/` and `@../sibling/` browse that directory live in the picker (files newest first; dotfiles hidden unless you type a leading `.`). Absolute, `~/` and `../` paths can also be typed directly, and the attach notice says `outside project`. Credential locations (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, `~/.pgpass`, kube/docker/gh configs, `.env`, `*.tfstate`, key and certificate files) are never offered and never attached, including through symlinks. Inside the working directory symlinks are still not followed. `yottacode run` and ACP stay confined to the working directory, because a scripted prompt can embed untrusted text. The same applies inside the TUI to pasted text: only references you **typed** (or picked) may leave the project, while an `@/path` that merely appears inside a pasted block (a web page, a log, an email) stays confined and is reported as such.
+- **Special characters.** Quote the path, `@"Screenshot from 2026-11-20.png"`, or escape it, `@my\ notes.md`, `@app/\[id\].tsx`. The picker inserts the right form for you, including for names with spaces, `[ ] ( )`, `@` or quotes (Next.js `[id].tsx` and `(group)` routes). A `file://` URL (percent-encoding decoded) also works, so a path copied from a file manager can be attached as `@file:///…`.
+- **Sentence punctuation.** `explain @main.go.` works: if `main.go.` does not exist, the trailing dot is dropped and `main.go` is attached. An existing file whose name really ends in a dot always wins.
+- **Fresh files.** The picker re-scans the project when it opens if its last scan is more than five seconds old, so newly created files appear.
+- **Images.** `.png`, `.jpg`/`.jpeg`, `.gif` and `.webp` files are attached to the message as real images, not pasted as text, when the active model supports images; otherwise the reference is reported as not attached. Images over 5 MiB, or with a side over 8000 px, are resized and re-encoded as JPEG (transparency flattened to white, animated GIFs keep their first frame) instead of being refused, because a provider-rejected image would fail the whole request; the attach notice says `resized from … to …`. Sources up to 20 MiB and 64 megapixels are accepted; beyond that, or with more than 20 MiB of images or 10 images in one message, the extra images are reported as not attached. Image attachment is interactive-TUI only: `yottacode run` and ACP report an error for image refs. Other binary files are rejected.
 
 For safety, common secret files such as `.env`, credential files, private-key files, and certificate containers are hidden from the picker and rejected if referenced directly. Put non-sensitive excerpts in a safe project file before attaching them.
 
@@ -131,7 +143,7 @@ A literal `$ABC` (not one of the recognized tokens) is left as-is.
 
 ### File references in the body
 
-Any `@<path>` token in the resolved body is picked up by the same filerefs pipeline that handles user-typed `@` references. The file's contents inject into the system prompt before the turn fires, and the `@` is stripped from the user message so the model sees a plain path. This lets you pin a command to a specific spec or checklist file:
+Any `@<path>` token in the resolved body is picked up by the same filerefs pipeline that handles user-typed `@` references. The file's contents are attached to that turn's user message (see [How attachments reach the model](#how-attachments-reach-the-model)), and the `@` is stripped from the message text so the model sees a plain path. This lets you pin a command to a specific spec or checklist file:
 
 ```markdown
 ---
@@ -190,7 +202,7 @@ Hot-reload is also deferred — changes to `commands/` files take effect the nex
 2. Launch `yottacode`. The palette filter `/rev` shows `/review-pr <pr-number>   Review a PR and suggest changes` alongside built-ins.
 3. Hit Enter on the row — the input fills `/review-pr ` (because `argument-hint` is set).
 4. Type `123` and submit.
-5. The user message that lands in scrollback reads `You are reviewing PR #123. docs/code-review.md …`, with `docs/code-review.md` injected into the system prompt for that turn.
+5. The user message that lands in scrollback reads `You are reviewing PR #123. docs/code-review.md …`, with `docs/code-review.md` attached to that message.
 6. The agent runs the normal turn loop — tool calls, streaming reply, approvals all behave the same as if you'd typed the prompt by hand.
 
 ### Built-in defaults

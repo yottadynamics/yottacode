@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -264,20 +265,123 @@ func TestModel_AtKeyDoesNotOpenPaletteOnEmail(t *testing.T) {
 	}
 }
 
-func TestModel_EnterSubmitsInsteadOfAttachingFile(t *testing.T) {
+// Regression: the footer promises "Tab/Enter: attach", but Enter used to
+// submit the half-typed "@ocp-deplop" text instead of attaching the
+// highlighted file (which sat in a subdirectory).
+func TestModel_EnterAcceptsFilePaletteChoice(t *testing.T) {
 	cwd := t.TempDir()
-	mustWriteFile(t, filepath.Join(cwd, "main.go"), "package main\n")
+	mustMkdirAll(t, filepath.Join(cwd, "ocp-deployment"))
+	mustWriteFile(t, filepath.Join(cwd, "ocp-deployment", "RFC-sizing.md"), "# rfc\n")
 	m := newTestModel(t)
 	m.cwd = cwd
-	for _, r := range []rune("@main") {
+	for _, r := range []rune("@ocp-deplo") {
 		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
 	}
 	if !m.filePaletteOpen {
 		t.Fatal("setup: palette should be open")
 	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if strings.Contains(m.textInput.Value(), "main.go") {
-		t.Fatalf("Enter attached a file: %q", m.textInput.Value())
+	if m.turnActive {
+		t.Fatalf("Enter submitted a turn instead of accepting the choice")
+	}
+	got := m.textInput.Value()
+	if got != "@ocp-deployment/" && got != "@ocp-deployment/RFC-sizing.md " {
+		t.Fatalf("input after Enter = %q", got)
+	}
+}
+
+func TestModel_EnterWithNoMatchStillSubmits(t *testing.T) {
+	m := newTestModel(t)
+	m.cwd = t.TempDir()
+	for _, r := range []rune("@zzzz") {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
+	}
+	m.filePaletteFiltered = nil
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.filePaletteOpen {
+		t.Fatal("palette should be closed after Enter with no match")
+	}
+}
+
+func TestModel_PaletteQuotesPathsWithSpaces(t *testing.T) {
+	cwd := t.TempDir()
+	mustWriteFile(t, filepath.Join(cwd, "my notes.md"), "")
+	m := newTestModel(t)
+	m.cwd = cwd
+	for _, r := range []rune("@my") {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if got := m.textInput.Value(); got != `@"my notes.md" ` {
+		t.Fatalf("input = %q", got)
+	}
+}
+
+func TestExtractFileQuery_QuotedAndEscapedSpaces(t *testing.T) {
+	tests := []struct {
+		in, wantQuery string
+		wantFound     bool
+	}{
+		{`look @"my dir/fi`, `"my dir/fi`, true},
+		{`look @my\ dir/fi`, `my\ dir/fi`, true},
+		{`look @"my dir/file.md" `, "", false},
+		{`look @"my dir/file.md" and more`, "", false},
+	}
+	for _, tt := range tests {
+		q, _, found := extractFileQuery(tt.in)
+		if found != tt.wantFound || (found && q != tt.wantQuery) {
+			t.Errorf("extractFileQuery(%q) = %q,%v; want %q,%v", tt.in, q, found, tt.wantQuery, tt.wantFound)
+		}
+	}
+}
+
+func TestListExternal_BrowsesOutsideCwdNewestFirst(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shots := filepath.Join(home, "Pictures", "Screenshots")
+	mustMkdirAll(t, shots)
+	old := filepath.Join(shots, "Screenshot from old.png")
+	newer := filepath.Join(shots, "Screenshot from new.png")
+	mustWriteFile(t, old, "")
+	mustWriteFile(t, newer, "")
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(shots, ".hidden.png"), "")
+
+	got := listExternal("~/Pictures/Screenshots/Screenshot", t.TempDir())
+	if len(got) != 2 {
+		t.Fatalf("entries = %+v", got)
+	}
+	if got[0].Path != "~/Pictures/Screenshots/Screenshot from new.png" {
+		t.Fatalf("newest first expected, got %+v", got)
+	}
+	if dirs := listExternal("~/Pic", t.TempDir()); len(dirs) != 1 || !dirs[0].IsDir || dirs[0].Path != "~/Pictures" {
+		t.Fatalf("dir listing = %+v", dirs)
+	}
+}
+
+func TestModel_PaletteBrowsesHomeAndAttachesSpacedFile(t *testing.T) {
+	m := newTestModel(t)
+	// newTestModel isolates HOME itself; set ours after it.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	shots := filepath.Join(home, "Pictures", "Screenshots")
+	mustMkdirAll(t, shots)
+	mustWriteFile(t, filepath.Join(shots, "Screenshot from 1.png"), "")
+	m.cwd = t.TempDir()
+	for _, r := range []rune("@~/Pictures/Screenshots/Scr") {
+		m, _ = applyMsg(m, tea.KeyPressMsg{Text: string(r)})
+	}
+	if !m.filePaletteOpen || len(m.filePaletteFiltered) != 1 {
+		t.Fatalf("palette open=%v filtered=%+v", m.filePaletteOpen, m.filePaletteFiltered)
+	}
+	m, _ = applyMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	want := `@"~/Pictures/Screenshots/Screenshot from 1.png" `
+	if got := m.textInput.Value(); got != want {
+		t.Fatalf("input = %q, want %q", got, want)
 	}
 }
 
@@ -330,6 +434,9 @@ func TestModel_EscClosesFilePaletteWithoutWipingInput(t *testing.T) {
 
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}

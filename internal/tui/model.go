@@ -1016,9 +1016,9 @@ type Model struct {
 	paletteIndex    int
 	paletteOffset   int // first visible row when filtered list overflows the window
 
-	// activeFileRefs is the snapshot injected for the current turn. It is
-	// retained only for /context attribution; token accounting continues to
-	// derive from the rewritten system message.
+	// activeFileRefs is the snapshot attached to the current turn's user
+	// message. It is retained only for /context attribution (image bytes
+	// are dropped); token accounting derives from the message history.
 	activeFileRefs []filerefs.Ref
 
 	// File palette state — opens when the user types `@` (at start-of-
@@ -1034,11 +1034,23 @@ type Model struct {
 	// currently-visible subset for the in-flight query.
 	filePaletteOpen     bool
 	filePaletteEntries  []fileEntry
+	filePaletteWalkedAt time.Time // when filePaletteEntries was built; see filePaletteCacheTTL
+	filePaletteCapped   bool      // the walk left entries out (caps); slash queries browse live
 	filePaletteFiltered []fileEntry
 	filePaletteIndex    int
 	filePaletteOffset   int // first visible row when filtered list overflows the window
 	filePaletteQuery    string
 	filePaletteAt       int // byte index of the active `@` in textarea value
+
+	// Background @-reference load (see startTurnAsync). attaching is true
+	// between submit and the load finishing; attachSeq invalidates a
+	// cancelled load; attachInput restores the text on cancel.
+	attaching   bool
+	attachSeq   int
+	attachInput string
+	// stagedRefPolicy carries the paste policy from the submit handler to
+	// the turn that is about to start (consumed by takeRefPolicy).
+	stagedRefPolicy refPolicy
 
 	// startupPrinted gates the one-shot emission of width-deferred startup
 	// notices after the first WindowSizeMsg. The startup card itself is launch
@@ -1218,12 +1230,13 @@ func New(parent context.Context, c Config) Model {
 	if c.FileCfg.Context.DefaultWindow == 0 {
 		c.FileCfg = config.Default()
 	}
-	// File references are turn-local context. A persisted session may contain the
-	// last turn's injected block, but resuming it must start with no active refs.
+	// File references are attached to user messages now, but sessions saved
+	// by older versions may carry an injected block in the system prompt;
+	// resuming one must start with no active refs and a clean prompt.
 	if c.Session != nil {
 		for i := range c.Session.Messages {
 			if c.Session.Messages[i].Role == adapter.RoleSystem {
-				c.Session.Messages[i].Content = filerefs.Inject(c.Session.Messages[i].Content, nil)
+				c.Session.Messages[i].Content = filerefs.StripSection(c.Session.Messages[i].Content)
 				break
 			}
 		}
@@ -2183,11 +2196,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, nil
 				}
+				pol := m.pasteRefPolicy(input)
 				input = m.expandPastes(input)
 				m.pastes = nil
-				m.pastedImages = nil
+				m.discardQueuedImages()
 				select {
-				case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
+				case m.userMsgCh <- m.queuedMessage(input, pol):
 					m.textInput.SetValue("")
 					m.paletteOpen = false
 					m.paletteIndex = 0
@@ -2495,15 +2509,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 				return m, nil
-			case tea.KeyTab:
+			case tea.KeyTab, tea.KeyEnter:
+				// Tab and Enter both accept the highlighted entry (the
+				// footer says "Tab/Enter: attach"). With no match the
+				// palette has nothing to offer, so Tab is a no-op and
+				// Enter closes the palette and submits the literal text.
 				if len(m.filePaletteFiltered) > 0 {
 					m.acceptFilePaletteChoice()
+					return m, nil
 				}
-				return m, nil
-			case tea.KeyEnter:
-				// Enter submits the prompt; Tab is the explicit file-
-				// completion action. Close the palette and let the normal
-				// Enter handler below process the current input.
+				if msg.Code == tea.KeyTab {
+					return m, nil
+				}
 				m.dropFilePalette()
 			case tea.KeyEsc:
 				m.filePaletteOpen = false
@@ -2563,6 +2580,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// memory turn when warranted).
 			return requestGracefulExit(m)
 		case "esc":
+			// Esc while @-files are still loading cancels the send and puts
+			// the text back in the input box.
+			if m.attaching {
+				m.cancelAttach()
+				return m, nil
+			}
 			// A single Esc stops an armed /loop, before the esc-esc chord
 			// gets a chance to open /checkpoints.
 			if m.activeLoopCount() > 0 {
@@ -2619,7 +2642,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fitTextareaHeight()
 			return m, nil
 		case "enter":
-			if m.turnActive {
+			if m.turnActive || m.attaching {
 				return m, nil
 			}
 			input := strings.TrimSpace(m.textInput.Value())
@@ -2652,7 +2675,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paletteOffset = 0
 			m.dropFilePalette()
 			// Swap any [Pasted text #N: ...] markers back for their
-			// original content before the message hits the agent.
+			// original content before the message hits the agent. The
+			// paste policy is taken from the text as typed, BEFORE the
+			// expansion: @references that only exist inside pasted content
+			// must not be able to read outside the project.
+			pol := m.pasteRefPolicy(input)
 			input = m.expandPastes(input)
 			m.pastes = nil
 			if strings.HasPrefix(input, "/") {
@@ -2674,8 +2701,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// begun" signal — see enteredConversation's field doc.
 			m.enteredConversation = true
 			// pastedImages is consumed by startTurn → startTurnWithDisplay
-			// via collectPastedImages(); no nil needed here.
-			return m.startTurn(input)
+			// via collectPastedImages(); no nil needed here. @references are
+			// loaded on a background command (startTurnAsync) so file I/O
+			// never blocks the UI goroutine.
+			m.stagedRefPolicy = pol
+			return m.startTurnAsync(input)
 		default:
 			m.preGrowTextarea()
 			var cmd tea.Cmd
@@ -2794,6 +2824,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		capturedTerminalBackground = msg
 		return m, nil
 
+	case attachLoadedMsg:
+		return m.handleAttachLoaded(msg)
 	case codeMapLoadedMsg:
 		return m.handleCodeMapLoaded(msg)
 	case agentEventMsg:
@@ -3216,11 +3248,12 @@ func (m Model) queueInputDuringDecision(msg tea.KeyPressMsg, label string) (Mode
 	if input == "" {
 		return m, false
 	}
+	pol := m.pasteRefPolicy(input)
 	input = m.expandPastes(input)
 	m.pastes = nil
-	m.pastedImages = nil
+	m.discardQueuedImages()
 	select {
-	case m.userMsgCh <- agent.UserMessage{Content: input, Timestamp: time.Now()}:
+	case m.userMsgCh <- m.queuedMessage(input, pol):
 		m.textInput.SetValue("")
 		m.paletteOpen = false
 		m.paletteIndex = 0
@@ -5558,6 +5591,11 @@ func (m Model) startTurn(input string) (tea.Model, tea.Cmd) {
 // another turn was active, preserving the enqueue timestamp in persisted
 // history instead of restamping it at delayed delivery time.
 func (m Model) startTurnQueued(msg agent.UserMessage) (tea.Model, tea.Cmd) {
+	// A message that was queued with pasted content keeps its paste policy
+	// when it restarts as a turn of its own.
+	if msg.RestrictRefs {
+		m.stagedRefPolicy = policyFromMessage(msg)
+	}
 	return m.startTurnWithDisplayAt(msg.Content, "", msg.Timestamp)
 }
 
@@ -5868,6 +5906,14 @@ func (m Model) startTurnWithDisplay(input, displayLabel string) (tea.Model, tea.
 	return m.startTurnWithDisplayAt(input, displayLabel, time.Now())
 }
 func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time.Time) (tea.Model, tea.Cmd) {
+	return m.startTurnPrepared(input, displayLabel, submitted, nil)
+}
+
+// startTurnPrepared starts a turn. pre, when non-nil, is an already
+// resolved set of @ references (the interactive submit path loads them on
+// a background command, see startTurnAsync); nil resolves them here,
+// synchronously and bounded by a timeout, for every other entry point.
+func (m Model) startTurnPrepared(input, displayLabel string, submitted time.Time, pre *filerefs.Prepared) (tea.Model, tea.Cmd) {
 
 	// Belt-and-suspenders alongside the "enter" key case: any turn
 	// starting — including a background subagent wake turn firing before
@@ -5892,29 +5938,28 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 	// the whole UI until the user's message echoed. See the goroutine
 	// body and rebuildSystemPromptForTurn for the ordering contract.
 
-	// Detect @<path> tokens in the user input and inject the resolved
-	// file contents into the system prompt before the turn fires. The
-	// injection replaces any prior auto-injected block so the prompt
-	// stays bounded across turns. Loaded files emit a muted notice so
-	// the user can see what was attached; load failures emit an error
-	// notice but do not block the turn — a missing/typoed path still
-	// reaches the model with the failure annotated inline.
+	// Resolve @<path> tokens in the user input and attach the loaded file
+	// contents to THIS user message (never the system prompt: file
+	// contents are the user's data and must not gain system authority, and
+	// a per-turn system edit would defeat provider prompt caching). Loaded
+	// files emit a muted notice; failures emit an error notice but do not
+	// block the turn — a missing/typoed path still reaches the model with
+	// the failure annotated inline.
 	//
-	// We also strip the leading `@` from successfully-loaded paths in
-	// the user message itself (filerefs.Rewrite). Without this, some
-	// models see "explain @docs/foo.md", call read_file("@docs/foo.md")
-	// — passing the literal `@` as part of the path — and fail to
-	// resolve. Stripping leaves a plain path that pairs cleanly with
-	// the section we just injected upstream in the system prompt.
-	if refs := filerefs.Parse(input); len(refs) > 0 {
-		refs = filerefs.Load(refs, m.cwd)
-		m.injectFileRefs(refs)
-		input = filerefs.Rewrite(input, refs)
+	// userText keeps what the user typed (history, transcript, checkpoint
+	// label); input becomes the rewritten text with the leading `@`
+	// stripped from loaded paths so models do not call
+	// read_file("@docs/foo.md") with the literal `@` in the path.
+	userText := input
+	var prep filerefs.Prepared
+	if pre != nil {
+		prep = *pre
 	} else {
-		// No refs this turn — strip any prior block left over from a
-		// previous turn so the system prompt doesn't drift.
-		m.clearFileRefs()
+		prep = filerefs.Prepare(input, m.takeRefPolicy().apply(m.prepareOptions()))
 	}
+	m.noteAttachments(prep.Refs)
+	input = prep.Text
+	refImages := prep.Images
 
 	// In plan mode without a plan-file slug yet (user typed `/plan` with
 	// no topic), derive the slug from this first user message so the
@@ -5928,7 +5973,7 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 	// capture this prompt).
 	var checkpointID string
 	if store, ok := m.cfg.Checkpoints.(*checkpoint.Store); ok && store != nil {
-		id, err := store.Begin(m.sess.ID, input, len(m.sess.Messages), m.sess.Messages)
+		id, err := store.Begin(m.sess.ID, userText, len(m.sess.Messages), m.sess.Messages)
 		if err == nil {
 			checkpointID = id
 		}
@@ -5939,6 +5984,9 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 		userImages = m.collectPastedImages()
 	} else {
 		m.pastedImages = nil
+	}
+	for _, img := range refImages {
+		userImages = append(userImages, adapter.ImageBlock{Data: img.Data, MediaType: img.MediaType})
 	}
 	// Consume a pending pre-compaction memory reminder: it rides the
 	// HISTORY copy of this message only — the checkpoint label, input
@@ -5963,6 +6011,10 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 		content += "\n\n" + m.pendingLSPSetupReminder
 		m.pendingLSPSetupReminder = ""
 	}
+	// The attachment block goes last, after any reminders, so
+	// filerefs.StripAttachment recovers exactly what the user and the
+	// reminders wrote when the transcript is rebuilt on resume.
+	content = filerefs.Attach(content, prep.Refs)
 	m.sess.Messages = append(m.sess.Messages, adapter.Message{
 		Role:      adapter.RoleUser,
 		Content:   content,
@@ -5979,12 +6031,14 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 	// caller passed an explicit displayLabel (custom slash commands),
 	// render that compact label instead of the full input body so
 	// scrollback isn't dominated by 80 lines of directive prompt.
-	rendered := input
+	rendered := userText
 	if displayLabel != "" {
 		rendered = displayLabel
 	}
 	m.appendLine(renderUserBlock(rendered, m.width))
-	m.recordHistory(input)
+	// History keeps the @-tokens as typed so recalling and resending an
+	// entry re-attaches the files.
+	m.recordHistory(userText)
 
 	turnCtx, cancel := context.WithCancel(m.parentCtx)
 	turnCtx = agent.WithCheckpoint(turnCtx, m.sess.ID, checkpointID)
@@ -6006,6 +6060,7 @@ func (m Model) startTurnWithDisplayAt(input, displayLabel string, submitted time
 	m.turnCancelRequested = false
 	m.userMsgCh = make(chan agent.UserMessage, 1)
 	m.cfg.UserMessages = m.userMsgCh
+	m.cfg.PrepareUserMessage = m.prepareQueuedMessage()
 	// Serialize the agent goroutine's history appends against this Update
 	// goroutine's reads of sess.Messages (token estimate, /context,
 	// system-prompt edits). Subagents leave this nil — their history is a
@@ -6501,6 +6556,7 @@ func (m Model) handleAgentEvent(ev agent.Event) (tea.Model, tea.Cmd) {
 	case agent.UserMessageAppended:
 		m.flushPendingGroupedTools()
 		m.appendLine(styleAuto.Render(SysMsg(SysSuccess, "delivered", truncateForRender(e.Content, 80))))
+		m.renderAttachNotices(e.Notices)
 	case agent.TurnDone:
 		m.flushPendingGroupedTools()
 		m.commitStreaming()

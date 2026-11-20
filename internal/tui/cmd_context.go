@@ -558,9 +558,9 @@ func contextPercentLabel(used, window int) string {
 	return fmt.Sprintf("%d%%", pct)
 }
 
-// renderContextWorkingSetSection attributes the current turn's injected file
+// renderContextWorkingSetSection attributes the current turn's attached file
 // references without adding another usage bucket: their content is already part
-// of the system prompt counted above. Files show their loaded byte size,
+// of the message history counted above. Files show their loaded byte size,
 // directories show listing entry count, and load errors remain visibly distinct.
 func renderContextWorkingSetSection(refs []filerefs.Ref, cwd string) string {
 	var out strings.Builder

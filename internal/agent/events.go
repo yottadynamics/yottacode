@@ -475,4 +475,8 @@ func (UserMessageAppended) event()    {}
 // is injected into history between tool rounds. The TUI renders a
 // "[delivered]" receipt so the user knows the model will see it on the
 // next iteration.
-type UserMessageAppended struct{ Content string }
+type UserMessageAppended struct {
+	Content string // the message as the user typed it
+	// Notices report @file attachment outcomes for this message.
+	Notices []AttachNotice
+}

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 )
 
 // NodeID is stable within one workspace snapshot. IDs are repo-relative where
@@ -372,7 +371,7 @@ func (i *CodeIndex) SuggestedContext(paths []string, max int) []ContextSuggestio
 	seen := make(map[NodeID]bool)
 	add := func(nodes []Node, reason string) {
 		for _, node := range nodes {
-			if len(out) >= max || node.Kind != NodeFile || seen[node.ID] || strings.IndexFunc(node.RelPath, unicode.IsSpace) >= 0 {
+			if len(out) >= max || node.Kind != NodeFile || seen[node.ID] {
 				continue
 			}
 			seen[node.ID] = true

@@ -111,31 +111,66 @@ func TestLoad_ReadsFiles(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsAbsolutePaths(t *testing.T) {
-	tmp := t.TempDir()
-	refs := Load([]Ref{{Token: "@/etc/passwd", Path: "/etc/passwd"}}, tmp)
-	if refs[0].Loaded {
-		t.Fatalf("should not have loaded absolute path")
+func TestLoad_AllowsAbsolutePathOutsideCwd(t *testing.T) {
+	cwd := t.TempDir()
+	other := t.TempDir()
+	abs := filepath.Join(other, "notes.txt")
+	mustWrite(t, abs, "outside content")
+	refs := loadOut([]Ref{{Token: "@" + abs, Path: abs}}, cwd)
+	if !refs[0].Loaded || refs[0].Content != "outside content" {
+		t.Fatalf("absolute path not loaded: loaded=%v err=%q", refs[0].Loaded, refs[0].Error)
 	}
-	if !strings.Contains(refs[0].Error, "absolute paths") {
+}
+
+func TestLoad_AllowsTraversalOutsideCwd(t *testing.T) {
+	tmp := t.TempDir()
+	parent := filepath.Dir(tmp)
+	outside := filepath.Join(parent, "outside-"+filepath.Base(tmp)+".txt")
+	mustWrite(t, outside, "sibling")
+	t.Cleanup(func() { os.Remove(outside) })
+
+	rel := "../" + filepath.Base(outside)
+	refs := loadOut([]Ref{{Token: "@" + rel, Path: rel}}, tmp)
+	if !refs[0].Loaded {
+		t.Fatalf("traversal path not loaded: %s", refs[0].Error)
+	}
+}
+
+func TestLoad_HomeRelativePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mustWrite(t, filepath.Join(home, "Pictures", "a.txt"), "home file")
+	refs := loadOut([]Ref{{Token: "@~/Pictures/a.txt", Path: "~/Pictures/a.txt"}}, t.TempDir())
+	if !refs[0].Loaded || refs[0].Content != "home file" {
+		t.Fatalf("~ path not loaded: loaded=%v err=%q", refs[0].Loaded, refs[0].Error)
+	}
+}
+
+func TestLoad_OutsideCwdStillHonoursDenyList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mustWrite(t, filepath.Join(home, ".ssh", "config"), "Host x")
+	refs := loadOut([]Ref{{Token: "@~/.ssh/config", Path: "~/.ssh/config"}}, t.TempDir())
+	if refs[0].Loaded {
+		t.Fatalf("credential dir must stay blocked")
+	}
+	if !strings.Contains(refs[0].Error, "blocked") {
 		t.Fatalf("error = %q", refs[0].Error)
 	}
 }
 
-func TestLoad_RejectsTraversal(t *testing.T) {
-	tmp := t.TempDir()
-	// Create a sibling file outside tmp; the ref tries to traverse to it.
-	parent := filepath.Dir(tmp)
-	outside := filepath.Join(parent, "outside-"+filepath.Base(tmp)+".txt")
-	mustWrite(t, outside, "secret")
-	t.Cleanup(func() { os.Remove(outside) })
-
-	refs := Load([]Ref{{Token: "@../" + filepath.Base(outside), Path: "../" + filepath.Base(outside)}}, tmp)
-	if refs[0].Loaded {
-		t.Fatalf("should not have loaded out-of-cwd path")
+func TestLoad_OutsideSymlinkToSecretIsBlocked(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mustWrite(t, filepath.Join(home, ".ssh", "config"), "Host x")
+	other := t.TempDir()
+	link := filepath.Join(other, "innocent.txt")
+	if err := os.Symlink(filepath.Join(home, ".ssh", "config"), link); err != nil {
+		t.Skip("symlinks unavailable")
 	}
-	if !strings.Contains(refs[0].Error, "outside") {
-		t.Fatalf("error = %q", refs[0].Error)
+	refs := loadOut([]Ref{{Token: "@" + link, Path: link}}, t.TempDir())
+	if refs[0].Loaded {
+		t.Fatalf("symlink to credential file must stay blocked")
 	}
 }
 
@@ -258,39 +293,6 @@ func TestBuildSection_EmptyRefs(t *testing.T) {
 	}
 }
 
-func TestInject_AddsAndReplaces(t *testing.T) {
-	base := "You are an assistant.\nFollow the rules."
-
-	injected := Inject(base, []Ref{{Token: "@x", Path: "x", Loaded: true, Content: "hi"}})
-	if !strings.HasPrefix(injected, "You are an assistant.") {
-		t.Fatalf("base prompt not preserved")
-	}
-	if !strings.Contains(injected, Marker) {
-		t.Fatalf("marker missing")
-	}
-
-	// Re-inject with different refs replaces the old block.
-	again := Inject(injected, []Ref{{Token: "@y", Path: "y", Loaded: true, Content: "yo"}})
-	if strings.Count(again, Marker) != 1 {
-		t.Fatalf("expected exactly one marker, got %d", strings.Count(again, Marker))
-	}
-	if strings.Contains(again, "### @x") {
-		t.Fatalf("old ref still present after re-inject")
-	}
-	if !strings.Contains(again, "### @y") {
-		t.Fatalf("new ref missing")
-	}
-
-	// Inject with no refs strips the existing block.
-	cleared := Inject(again, nil)
-	if strings.Contains(cleared, Marker) {
-		t.Fatalf("marker should have been stripped")
-	}
-	if !strings.HasPrefix(cleared, "You are an assistant.") {
-		t.Fatalf("base prompt lost: %s", cleared)
-	}
-}
-
 func TestRewrite_StripsAtForLoadedRefs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -371,6 +373,9 @@ func TestStripSection_NoopWhenAbsent(t *testing.T) {
 
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}

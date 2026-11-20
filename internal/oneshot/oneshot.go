@@ -26,7 +26,6 @@ import (
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/filerefs"
 	"github.com/yottadynamics/yottacode/internal/memory"
-	"github.com/yottadynamics/yottacode/internal/session"
 )
 
 // Run drives a single non-interactive turn and returns when the assistant
@@ -78,30 +77,29 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 	semanticSys := memory.SystemPromptForSemantic(ctx, rt.BaseSystemPrompt, rt.Mem, prompt, rt.FileCfg.Retrieval, rt.EmbedClient)
 	agentruntime.RecomposeSystemPrompt(rt.Session, semanticSys, len(rt.BaseSystemPrompt))
 
-	// Auto-inject @<path> file references found in the prompt into the
-	// system prompt before the turn fires. Mirrors the TUI startTurn
-	// path so `yottacode run "explain @main.go"` and the interactive
-	// equivalent behave identically. Load failures are reported on
-	// stderr but never block the turn. We also strip the leading `@`
-	// from the prompt for successfully-loaded refs so the model
-	// doesn't see literal "@docs/foo.md" and try to read_file with
-	// the `@` as part of the path — see filerefs.Rewrite for context.
-	if refs := filerefs.Parse(prompt); len(refs) > 0 {
-		refs = filerefs.Load(refs, cwd)
-		injectRefsIntoSystem(rt.Session, refs)
-		prompt = filerefs.Rewrite(prompt, refs)
-		for _, r := range refs {
-			if r.Loaded {
-				fmt.Fprintf(os.Stderr, "[attachment] %s (%d bytes)\n", r.Token, r.Size)
-			} else {
-				fmt.Fprintf(os.Stderr, "[attachment:error] %s: %s\n", r.Token, r.Error)
-			}
+	// Attach @<path> file references found in the prompt to the user
+	// message. Mirrors the TUI startTurn path so `yottacode run "explain
+	// @main.go"` and the interactive equivalent behave the same, except
+	// that references are confined to the working directory (a scripted
+	// prompt may embed untrusted text) and images are not supported.
+	// Load failures are reported on stderr but never block the turn. The
+	// leading `@` is stripped from successfully-loaded refs so the model
+	// doesn't try read_file("@docs/foo.md") — see filerefs.Rewrite.
+	prep := filerefs.Prepare(prompt, filerefs.PrepareOptions{
+		Cwd:            cwd,
+		ImageRejection: "image attachments via @ are only supported in the interactive TUI",
+	})
+	for _, r := range prep.Refs {
+		if r.Loaded {
+			fmt.Fprintf(os.Stderr, "[attachment] %s (%d bytes)\n", r.Token, r.Size)
+		} else {
+			fmt.Fprintf(os.Stderr, "[attachment:error] %s: %s\n", r.Token, r.Error)
 		}
 	}
 	submitted := time.Now()
 	rt.Session.Messages = append(rt.Session.Messages, adapter.Message{
 		Role:      adapter.RoleUser,
-		Content:   prompt,
+		Content:   prep.Content,
 		Timestamp: &submitted,
 	})
 
@@ -115,21 +113,6 @@ func Run(ctx context.Context, opts cli.ChatOptions, prompt string) error {
 		fmt.Fprintf(os.Stderr, "[warning] session save failed: %v\n", saveErr)
 	}
 	return turnErr
-}
-
-// injectRefsIntoSystem rewrites the session's system message so it
-// contains the latest auto-injected file-refs block. Mirrors the TUI
-// helper of the same shape (internal/tui/cmd_filerefs.go) so both
-// entry points produce identical system-prompt structure. Stays in
-// oneshot (not agentruntime): only oneshot has a live prompt at this
-// point in construction to parse @-refs out of.
-func injectRefsIntoSystem(sess *session.Session, refs []filerefs.Ref) {
-	for i := range sess.Messages {
-		if sess.Messages[i].Role == adapter.RoleSystem {
-			sess.Messages[i].Content = filerefs.Inject(sess.Messages[i].Content, refs)
-			return
-		}
-	}
 }
 
 // StreamOptions carries script-facing output switches for the oneshot event
