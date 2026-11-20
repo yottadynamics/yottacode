@@ -53,6 +53,15 @@ func Blocked(path, cwd string) error {
 	return agent.ValidateReadPath(path, agent.DefaultDenyReadPaths(cwd))
 }
 
+// canonicalPath resolves existing paths so containment and deny-list checks
+// compare macOS symlinked paths in the same filesystem frame.
+func canonicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
+}
+
 // Load reads each ref confined to cwd: relative paths only, no escaping
 // the working directory. See LoadWith for the interactive variant.
 func Load(refs []Ref, cwd string) []Ref {
@@ -148,7 +157,13 @@ func LoadWith(refs []Ref, cwd string, opts LoadOptions) []Ref {
 				}
 			}
 		}
-		inside := pathContains(rootAbs, cleaned)
+		// Resolve the candidate and workspace root into the same filesystem
+		// frame. macOS commonly exposes TempDir paths through /var while
+		// EvalSymlinks returns /private/var; lexical comparison would reject
+		// an absolute path that is actually inside cwd.
+		rootFrame := canonicalPath(rootAbs)
+		candidateFrame := canonicalPath(cleaned)
+		inside := pathContains(rootFrame, candidateFrame)
 		if !inside {
 			switch {
 			case !opts.AllowOutside:
@@ -169,6 +184,15 @@ func LoadWith(refs []Ref, cwd string, opts LoadOptions) []Ref {
 			continue
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
+			// Check the symlink path before following it as well as the
+			// resolved target below. The read-path validator resolves
+			// symlinks, and this first check keeps credential targets blocked
+			// even when macOS presents HOME through a /var -> /private/var
+			// alias.
+			if blockErr := Blocked(cleaned, rootAbs); blockErr != nil {
+				ref.Error = "blocked: " + blockErr.Error()
+				continue
+			}
 			if inside {
 				ref.Error = "symlinks are not followed for safety"
 				continue
