@@ -239,6 +239,9 @@ func Run(ctx context.Context, opts cli.ChatOptions, updateCheck ...<-chan update
 	cpStore, cpErr := checkpoint.New("")
 	if cpErr == nil {
 		cfg.Checkpoints = cpStore
+		// Begin writes messages.json in the background; finish the last
+		// prompt's snapshot before the process exits.
+		defer cpStore.Flush()
 		retention := fileCfg.Checkpoints.RetentionDays
 		if retention <= 0 {
 			retention = config.DefaultCheckpointRetentionDays

@@ -1002,6 +1002,23 @@ func UsageSince(t time.Time) ([]SessionUsageSummary, error) {
 // rename. A per-write unique temp name makes concurrent saves
 // last-writer-wins on the final file instead of corrupting it.
 func (s *Session) Save() error {
+	q := acquireQueue(s.path)
+	defer releaseQueue(q)
+	s.Flush()
+	return s.writeFile(q)
+}
+
+// writeObserver, set only by tests, is told when a file write starts and ends.
+var writeObserver func(start bool)
+
+// writeFile does the actual atomic write, serialized per file by q.
+func (s *Session) writeFile(q *saveQueue) error {
+	q.writeMu.Lock()
+	defer q.writeMu.Unlock()
+	if h := writeObserver; h != nil {
+		h(true)
+		defer h(false)
+	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err

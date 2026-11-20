@@ -401,6 +401,16 @@ yottacode worktree remove <name> --force     # if dirty (discards uncommitted wo
 `yottacode worktree list` shows everything under
 `~/.yottacode/worktrees/<repo-slug>/`.
 
+## Typing or the cursor lags
+
+Keystrokes lag, or the cursor keeps moving after you release a key. That means the UI loop was blocked by something slow. To find out what, start with the slow-event log on:
+
+```bash
+YOTTACODE_TUI_SLOW_LOG=30 yottacode
+```
+
+Every UI update or redraw that takes longer than 30 ms (any value from 1 to 60000) is appended to `~/.yottacode/tui-slow.log` with its time, the message type (for example `update tea.KeyPressMsg`), its duration, and the transcript row count. The file is only created when something is that slow. Attach it when reporting a lag.
+
 ## Reporting bugs
 
 Include:

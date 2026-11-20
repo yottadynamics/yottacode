@@ -652,6 +652,12 @@ type Model struct {
 	// touch the transcript.
 	transcriptDirty bool
 
+	// transcriptSyncedAt / transcriptFlushPending throttle the viewport
+	// content resync on large transcripts (see refreshTranscriptViewport).
+	transcriptSyncedAt     time.Time
+	transcriptSyncCost     time.Duration
+	transcriptFlushPending bool
+
 	// transcriptFollow tracks whether fresh transcript output should remain pinned
 	// to the newest row. viewport.AtBottom() can flip false after the footer grows
 	// (live plan card, approval modal hint row, streaming preview) even though the
@@ -1500,13 +1506,37 @@ func (m Model) Init() tea.Cmd {
 // resyncs the owned transcript viewport. Single chokepoint keeps the rest
 // of the model from threading viewport size/content bookkeeping by hand.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if slowLog != nil {
+		start := time.Now()
+		defer func() { slowLog.record(fmt.Sprintf("update %T", msg), time.Since(start), len(m.transcriptRows)) }()
+	}
 	out, cmd := m.update(msg)
 	mm := out.(Model)
-	mm.refreshTranscriptViewport()
+	if mm.refreshTranscriptViewport() && !mm.transcriptFlushPending {
+		mm.transcriptFlushPending = true
+		cmd = tea.Batch(cmd, tea.Tick(max(transcriptSyncInterval, 3*mm.transcriptSyncCost), func(time.Time) tea.Msg { return transcriptFlushMsg{} }))
+	}
 	return mm, cmd
 }
 
+// transcriptFlushMsg wakes Update after a throttled transcript resync so the
+// deferred rows reach the viewport even if no other event arrives.
+type transcriptFlushMsg struct{}
+
+const (
+	// transcriptThrottleRows is the transcript size above which viewport
+	// resyncs are rate-limited: SetContentLines is O(total rows), so at this
+	// size every appended line would otherwise stall the Update loop and
+	// make typing lag behind streaming output.
+	transcriptThrottleRows = 2000
+	transcriptSyncInterval = 50 * time.Millisecond
+)
+
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(transcriptFlushMsg); ok {
+		m.transcriptFlushPending = false
+		return m, nil
+	}
 	if _, ok := msg.(spinner.TickMsg); ok {
 		if !m.turnActive && !m.summarizing && !m.hasRunningSubagents() && !m.skillsBusy() {
 			// Idle: drop the tick so we stop re-scheduling ourselves.
@@ -2875,15 +2905,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.subagentTasks != nil {
 			m.sess.SubagentTasks = m.subagentTasks.Export()
 		}
-		if err := m.sess.Save(); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save failed: %v", err)))
-		}
-		if m.recall != nil {
-			if err := m.recall.IndexSession(m.sess); err != nil {
-				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index failed: %v", err)))
-			}
-			m.embedCurrentSessionAsync()
-		}
+		m.persistSessionAsync("session save failed", "recall index failed")
 		// The final memory turn on quit just ended (completed or
 		// cancelled via Esc/Ctrl+C — both land here): finish the quit.
 		// Session save + recall indexing above already ran, so the exit
@@ -3142,17 +3164,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.subagentTasks != nil {
 			m.sess.SubagentTasks = m.subagentTasks.Export()
 		}
-		if err := m.sess.Save(); err != nil {
-			m.appendLine(styleError.Render(fmt.Sprintf("⚠ session save after summarize: %v", err)))
-		}
 		// Index the compressed session so /recall continues to surface
 		// summary content from the now-shorter history.
-		if m.recall != nil {
-			if err := m.recall.IndexSession(m.sess); err != nil {
-				m.appendLine(styleError.Render(fmt.Sprintf("⚠ recall index after summarize: %v", err)))
-			}
-			m.embedCurrentSessionAsync()
-		}
+		m.persistSessionAsync("session save after summarize", "recall index after summarize")
 		switch {
 		case msg.pruned:
 			m.lastContextSummary = fmt.Sprintf("auto pruned %s → %s", formatTokens(msg.tokensBefore), formatTokens(m.contextTokens))
@@ -3266,6 +3280,10 @@ func (m Model) skillsBusy() bool {
 // attempt, and a non-backgrounded theme falls back to that captured
 // original rather than leaving whatever the last themed pick set.
 func (m Model) View() tea.View {
+	if slowLog != nil {
+		start := time.Now()
+		defer func() { slowLog.record("view", time.Since(start), len(m.transcriptRows)) }()
+	}
 	v := tea.NewView(m.viewString())
 	v.WindowTitle = m.terminalTitle()
 	v.AltScreen = true
@@ -7819,12 +7837,26 @@ func (m *Model) applyTranscriptFollowIntent() {
 // than only on resize. Content resyncs from transcriptRows only when
 // transcriptDirty (new rows queued since the last call), and auto-follows
 // when transcriptFollow says the user has not intentionally scrolled away.
-func (m *Model) refreshTranscriptViewport() {
+//
+// On large transcripts the content resync is rate-limited to
+// transcriptSyncInterval; the return value reports that rows are still
+// pending so the caller can schedule a flush.
+func (m *Model) refreshTranscriptViewport() (deferred bool) {
 	m.resizeTranscriptViewport(m.renderFooter())
 	if !m.transcriptDirty {
 		m.applyTranscriptFollowIntent()
-		return
+		return false
 	}
+	// The interval scales with the last measured sync cost (capped at 25% duty)
+	// so a very large transcript, where one sync outlasts the base interval,
+	// cannot spend every Update tick resyncing.
+	interval := max(transcriptSyncInterval, 3*m.transcriptSyncCost)
+	if len(m.transcriptRows) > transcriptThrottleRows && time.Since(m.transcriptSyncedAt) < interval {
+		m.applyTranscriptFollowIntent()
+		return true
+	}
+	start := time.Now()
+	m.transcriptSyncedAt = start
 	m.transcriptDirty = false
 	// Goes through applyTranscriptHighlight (transcript_select.go)
 	// rather than a bare SetContentLines so a selection made mid-stream
@@ -7834,4 +7866,6 @@ func (m *Model) refreshTranscriptViewport() {
 	// no selection is active.
 	m.applyTranscriptHighlight()
 	m.applyTranscriptFollowIntent()
+	m.transcriptSyncCost = time.Since(start)
+	return false
 }
