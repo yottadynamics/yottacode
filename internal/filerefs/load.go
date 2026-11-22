@@ -216,7 +216,10 @@ func LoadWith(refs []Ref, cwd string, opts LoadOptions) []Ref {
 			ref.Error = "blocked: " + err.Error()
 			continue
 		}
-		ref.Outside = !pathContains(rootAbs, cleaned)
+		// Use the canonical containment result above; lexical comparison
+		// mislabels macOS /var paths that resolve under /private/var as
+		// outside even though they are inside the project.
+		ref.Outside = !inside
 
 		if info.IsDir() {
 			ref.IsDir = true
