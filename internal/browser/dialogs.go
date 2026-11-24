@@ -77,6 +77,9 @@ func (s *session) armDialog(accept bool, text string, clear bool) error {
 	if len(pages) == 0 {
 		return fmt.Errorf("no open page to arm a dialog answer on")
 	}
+	s.mu.Lock()
+	s.dialogArm = a // tabs opened from now on share it
+	s.mu.Unlock()
 	for _, p := range pages {
 		p.setDialogArm(a)
 	}

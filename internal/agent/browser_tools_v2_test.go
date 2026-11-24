@@ -180,7 +180,7 @@ func TestHoverAndDragReportChangesAndValidate(t *testing.T) {
 
 func TestNewToolsDisabledMessage(t *testing.T) {
 	base := browserToolBase{Session: &fakeBrowserSession{}}
-	for _, tool := range []Tool{&BrowserHoverTool{base}, &BrowserDragTool{base}, &BrowserFindTool{base}, &BrowserExtractTool{base}, &BrowserFillFormTool{base}} {
+	for _, tool := range []Tool{&BrowserDialogTool{base}, &BrowserHoverTool{base}, &BrowserDragTool{base}, &BrowserFindTool{base}, &BrowserExtractTool{base}, &BrowserFillFormTool{base}} {
 		out, err := tool.Execute(context.Background(), `{}`)
 		if err != nil || out != browserDisabledMessage {
 			t.Errorf("%s: %q %v", tool.Name(), out, err)

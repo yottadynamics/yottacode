@@ -111,7 +111,13 @@ func (p *trackedPage) noteSettle(url string, capped, quick bool) {
 func (s *session) settle(ctx context.Context, p *trackedPage) {
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
+	// The live URL, not the one recorded at navigation: a single-page app changes
+	// route with history.pushState, which is a different page for tuning.
 	url := p.getURL()
+	var live string
+	if chromedp.Run(c, chromedp.Evaluate(`location.href`, &live)) == nil && live != "" {
+		url = live
+	}
 	netCap, domCap, quick := p.settleBudget(url)
 	nc, ncancel := context.WithTimeout(c, netCap)
 	netErr := s.waitNetworkIdle(nc, p, settleNetworkIdle)
@@ -240,7 +246,7 @@ func (s *session) axDigestElements(c context.Context) ([]string, bool) {
 	var forest *axForest
 	if err := runChromedp(c, func(ctx context.Context) error {
 		var err error
-		forest, err = collectAXForest(ctx)
+		forest, err = s.collectForest(ctx)
 		return err
 	}); err != nil {
 		return nil, false
@@ -534,7 +540,7 @@ func (s *session) find(ctx context.Context, text, role string, limit int) (strin
 	var forest *axForest
 	if err := runChromedp(c, func(execCtx context.Context) error {
 		var err error
-		forest, err = collectAXForest(execCtx)
+		forest, err = s.collectForest(execCtx)
 		return err
 	}); err != nil {
 		return "", classifySelectorErr(fmt.Errorf("browser find: %w", err))
@@ -758,7 +764,7 @@ func (s *session) closedShadowText(c context.Context, have string) string {
 	var forest *axForest
 	if err := runChromedp(c, func(ctx context.Context) error {
 		var err error
-		forest, err = collectAXForest(ctx)
+		forest, err = s.collectForest(ctx)
 		return err
 	}); err != nil {
 		return ""
@@ -901,7 +907,7 @@ func (s *session) findLoadMore(c context.Context) string {
 	var forest *axForest
 	if err := runChromedp(c, func(ctx context.Context) error {
 		var err error
-		forest, err = collectAXForest(ctx)
+		forest, err = s.collectForest(ctx)
 		return err
 	}); err != nil {
 		return ""

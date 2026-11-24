@@ -65,7 +65,7 @@ func (s *session) emptyTreeNote(c context.Context, rendered string) string {
 		why = append(why, fmt.Sprintf("the page is still loading (readyState=%s): wait for it with browser_wait, then inspect again", f.Ready))
 	}
 	if f.CrossOrigin > 0 {
-		why = append(why, fmt.Sprintf("%d of %d iframe(s) are cross-origin, so their content cannot be read here", f.CrossOrigin, f.Iframes))
+		why = append(why, fmt.Sprintf("%d of %d iframe(s) are cross-origin: their content is shown without refs when readable (act inside with browser_handoff) and is missing when not", f.CrossOrigin, f.Iframes))
 	} else if f.Iframes > 0 {
 		why = append(why, fmt.Sprintf("%d iframe(s) present but none produced readable content", f.Iframes))
 	}

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 )
 
 // servePage serves one static HTML document and opens it in a fresh Manager.
@@ -679,5 +681,115 @@ func TestIntegration_PersistentProfileSurvivesHandoff(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("persistent profile must outlive Close: %v", err)
+	}
+}
+
+func TestIntegration_ArmedDialogAppliesToPopupOpenedAfterArming(t *testing.T) {
+	m, ctx := serveSite(t, map[string]string{
+		"/":      `<button id=b onclick="window.open('/popup')">Open popup</button>`,
+		"/popup": `<output id=o>waiting</output><button id=ask onclick="document.getElementById('o').textContent = confirm('Proceed?') ? 'popup-yes' : 'popup-no'">Ask</button>`,
+	})
+	if err := m.ArmDialog(ctx, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Click(ctx, "#b"); err != nil { // the popup becomes the active tab
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "#ask", "", false, 5*time.Second); err != nil {
+		t.Fatalf("popup not active: %v", err)
+	}
+	if err := m.Click(ctx, "#ask"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "#o", "popup-yes", false, 5*time.Second); err != nil {
+		t.Fatalf("the armed accept did not reach the popup tab: %v", err)
+	}
+}
+
+func TestIntegration_SettleTuningResetsOnSinglePageAppRouteChange(t *testing.T) {
+	m, ctx := servePage(t, `<output id=t></output><script>setInterval(function(){document.getElementById('t').textContent=Date.now()},40)</script>`)
+	timed := func() time.Duration {
+		start := time.Now()
+		if _, err := m.PageDigest(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(start)
+	}
+	timed()
+	timed()
+	if q := timed(); q > settleDOMCap/2+300*time.Millisecond {
+		t.Fatalf("expected quick mode by now, took %v", q)
+	}
+	// A client-side route change is a different page: the full budget is back.
+	if err := chromedp.Run(m.sess.(*session).activePage().ctx, chromedp.Evaluate("history.pushState({}, '', '/next-route')", nil)); err != nil {
+		t.Fatal(err)
+	}
+	if again := timed(); again < settleDOMCap/2 {
+		t.Fatalf("a new route should get the full settle budget again, took %v", again)
+	}
+}
+
+// The new tools run against a headless session everywhere else; a handoff
+// window is a different Chrome mode (real window, OS-level input), so the ones
+// that synthesise input or measure layout are exercised there too.
+func TestIntegration_NewToolsWorkInHeadedMode(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<style>#zone{width:200px;height:80px;border:2px dashed #888;margin:30px 0}</style>
+<label><input type=radio name=q value=a style="opacity:0;position:absolute"> Alpha</label>
+<div id=card draggable=true style="width:100px;height:40px;background:#9cf">Card</div><div id=zone>drop here</div><output id=o></output>
+<div id=feed></div><script>
+var n=0,loading=false;function more(){if(loading||n>=90)return;loading=true;setTimeout(function(){for(var i=0;i<30&&n<90;i++){var d=document.createElement('div');d.style.height='100px';d.textContent='Row '+(++n);document.getElementById('feed').appendChild(d)}loading=false;document.title=n+' rows'},120)}
+more();window.addEventListener('scroll',function(){var s=document.scrollingElement;if(s.scrollTop+s.clientHeight>=s.scrollHeight-80)more()});
+var card=document.getElementById('card'),zone=document.getElementById('zone');
+card.addEventListener('dragstart',function(e){e.dataTransfer.setData('text/plain','h-card')});
+zone.addEventListener('dragover',function(e){e.preventDefault()});
+zone.addEventListener('drop',function(e){e.preventDefault();document.getElementById('o').textContent='dropped:'+e.dataTransfer.getData('text/plain')});
+</script>`)
+	}))
+	t.Cleanup(srv.Close)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Handoff(ctx); err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if !m.Status().Headed {
+		t.Fatal("expected a headed session")
+	}
+	tree, err := m.Inspect(ctx, "")
+	if err != nil || !strings.Contains(tree, `radio "Alpha"`) {
+		t.Fatalf("inspect: %v\n%s", err, tree)
+	}
+	before, _ := m.PageDigest(ctx, false)
+	if err := m.Click(ctx, "input[value=a]"); err != nil { // visually hidden input
+		t.Fatalf("click visually hidden radio in headed mode: %v", err)
+	}
+	after, _ := m.PageDigest(ctx, true)
+	if d := DiffDigest(before, after); !strings.Contains(d, `radio "Alpha" -> radio "Alpha" (checked)`) {
+		t.Fatalf("diff:\n%s", d)
+	}
+	if err := m.Drag(ctx, "#card", "#zone"); err != nil {
+		t.Fatalf("native drag in headed mode: %v", err)
+	}
+	if err := m.Wait(ctx, "#o", "dropped:h-card", false, 5*time.Second); err != nil {
+		t.Fatalf("drop in headed mode: %v", err)
+	}
+	if f, _ := m.Find(ctx, "alpha", "radio", 0); !strings.Contains(f, "[ref=e") {
+		t.Fatalf("find: %s", f)
+	}
+	res, err := m.ScrollUntilEnd(ctx, "", 0)
+	if err != nil || !res.ReachedEnd {
+		t.Fatalf("scroll until end in headed mode: %+v %v", res, err)
+	}
+	if got := itemsLoaded(t, m, ctx); got != "90 rows" {
+		t.Fatalf("loaded %q", got)
 	}
 }

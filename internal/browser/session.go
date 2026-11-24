@@ -228,6 +228,9 @@ type session struct {
 	pendingBlocks map[target.ID][]blockNote
 	// refs maps browser_inspect element refs to DOM nodes (see selector.go).
 	refs *refTable
+	// dialogArm is the armed one-shot confirm/prompt answer (see dialogs.go),
+	// kept here so a tab opened after arming shares it.
+	dialogArm *dialogAnswer
 }
 
 // maxPendingBlockTargets bounds refusals held for pages not yet tracked.
@@ -478,7 +481,7 @@ func (s *session) track(id target.ID, ctx context.Context, cancel context.Cancel
 			return p
 		}
 	}
-	p := &trackedPage{id: id, ctx: ctx, cancel: cancel, openedAt: time.Now()}
+	p := &trackedPage{id: id, ctx: ctx, cancel: cancel, openedAt: time.Now(), dialogArm: s.dialogArm}
 	s.pages = append(s.pages, p)
 	return p
 }
@@ -494,7 +497,7 @@ func (s *session) trackPage(id target.ID, ctx context.Context) (*trackedPage, bo
 		ctx = context.Background()
 	}
 	pageCtx, cancel := context.WithCancel(ctx)
-	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now()}
+	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now(), dialogArm: s.dialogArm}
 	s.pages = append(s.pages, p)
 	for _, n := range s.pendingBlocks[id] {
 		p.recordBlocked(n.url, n.err)
@@ -964,7 +967,7 @@ func (s *session) inspectMode(ctx context.Context, sel, mode string) (string, er
 		refs = s.nextRefs(false)
 		// CDP commands need chromedp's executor installed by Run.
 		axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
-			forest, err := collectAXForest(execCtx)
+			forest, err := s.collectForest(execCtx)
 			if err != nil {
 				return err
 			}

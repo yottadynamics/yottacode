@@ -2750,8 +2750,8 @@ Choose how the **next** JavaScript `confirm()` or `prompt()` is answered. By
 default every confirm and prompt is cancelled and the acting tool's page
 changes say so (`dialog: confirm cancelled automatically: Delete this item?`).
 To have it accepted, call `browser_dialog` with `accept` and then repeat the
-action that opened the dialog. The answer is one-shot, applies to whichever open
-tab raises the next confirm/prompt first, and expires after 60 seconds, so it
+action that opened the dialog. The answer is one-shot, applies to whichever tab
+(including a popup opened after arming) raises the next confirm/prompt first, and expires after 60 seconds, so it
 can never answer an unrelated dialog later. `alert` and `beforeunload` keep
 their fixed policy (accepted).
 

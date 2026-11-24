@@ -315,8 +315,9 @@ func TestRegisterCoreCwdTools_BrowserGate(t *testing.T) {
 		"browser_wait", "browser_handoff", "browser_close", "browser_tabs", "browser_switch_tab",
 		"browser_close_tab", "browser_upload", "browser_download",
 		"browser_console_logs", "browser_network_requests", "browser_select", "browser_response_body",
+		"browser_dialog", "browser_hover", "browser_drag", "browser_find", "browser_extract", "browser_fill_form",
 	}
-	if len(names) != 20 {
+	if len(names) != 26 {
 		t.Fatalf("test bug: expected 20 tool names, got %d", len(names))
 	}
 	for _, name := range names {

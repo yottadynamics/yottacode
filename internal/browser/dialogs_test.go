@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -110,5 +111,28 @@ func TestSettleTuningStateMachine(t *testing.T) {
 	p.noteSettle("https://y.test/", true, false)
 	if _, _, q := p.settleBudget(u); q {
 		t.Fatal("a different page must reset the counter")
+	}
+}
+
+func TestArmedDialogAnswerReachesTabsOpenedLater(t *testing.T) {
+	s := &session{pages: []*trackedPage{{}}}
+	if err := s.armDialog(true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	late := s.track("late-popup", context.Background(), func() {})
+	now := time.Now()
+	if acc, _, by := late.answerFor("confirm", now); !acc || by != "by browser_dialog" {
+		t.Fatalf("a popup opened after arming must share the answer: %v %q", acc, by)
+	}
+	// One-shot still holds across tabs: the original tab sees it used.
+	if acc, _, _ := s.pages[0].answerFor("confirm", now); acc {
+		t.Error("the answer was consumed by the popup")
+	}
+	// Clearing also reaches later tabs.
+	_ = s.armDialog(true, "", false)
+	_ = s.armDialog(false, "", true)
+	late2 := s.track("late-popup-2", context.Background(), func() {})
+	if acc, _, _ := late2.answerFor("confirm", now); acc {
+		t.Error("a cleared answer must not reach later tabs")
 	}
 }

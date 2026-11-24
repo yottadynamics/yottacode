@@ -185,3 +185,41 @@ func TestIntegration_StaleRefGoneFailsClearly(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// A cross-site iframe lives in its own process. Its content is read through the
+// guard's session for that target; its node ids belong to that process, so they
+// must never become refs.
+func TestIntegration_CrossOriginIframeContentIsReadableWithoutRefs(t *testing.T) {
+	skipIfNoBrowser(t)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<h1>Payment widget</h1><p>Card number goes here</p><button>Pay 20 dollars</button>`)
+	}))
+	t.Cleanup(other.Close)
+	// localhost and 127.0.0.1 are different sites, so Chrome isolates the frame.
+	otherURL := strings.Replace(other.URL, "127.0.0.1", "localhost", 1)
+	m, ctx := servePage(t, `<main><button onclick="document.title='top-hit'">Top</button><iframe src="`+otherURL+`"></iframe></main>`)
+	tree, err := m.Inspect(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`heading "Payment widget"`, `"Card number goes here"`, `button "Pay 20 dollars"`, "browser_handoff"} {
+		if !strings.Contains(tree, want) {
+			t.Errorf("cross-origin frame content missing %q:\n%s", want, tree)
+		}
+	}
+	if strings.Contains(tree, `"Pay 20 dollars" [ref=`) {
+		t.Errorf("a cross-process element must not get a ref:\n%s", tree)
+	}
+	// The page's own refs are untouched by the grafted frame.
+	if err := m.Click(ctx, "ref="+refForNode(t, tree, "button", "Top")); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := m.PageDigest(ctx, true); d.Title != "top-hit" {
+		t.Fatalf("title = %q", d.Title)
+	}
+	f, err := m.Find(ctx, "pay", "button", 0)
+	if err != nil || !strings.Contains(f, `button "Pay 20 dollars"`) || strings.Contains(f, "[ref=") {
+		t.Fatalf("find in a cross-origin frame: %v\n%s", err, f)
+	}
+}

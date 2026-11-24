@@ -2,7 +2,9 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/cdp"
@@ -30,11 +32,19 @@ type axForest struct {
 	chains map[cdp.BackendNodeID][]cdp.BackendNodeID
 }
 
+// oopifReader fetches the accessibility tree of an out-of-process iframe by its
+// frame id, or reports that it cannot.
+type oopifReader func(ctx context.Context, frame cdp.FrameID) ([]*accessibility.Node, bool)
+
+// oopifFrameNote marks a cross-process frame whose content is shown but cannot
+// be acted on through refs.
+const oopifFrameNote = "cross-origin frame: content is readable but has no refs; use browser_handoff to act inside it"
+
 // collectAXForest fetches the main tree, then each iframe's tree, and links
 // them. ctx must be a chromedp action context. A frame that cannot be read (a
 // cross-process iframe, or one that went away) is left empty rather than
 // failing the whole snapshot.
-func collectAXForest(ctx context.Context) (*axForest, error) {
+func collectAXForest(ctx context.Context, oopif oopifReader) (*axForest, error) {
 	main, err := fullAXTree(ctx)
 	if err != nil {
 		return nil, err
@@ -52,11 +62,25 @@ func collectAXForest(ctx context.Context) (*axForest, error) {
 				continue
 			}
 			sub, err := fullAXTreeFrame(ctx, d.FrameID)
+			readOnly := false
 			if err != nil || len(sub) == 0 {
-				// Usually a cross-origin frame living in its own process. Say so,
-				// so an empty frame is not mistaken for an empty page.
-				n.Value = &accessibility.Value{Type: "string", Value: []byte(`"content not readable (cross-origin frame)"`)}
-				continue
+				// Usually a cross-origin frame living in its own process. Its tree
+				// comes from that process; its node ids belong to it, so they must
+				// not become refs (they could collide with the page's own).
+				if oopif != nil {
+					if nodes, ok := oopif(ctx, d.FrameID); ok && len(nodes) > 0 {
+						sub, readOnly = nodes, true
+						for _, sn := range sub {
+							sn.BackendDOMNodeID = 0
+						}
+					}
+				}
+				if !readOnly {
+					// Say so, so an empty frame is not mistaken for an empty page.
+					n.Value = &accessibility.Value{Type: "string", Value: []byte(`"content not readable (cross-origin frame)"`)}
+					continue
+				}
+				n.Value = &accessibility.Value{Type: "string", Value: []byte(`"` + oopifFrameNote + `"`)}
 			}
 			count++
 			pfx := fmt.Sprintf("%sf%d:", prefix, count)
@@ -84,11 +108,41 @@ func collectAXForest(ctx context.Context) (*axForest, error) {
 				}
 			}
 			f.nodes = append(f.nodes, sub...)
-			expand(sub, inner, pfx, depth+1)
+			if !readOnly { // a cross-process frame's own iframes are not reachable from here
+				expand(sub, inner, pfx, depth+1)
+			}
 		}
 	}
 	expand(main, nil, "", 0)
 	return f, nil
+}
+
+// collectForest is collectAXForest with this session's out-of-process iframe reader.
+func (s *session) collectForest(ctx context.Context) (*axForest, error) {
+	return collectAXForest(ctx, s.oopifReader())
+}
+
+// oopifReader reads a cross-process iframe's accessibility tree through the
+// guard's session for that target, or returns nil when there is no guard.
+func (s *session) oopifReader() oopifReader {
+	g := s.guard
+	if g == nil {
+		return nil
+	}
+	return func(ctx context.Context, frame cdp.FrameID) ([]*accessibility.Node, bool) {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		_, _ = g.callTarget(cctx, string(frame), "Accessibility.enable", map[string]any{})
+		raw, err := g.callTarget(cctx, string(frame), "Accessibility.getFullAXTree", map[string]any{})
+		if err != nil {
+			return nil, false
+		}
+		var tree rawAXTree
+		if json.Unmarshal(raw, &tree) != nil {
+			return nil, false
+		}
+		return tree.nodes(), true
+	}
 }
 
 // dfs returns the forest's nodes in render order (document order, depth first).
@@ -140,7 +194,7 @@ func (s *session) recoverRef(c context.Context, ref string) (cdp.BackendNodeID, 
 	var forest *axForest
 	if err := runChromedp(c, func(ctx context.Context) error {
 		var err error
-		forest, err = collectAXForest(ctx)
+		forest, err = s.collectForest(ctx)
 		return err
 	}); err != nil {
 		return 0, nil, false
