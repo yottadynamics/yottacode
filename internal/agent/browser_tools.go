@@ -44,6 +44,14 @@ type browserSession interface {
 	NetworkRequests(ctx context.Context, limit int) ([]browser.NetworkEntry, error)
 	SelectOption(ctx context.Context, selector, value, label string) (string, error)
 	ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (browser.ResponseBody, error)
+	InspectMode(ctx context.Context, selector, mode string) (string, error)
+	ClickWith(ctx context.Context, selector string, o browser.ClickOptions) error
+	Hover(ctx context.Context, selector string) error
+	Drag(ctx context.Context, from, to string) error
+	Find(ctx context.Context, text, role string, limit int) (string, error)
+	Extract(ctx context.Context, selector string, maxChars int) (string, error)
+	ScreenshotAnnotated(ctx context.Context) ([]byte, error)
+	PageDigest(ctx context.Context, settle bool) (browser.PageDigest, error)
 }
 
 // browserToolBase is embedded by every browser_* tool struct. Enabled
@@ -160,6 +168,7 @@ func (t *BrowserScreenshotTool) Schema() map[string]any {
 		"properties": map[string]any{
 			"selector":  map[string]any{"type": "string", "description": "Screenshot just this element. Omit to screenshot the page." + browserSelectorHelp},
 			"full_page": map[string]any{"type": "boolean", "description": "Capture the full scrollable page rather than just the viewport. Ignored when selector is set."},
+			"annotate":  map[string]any{"type": "boolean", "description": "Viewport only: draw each interactive element's ref (e1, e2, …) on it, so what you see maps to refs you can pass to browser_click/type/select. Ignored with selector or full_page."},
 		},
 	}
 }
@@ -185,11 +194,18 @@ func (t *BrowserScreenshotTool) ExecuteMultimodal(ctx context.Context, argsJSON 
 	var a struct {
 		Selector string `json:"selector"`
 		FullPage bool   `json:"full_page"`
+		Annotate bool   `json:"annotate"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return MultimodalResult{}, fmt.Errorf("browser_screenshot: invalid args: %w", err)
 	}
-	data, err := t.Session.Screenshot(ctx, a.Selector, a.FullPage)
+	var data []byte
+	var err error
+	if a.Annotate && a.Selector == "" && !a.FullPage {
+		data, err = t.Session.ScreenshotAnnotated(ctx)
+	} else {
+		data, err = t.Session.Screenshot(ctx, a.Selector, a.FullPage)
+	}
 	if err != nil {
 		return MultimodalResult{}, fmt.Errorf("browser_screenshot: %w", err)
 	}
@@ -214,6 +230,7 @@ func (t *BrowserInspectTool) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"selector": map[string]any{"type": "string", "description": "Scope the snapshot to this element's subtree. Omit for the whole page." + browserSelectorHelp},
+			"mode":     map[string]any{"type": "string", "enum": []string{"tree", "interactive"}, "description": "\"tree\" (default) is the compact accessibility tree. \"interactive\" is a flat list of only the actionable elements (with refs) plus headings and groups: much smaller, enough for most clicking and form filling."},
 		},
 	}
 }
@@ -234,11 +251,21 @@ func (t *BrowserInspectTool) Execute(ctx context.Context, argsJSON string) (stri
 	}
 	var a struct {
 		Selector string `json:"selector"`
+		Mode     string `json:"mode"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("browser_inspect: invalid args: %w", err)
 	}
-	out, err := t.Session.Inspect(ctx, a.Selector)
+	if a.Mode != "" && a.Mode != "tree" && a.Mode != "interactive" {
+		return "", fmt.Errorf("browser_inspect: unknown mode %q (use tree or interactive)", a.Mode)
+	}
+	var out string
+	var err error
+	if a.Mode == "interactive" {
+		out, err = t.Session.InspectMode(ctx, a.Selector, a.Mode)
+	} else {
+		out, err = t.Session.Inspect(ctx, a.Selector)
+	}
 	if err != nil {
 		return "", fmt.Errorf("browser_inspect: %w", err)
 	}
@@ -250,13 +277,15 @@ type BrowserClickTool struct{ browserToolBase }
 
 func (t *BrowserClickTool) Name() string { return "browser_click" }
 func (t *BrowserClickTool) Description() string {
-	return "Click an element, waiting for it to become interactable first. Use browser_select for <select> dropdowns."
+	return "Click an element, waiting for it to become interactable first. Hidden radio/checkbox inputs are clicked via their visible label automatically. Use browser_select for <select> dropdowns. If a ref errors as stale or unknown, run browser_inspect again and use the fresh ref (or a CSS selector); a timeout error means the element never became clickable, not that the page rejected the click."
 }
 func (t *BrowserClickTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"selector": map[string]any{"type": "string", "description": "The element to click." + browserSelectorHelp},
+			"button":   map[string]any{"type": "string", "enum": []string{"left", "right", "middle"}, "description": "Mouse button (default left)."},
+			"double":   map[string]any{"type": "boolean", "description": "Double-click."},
 		},
 		"required": []string{"selector"},
 	}
@@ -275,6 +304,8 @@ func (t *BrowserClickTool) Execute(ctx context.Context, argsJSON string) (string
 	}
 	var a struct {
 		Selector string `json:"selector"`
+		Button   string `json:"button"`
+		Double   bool   `json:"double"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("browser_click: invalid args: %w", err)
@@ -282,7 +313,17 @@ func (t *BrowserClickTool) Execute(ctx context.Context, argsJSON string) (string
 	if strings.TrimSpace(a.Selector) == "" {
 		return "", fmt.Errorf("browser_click: selector is required")
 	}
-	if err := t.Session.Click(ctx, a.Selector); err != nil {
+	opts := browser.ClickOptions{Button: a.Button, Double: a.Double}
+	if err := opts.Validate(); err != nil {
+		return "", fmt.Errorf("browser_click: %w", err)
+	}
+	changes, err := t.observe(ctx, func() error {
+		if opts == (browser.ClickOptions{}) || opts == (browser.ClickOptions{Button: "left"}) {
+			return t.Session.Click(ctx, a.Selector)
+		}
+		return t.Session.ClickWith(ctx, a.Selector, opts)
+	})
+	if err != nil {
 		return "", fmt.Errorf("browser_click: %w", err)
 	}
 	// tabs is reported so a click that opened a new tab (target="_blank",
@@ -290,7 +331,7 @@ func (t *BrowserClickTool) Execute(ctx context.Context, argsJSON string) (string
 	// session auto-follows a newly opened tab, so current url already
 	// reflects it too; see browser.Manager/session's newTabDetectWindow.
 	st := t.Session.Status()
-	return fmt.Sprintf("clicked %q (current url: %s, tabs: %d)", a.Selector, urlForModel(st.CurrentURL), st.TabCount), nil
+	return fmt.Sprintf("clicked %q (current url: %s, tabs: %d)", a.Selector, urlForModel(st.CurrentURL), st.TabCount) + changes, nil
 }
 
 // BrowserTypeTool fills an input/textarea/contenteditable element,
@@ -344,13 +385,14 @@ func (t *BrowserTypeTool) Execute(ctx context.Context, argsJSON string) (string,
 	if strings.TrimSpace(a.Selector) == "" {
 		return "", fmt.Errorf("browser_type: selector is required")
 	}
-	if err := t.Session.Type(ctx, a.Selector, a.Text, a.Submit); err != nil {
+	changes, err := t.observe(ctx, func() error { return t.Session.Type(ctx, a.Selector, a.Text, a.Submit) })
+	if err != nil {
 		return "", fmt.Errorf("browser_type: %w", err)
 	}
 	// See BrowserClickTool.Execute: a submit that opens a new tab (a form
 	// with target="_blank") is auto-followed and visible via tabs/current url.
 	st := t.Session.Status()
-	return fmt.Sprintf("typed into %q (current url: %s, tabs: %d)", a.Selector, urlForModel(st.CurrentURL), st.TabCount), nil
+	return fmt.Sprintf("typed into %q (current url: %s, tabs: %d)", a.Selector, urlForModel(st.CurrentURL), st.TabCount) + changes, nil
 }
 
 // BrowserHotkeyTool sends a key or key combo to the page (e.g. "Enter",

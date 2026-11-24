@@ -3,6 +3,8 @@ package agentruntime
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -458,6 +460,13 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// discovery happens, until the first browser_* tool call actually
 	// needs it (see Manager.ensureLocked).
 	browserMgr := browser.NewManager()
+	if fileCfg.Browser.PersistentProfile {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			if perr := browserMgr.SetPersistentProfile(filepath.Join(home, ".yottacode", "browser-profile")); perr != nil {
+				fmt.Fprintf(os.Stderr, "browser: persistent profile unavailable (%v); using a throwaway profile\n", perr)
+			}
+		}
+	}
 
 	reg := agent.NewRegistry()
 	rt.Registry = reg

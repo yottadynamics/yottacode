@@ -122,6 +122,36 @@ type Manager struct {
 	// test literal) means no sweep, so unit tests never touch the real temp dir.
 	sweepStale func(keep string)
 	swept      bool
+
+	// persistentDir, when set, is a profile directory that survives across
+	// sessions and runs (cookies, logins). It is never deleted by the
+	// manager; see SetPersistentProfile.
+	persistentDir string
+}
+
+// SetPersistentProfile makes every session use dir as its Chrome profile
+// instead of a fresh throwaway one, so logins and cookies survive across
+// sessions and runs. The directory is created 0700 and never deleted by the
+// manager (delete it yourself to forget everything). Opt-in only: the default
+// remains a fresh isolated profile per session.
+func (m *Manager) SetPersistentProfile(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create persistent browser profile dir: %w", err)
+	}
+	_ = os.Chmod(dir, 0o700)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.persistentDir = dir
+	m.mkProfileDir = func() (string, error) { return dir, nil }
+	return nil
+}
+
+// removeProfile deletes a throwaway profile directory; a persistent one is kept.
+func (m *Manager) removeProfile(dir string) error {
+	if dir == "" || (m.persistentDir != "" && dir == m.persistentDir) {
+		return nil
+	}
+	return os.RemoveAll(dir)
 }
 
 // NewManager returns an unlaunched Manager. The browser process starts
@@ -182,7 +212,7 @@ func (m *Manager) ensureLocked(ctx context.Context) (pageSession, error) {
 	}
 	sess, err := m.newSession(ctx, bin, dir)
 	if err != nil {
-		_ = os.RemoveAll(dir)
+		_ = m.removeProfile(dir)
 		return nil, err
 	}
 	m.binPath = bin
@@ -205,7 +235,7 @@ func (m *Manager) discardDeadSessionLocked() {
 	m.sess = nil
 	m.headed = false
 	if m.profileDir != "" {
-		_ = os.RemoveAll(m.profileDir)
+		_ = m.removeProfile(m.profileDir)
 		m.profileDir = ""
 	}
 }
@@ -313,6 +343,17 @@ func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
 		url, _ = m.sess.snapshot()
 	}
 
+	// A persistent profile is locked by the running Chrome, so the headless
+	// session has to be closed before the headed one can open the same directory.
+	if m.persistentDir != "" && m.sess != nil {
+		if m.sess.alive() {
+			_ = m.sess.close()
+		} else {
+			m.sess.forceCleanup()
+		}
+		m.sess = nil
+	}
+
 	m.sweepOnceLocked()
 	bin, err := m.findBinary()
 	if err != nil {
@@ -324,7 +365,7 @@ func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
 	}
 	next, err := m.newHeadedSession(ctx, bin, dir)
 	if err != nil {
-		_ = os.RemoveAll(dir)
+		_ = m.removeProfile(dir)
 		return HandoffResult{}, err
 	}
 
@@ -349,7 +390,7 @@ func (m *Manager) Handoff(ctx context.Context) (HandoffResult, error) {
 		m.sess = nil
 	}
 	if m.profileDir != "" && m.profileDir != dir {
-		_ = os.RemoveAll(m.profileDir)
+		_ = m.removeProfile(m.profileDir)
 	}
 	m.sess = next
 	m.profileDir = dir
@@ -617,6 +658,105 @@ func (m *Manager) Click(ctx context.Context, selector string) error {
 	return s.click(ctx, selector)
 }
 
+func (m *Manager) InspectMode(ctx context.Context, selector, mode string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	return s.inspectMode(ctx, selector, mode)
+}
+
+func (m *Manager) ClickWith(ctx context.Context, selector string, o ClickOptions) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return err
+	}
+	return s.clickOpts(ctx, selector, o)
+}
+
+func (m *Manager) Hover(ctx context.Context, selector string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return err
+	}
+	return s.hover(ctx, selector)
+}
+
+func (m *Manager) Drag(ctx context.Context, from, to string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return err
+	}
+	return s.drag(ctx, from, to)
+}
+
+func (m *Manager) Find(ctx context.Context, text, role string, limit int) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	return s.find(ctx, text, role, limit)
+}
+
+func (m *Manager) Extract(ctx context.Context, selector string, maxChars int) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return "", err
+	}
+	return s.extract(ctx, selector, maxChars)
+}
+
+func (m *Manager) ScreenshotAnnotated(ctx context.Context) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.screenshotAnnotated(ctx)
+}
+
+// PageDigest snapshots the page's actionable state; with settle it first waits
+// for the page to go quiet. It never launches a browser: with no session there
+// is nothing to compare, so it returns an invalid (empty) digest.
+func (m *Manager) PageDigest(ctx context.Context, settle bool) (PageDigest, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil || !ok {
+		return PageDigest{}, err
+	}
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	return sess.digest(ctx, settle)
+}
+
 func (m *Manager) Type(ctx context.Context, selector, text string, submit bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -740,7 +880,7 @@ func (m *Manager) Close(_ context.Context) error {
 		m.sess = nil
 	}
 	if m.profileDir != "" {
-		if rmErr := os.RemoveAll(m.profileDir); rmErr != nil && err == nil {
+		if rmErr := m.removeProfile(m.profileDir); rmErr != nil && err == nil {
 			err = rmErr
 		}
 		m.profileDir = ""

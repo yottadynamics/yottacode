@@ -51,6 +51,13 @@ type fakeBrowserSession struct {
 	responseBodyErr       error
 	selectErr             error
 
+	// digests are returned by successive PageDigest calls (the last repeats),
+	// without being recorded in calls so existing call assertions are unchanged.
+	digests     []browser.PageDigest
+	digestIdx   int
+	findText    string
+	extractText string
+
 	calls []string
 }
 
@@ -134,6 +141,45 @@ func (f *fakeBrowserSession) SelectOption(ctx context.Context, selector, value, 
 func (f *fakeBrowserSession) ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (browser.ResponseBody, error) {
 	f.calls = append(f.calls, fmt.Sprintf("response_body:%s:%d:%d", requestID, maxBytes, offset))
 	return f.responseBodyResult, f.responseBodyErr
+}
+
+func (f *fakeBrowserSession) InspectMode(ctx context.Context, selector, mode string) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("inspect_mode:%s:%s", selector, mode))
+	return f.inspectText, f.inspectErr
+}
+func (f *fakeBrowserSession) ClickWith(ctx context.Context, selector string, o browser.ClickOptions) error {
+	f.calls = append(f.calls, fmt.Sprintf("click_with:%s:%s:%t", selector, o.Button, o.Double))
+	return f.clickErr
+}
+func (f *fakeBrowserSession) Hover(ctx context.Context, selector string) error {
+	f.calls = append(f.calls, "hover:"+selector)
+	return nil
+}
+func (f *fakeBrowserSession) Drag(ctx context.Context, from, to string) error {
+	f.calls = append(f.calls, "drag:"+from+":"+to)
+	return nil
+}
+func (f *fakeBrowserSession) Find(ctx context.Context, text, role string, limit int) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("find:%s:%s:%d", text, role, limit))
+	return f.findText, nil
+}
+func (f *fakeBrowserSession) Extract(ctx context.Context, selector string, maxChars int) (string, error) {
+	f.calls = append(f.calls, fmt.Sprintf("extract:%s:%d", selector, maxChars))
+	return f.extractText, nil
+}
+func (f *fakeBrowserSession) ScreenshotAnnotated(ctx context.Context) ([]byte, error) {
+	f.calls = append(f.calls, "screenshot_annotated")
+	return f.screenshotData, f.screenshotErr
+}
+func (f *fakeBrowserSession) PageDigest(ctx context.Context, settle bool) (browser.PageDigest, error) {
+	if len(f.digests) == 0 {
+		return browser.PageDigest{}, nil
+	}
+	d := f.digests[f.digestIdx]
+	if f.digestIdx < len(f.digests)-1 {
+		f.digestIdx++
+	}
+	return d, nil
 }
 
 var _ browserSession = (*fakeBrowserSession)(nil)

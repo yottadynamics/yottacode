@@ -159,7 +159,12 @@ top of the normal approval model:
   extensions from your real Chrome. The tools cannot act as "you" on
   any site you're signed into, and there is no flag to opt into your
   real profile in v1. `browser_close` (explicit, or automatic at
-  session shutdown) removes the profile directory.
+  session shutdown) removes the profile directory. The one exception is
+  the opt-in `[browser] persistent_profile = true`: a separate,
+  yottacode-only profile in `~/.yottacode/browser-profile` (0700) that
+  keeps cookies and logins across sessions and is never deleted
+  automatically. It is off by default because anything a page can do with
+  those logins, the agent can do too.
 - **Headless by default; visible only by handoff.** The session never
   shows a window on its own, so behavior doesn't silently degrade on a
   headless remote host or CI box. `browser_handoff` is the one way to get

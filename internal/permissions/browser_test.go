@@ -23,6 +23,11 @@ func TestBrowserTarget_MappedVerbs(t *testing.T) {
 		{"browser_network_requests", `{}`, "network_requests"},
 		{"browser_select", `{"selector":"#s","value":"a"}`, "select"},
 		{"browser_response_body", `{"request_id":"1"}`, "response_body"},
+		{"browser_hover", `{"selector":"#m"}`, "hover"},
+		{"browser_drag", `{"from":"#a","to":"#b"}`, "drag"},
+		{"browser_find", `{"text":"Submit"}`, "find"},
+		{"browser_extract", `{}`, "extract"},
+		{"browser_fill_form", `{"fields":[]}`, "fill_form"},
 		{"browser_navigate", `{"url":"https://streeteasy.com/for-rent/long-island-city"}`, "navigate streeteasy.com"},
 	}
 	for _, tc := range cases {

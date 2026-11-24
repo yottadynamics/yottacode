@@ -8,7 +8,7 @@ Run `yottacode doctor` with the feature enabled to see a **Browser** section: th
 
 ## Selectors
 
-Every tool that takes a `selector` accepts three forms:
+Every tool that takes a `selector` accepts three forms (a CSS selector is resolved with `querySelector`; an XPath expression starting with `/` or `(` is also accepted):
 
 | Form | Example | Use |
 |---|---|---|
@@ -16,7 +16,9 @@ Every tool that takes a `selector` accepts three forms:
 | Element ref | `ref=e12` | The exact node `browser_inspect` described |
 | Iframe path | `iframe#pay >>> #card` | An element inside an iframe; chain `>>>` for nested frames |
 
-`browser_inspect` tags interactive elements (buttons, links, inputs, dropdowns, tabs, …) with `[ref=eN]`. Refs remove the main source of wrong clicks — a CSS selector guessed from a text snapshot. A full-page inspect starts a fresh numbering, so an old ref can never silently point at a different element; refs also stop working after a navigation, and an unknown or stale ref fails with a message telling the agent to inspect again. To resolve a ref the browser sets a `data-yottacode-ref` attribute on that element. Refs address the top document only; use a CSS selector after `>>>`.
+`browser_inspect` tags interactive elements (buttons, links, inputs, dropdowns, tabs, …) with `[ref=eN]`. Refs remove the main source of wrong clicks — a CSS selector guessed from a text snapshot. A node keeps its ref across re-inspects (numbering only ever grows, so `e5` never changes meaning while its element lives); a full-page inspect forgets refs for nodes that are gone and a scoped one keeps every earlier ref usable. Refs stop working after a navigation, and an unknown or stale ref fails with a message telling the agent to inspect again. To resolve a ref the browser sets a `data-yottacode-ref` attribute on that element. `browser_inspect` and `browser_find` also read the content of same-process iframes (up to 8 frames, 3 levels deep), shown nested under the frame, and give those elements refs: a ref inside an iframe is used on its own, exactly like any other (`ref=e9`), and the tools find their way through the frame. A cross-process iframe cannot be read and appears empty; write `>>>` selectors for what you can name. A ref cannot be prefixed with `>>>`.
+
+If the page re-rendered an element since the snapshot (a framework replacing a node, say), its ref is re-resolved before failing: by the role and name it had when it was handed out, and only when that is unambiguous — exactly one such element exists, or the page still has the same number of identical elements as the snapshot and the ref's position among them picks one. Otherwise the call fails as stale and asks for a fresh `browser_inspect`, so a ref can never silently land on the wrong "Delete" button.
 
 Same-process iframes work as shown. A frame or `<select>` that doesn't appear fails after 10 seconds (a typo shouldn't cost the whole 60-second action timeout).
 
@@ -38,13 +40,33 @@ Hostnames are resolved before the check, so a public-looking name that points at
 
 The check covers **every target**, not just the page you are looking at: cross-site iframes (which Chrome runs in separate processes), popups and workers included. A small guard (`internal/browser/guard.go`) keeps its own DevTools connection, asks Chrome to attach to each new target *paused*, installs request interception on it, and only then lets it run — so even the first script of an iframe cannot make a request that skips the check. If the guard cannot start, the session does not launch; if its connection drops later, the browser is stopped immediately (pages already open do not keep running unvetted) and the next action relaunches a guarded one. What it does not do: it vets the destination host, not the request path or body, and it does not rewrite DNS (DNS rebinding: a name the page controls that answers differently at check time and at connect time could still slip through; a lookup that fails is never remembered as "public", but that does not close the race).
 
+## Compact inspection
+
+`browser_inspect` prints a compact accessibility tree: `InlineTextBox` and `StaticText` that repeat their parent's name are dropped, anonymous `generic` wrappers are collapsed, and state the agent needs to verify an action is shown inline (`checked`, `selected`, `expanded`, `disabled`, …). `mode: "interactive"` goes further and lists only actionable elements, headings and groups as a flat list. `browser_find` and `browser_extract` read less still: the first returns only matching elements, the second the page's readable text as markdown. Before reading, these tools wait up to a few seconds for the page to settle (no request in flight, no DOM mutation for 250 ms); a page that never goes quiet proceeds after the cap.
+
+## Page changes after actions
+
+`browser_click`, `browser_type`, `browser_select`, `browser_hover`, `browser_drag` and `browser_fill_form` take a cheap digest of the page (URL, title, visible actionable elements with their state, `role=alert`/`status` text, auto-answered dialogs) before the action and again, after the page settles, once it is done. The difference is appended as `page changes:` — for example `removed: radio "Beta"` / `added: radio "Beta" (checked)` — so the agent can confirm a click took effect without another inspect. The block is page-derived and wrapped as untrusted content. If nothing changed, nothing is added.
+
+## Persistent profile (opt-in)
+
+By default every session gets a fresh throwaway profile. To keep logins and cookies across sessions and runs, opt in:
+
+```toml
+# ~/.yottacode/config.toml
+[browser]
+persistent_profile = true
+```
+
+The profile lives in `~/.yottacode/browser-profile` (mode 0700), is a separate Chrome profile — never your everyday browser — and is **never deleted by yottacode**; remove the directory to forget everything. While it is enabled, anything an agent-driven page can do with those logins, the agent can do too, so leave it off unless you need it; `browser_handoff` closes the headless session first because Chrome locks the profile.
+
 ## Untrusted page content
 
 Everything page-derived that a tool returns — the accessibility tree, tab titles, console output, request URLs, response bodies, the page title in `browser_navigate` — is wrapped in an `untrusted_web_content` envelope with a notice that it is data, not instructions. Copies of the envelope tag inside the page text are neutralized so a page cannot close the envelope early and continue "outside" it. Output is capped (40,000 characters per tool result, 2,000 per console message or request URL). This is a mitigation, not a guarantee: approvals for `browser_click`/`browser_type` stay on by default, and `/auto` keeps `browser_navigate` to non-local hosts, `browser_upload` and `browser_download` gated.
 
 ## Dialogs
 
-JavaScript dialogs have no tool surface, so a fixed policy answers them and records each in `browser_console_logs` (`[dialog]`): `alert` and `beforeunload` are **accepted** (they only inform, and refusing `beforeunload` would block navigation); `confirm` and `prompt` are **cancelled** (accepting would answer a question on your behalf).
+JavaScript dialogs have no tool surface, so a fixed policy answers them, records each in `browser_console_logs` (`[dialog]`) and reports it in the `page changes` of the action that caused it: `alert` and `beforeunload` are **accepted** (they only inform, and refusing `beforeunload` would block navigation); `confirm` and `prompt` are **cancelled** (accepting would answer a question on your behalf).
 
 ## Human verification and handoff
 
@@ -77,8 +99,8 @@ Chrome refuses to start its sandbox as uid 0, and yottacode deliberately does no
 ## Non-goals
 
 - No local-file, `chrome://`, `javascript:`, or `data:` navigation; only HTTP(S) and `about:blank`.
-- No proxying, CAPTCHA-solving, or persistent login profiles. No sandbox or network-policy changes outside the browser.
-- No device emulation, drag-and-drop, request mocking, or default visible window.
+- No proxying or CAPTCHA-solving. Persistent login profiles are opt-in only (see above). No sandbox or network-policy changes outside the browser.
+- No device emulation, native HTML5 drag-and-drop (`browser_drag` synthesises mouse events), request mocking, or default visible window.
 - Downloads are temporary, cleaned after success/failure, and rejected above the fixed safety limit.
 
 ## Verification

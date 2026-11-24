@@ -29,6 +29,9 @@ var (
 	// element before its deadline.
 	ErrSelectorNotFound = errors.New("selector not found")
 
+	// ErrActionTimeout means an action kept retrying until its deadline.
+	ErrActionTimeout = errors.New("browser action timed out")
+
 	// ErrCanceled means the caller canceled a browser action before it completed.
 	ErrCanceled = errors.New("browser action canceled")
 

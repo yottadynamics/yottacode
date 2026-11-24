@@ -76,6 +76,15 @@ func fullAXTree(ctx context.Context) ([]*accessibility.Node, error) {
 	return res.nodes(), nil
 }
 
+// fullAXTreeFrame fetches the accessibility tree of one (same-process) frame.
+func fullAXTreeFrame(ctx context.Context, id cdp.FrameID) ([]*accessibility.Node, error) {
+	var res rawAXTree
+	if err := cdp.Execute(ctx, accessibility.CommandGetFullAXTree, accessibility.GetFullAXTree().WithFrameID(id), &res); err != nil {
+		return nil, err
+	}
+	return res.nodes(), nil
+}
+
 // partialAXTree fetches the subtree around one DOM node, with relatives.
 func partialAXTree(ctx context.Context, id cdp.NodeID) ([]*accessibility.Node, error) {
 	var res rawAXTree
