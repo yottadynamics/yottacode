@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/yottadynamics/yottacode/internal/syncutil"
+	"github.com/yottadynamics/yottacode/internal/ychome"
 )
 
 // Status is a point-in-time snapshot of the manager's lifecycle state,
@@ -135,15 +137,100 @@ type Manager struct {
 // manager (delete it yourself to forget everything). Opt-in only: the default
 // remains a fresh isolated profile per session.
 func (m *Manager) SetPersistentProfile(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create persistent browser profile dir: %w", err)
+	// Only ever adopt a directory we made (or an empty/new one): ClearPersistentProfile
+	// deletes it, so it must not be somebody's existing folder.
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) > 0 {
+		if _, err := os.Stat(filepath.Join(dir, profileMarker)); err != nil {
+			return fmt.Errorf("persistent browser profile dir %s is not empty and was not created by yottacode; choose an empty directory", dir)
+		}
 	}
-	_ = os.Chmod(dir, 0o700)
+	if err := initProfileDir(dir); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.persistentDir = dir
 	m.mkProfileDir = func() (string, error) { return dir, nil }
 	return nil
+}
+
+// profileMarker is written into a persistent profile directory so that clearing
+// it can prove the directory is ours before deleting anything.
+const profileMarker = ".yottacode-browser-profile"
+
+func initProfileDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create persistent browser profile dir: %w", err)
+	}
+	_ = os.Chmod(dir, 0o700)
+	if err := os.WriteFile(filepath.Join(dir, profileMarker), []byte("yottacode persistent browser profile\n"), 0o600); err != nil {
+		return fmt.Errorf("mark persistent browser profile dir: %w", err)
+	}
+	return nil
+}
+
+// DefaultPersistentProfileDir is where the opt-in persistent profile lives:
+// ~/.yottacode/browser-profile, or under $YOTTACODE_HOME when that is set.
+func DefaultPersistentProfileDir() (string, error) { return ychome.Dir("browser-profile") }
+
+// PersistentProfileDir returns the persistent profile directory, or "" when the
+// persistent profile is not enabled.
+func (m *Manager) PersistentProfileDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.persistentDir
+}
+
+// ClearPersistentProfile closes the live browser session (Chrome holds the
+// profile open) and deletes everything in the persistent profile — cookies,
+// logins, history — leaving an empty, usable directory. The next browser action
+// starts a fresh session. It returns the bytes freed. It refuses a directory
+// that does not carry yottacode's marker.
+func (m *Manager) ClearPersistentProfile() (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := m.persistentDir
+	if dir == "" {
+		return 0, fmt.Errorf("the persistent browser profile is not enabled")
+	}
+	if _, err := os.Stat(filepath.Join(dir, profileMarker)); err != nil {
+		return 0, fmt.Errorf("refusing to delete %s: it does not carry yottacode's profile marker", dir)
+	}
+	if m.sess != nil {
+		if m.sess.alive() {
+			_ = m.sess.close()
+		} else {
+			m.sess.forceCleanup()
+		}
+		m.sess = nil
+		m.headed = false
+	}
+	_, freed := ProfileUsage(dir)
+	if err := os.RemoveAll(dir); err != nil {
+		return 0, fmt.Errorf("delete browser profile: %w", err)
+	}
+	if err := initProfileDir(dir); err != nil {
+		return freed, err
+	}
+	return freed, nil
+}
+
+// ProfileUsage reports whether dir exists and how many bytes it holds (symlinks
+// are counted, not followed). Unreadable entries are skipped.
+func ProfileUsage(dir string) (exists bool, bytes int64) {
+	if _, err := os.Stat(dir); err != nil {
+		return false, 0
+	}
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			bytes += info.Size()
+		}
+		return nil
+	})
+	return true, bytes
 }
 
 // removeProfile deletes a throwaway profile directory; a persistent one is kept.
@@ -740,6 +827,37 @@ func (m *Manager) ScreenshotAnnotated(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	return s.screenshotAnnotated(ctx)
+}
+
+// ScrollUntilEnd scrolls the page (or the scrollable element selector) to the
+// bottom repeatedly until it stops growing; see session.scrollUntilEnd.
+func (m *Manager) ScrollUntilEnd(ctx context.Context, selector string, maxSteps int) (ScrollResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ctx, cancel := m.withActionTimeout(ctx)
+	defer cancel()
+	s, err := m.ensureLocked(ctx)
+	if err != nil {
+		return ScrollResult{}, err
+	}
+	return s.scrollUntilEnd(ctx, selector, maxSteps)
+}
+
+// ArmDialog sets (or, with clear, removes) a one-shot answer for the next
+// confirm or prompt dialog on any open tab; it expires after 60 seconds and
+// never launches a browser. Dialogs are otherwise answered by a fixed policy:
+// alert and beforeunload accepted, confirm and prompt cancelled.
+func (m *Manager) ArmDialog(ctx context.Context, accept bool, text string, clear bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess, ok, err := m.ensureAliveNoLaunchLocked()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no browser session is open; navigate to the page first")
+	}
+	return sess.armDialog(accept, text, clear)
 }
 
 // PageDigest snapshots the page's actionable state; with settle it first waits

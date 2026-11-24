@@ -73,6 +73,8 @@ type pageSession interface {
 	inspectMode(ctx context.Context, selector, mode string) (string, error)
 	click(context.Context, string) error
 	clickOpts(ctx context.Context, selector string, o ClickOptions) error
+	armDialog(accept bool, text string, clear bool) error
+	scrollUntilEnd(ctx context.Context, selector string, maxSteps int) (ScrollResult, error)
 	hover(context.Context, string) error
 	drag(ctx context.Context, from, to string) error
 	find(ctx context.Context, text, role string, limit int) (string, error)
@@ -111,6 +113,12 @@ type trackedPage struct {
 	// lastBlock is the most recent policy refusal, so a navigation that fails
 	// with ERR_BLOCKED_BY_CLIENT can say why.
 	lastBlock error
+	// dialogArm is the armed one-shot answer for the next confirm/prompt.
+	dialogArm *dialogAnswer
+	// settleKey/settleMisses tune how long settle waits on a page that never
+	// goes quiet (see settleBudget).
+	settleKey    string
+	settleMisses int
 }
 
 func (p *trackedPage) recordConsole(e ConsoleEntry) {
@@ -569,13 +577,15 @@ func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 			// confirm and prompt are cancelled, because accepting would
 			// answer a question on the user's behalf. Every dialog is
 			// recorded in the console buffer so the agent can see it.
-			accept := e.Type == page.DialogTypeAlert || e.Type == page.DialogTypeBeforeunload
+			accept, promptText, by := p.answerFor(string(e.Type), time.Now())
 			verb := "cancelled"
 			if accept {
 				verb = "accepted"
 			}
-			p.recordConsole(ConsoleEntry{Level: "dialog", Text: fmt.Sprintf("%s %s automatically: %s", e.Type, verb, e.Message), At: time.Now()})
-			go func() { _ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept)) }()
+			p.recordConsole(ConsoleEntry{Level: "dialog", Text: fmt.Sprintf("%s %s %s: %s", e.Type, verb, by, e.Message), At: time.Now()})
+			go func() {
+				_ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept).WithPromptText(promptText))
+			}()
 		case *runtime.EventConsoleAPICalled:
 			var b strings.Builder
 			for _, a := range e.Args {
@@ -991,7 +1001,11 @@ func (s *session) inspectMode(ctx context.Context, sel, mode string) (string, er
 		}
 		return "", fmt.Errorf("browser inspect: %w", axErr)
 	}
-	return renderAXTreeOpts(nodes, refs, axRenderOpts{interactiveOnly: mode == "interactive"}), nil
+	out := renderAXTreeOpts(nodes, refs, axRenderOpts{interactiveOnly: mode == "interactive"})
+	if sel == "" && sparseTree(out) {
+		out += s.emptyTreeNote(c)
+	}
+	return out, nil
 }
 
 // clickRetryBudget bounds how long click retries before surfacing the real
@@ -1061,7 +1075,7 @@ func (s *session) clickOpts(ctx context.Context, sel string, o ClickOptions) err
 	for {
 		inner, opts, err := s.query(c, sel)
 		if err != nil {
-			if errors.Is(err, ErrSelectorNotFound) {
+			if errors.Is(err, ErrSelectorNotFound) || errors.Is(err, ErrInvalidSelector) {
 				return err
 			}
 		} else {

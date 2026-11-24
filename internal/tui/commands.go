@@ -125,6 +125,7 @@ func init() {
 		{Name: "doctor", Help: "probe provider, GitHub, LSP, and media readiness (sandbox checks are skipped)", Run: cmdDoctor, PreservesTurn: true},
 		{Name: "redo", Help: "edit and re-run the most recent message", Run: cmdRedo},
 		{Name: "recall", Args: "<query>", Help: "full-text search across every saved session", Run: cmdRecall, PreservesTurn: true},
+		{Name: "browser", Args: "[clear]", Help: "browser profile: show the persistent profile, or `clear` it (cookies, logins) — needs [browser] persistent_profile", Run: cmdBrowser},
 		{Name: "checkpoints", Help: "open the checkpoints picker — also Esc Esc", Run: cmdCheckpoints},
 		{Name: "max-iterations", Args: "<N>", Help: "cap tool-call iterations per turn (default: 128; auto mode 4×)", Run: cmdMaxIterations},
 		{Name: "setup", Help: "re-run the setup wizard (reloads config on return)", Run: cmdSetup},
@@ -284,9 +285,9 @@ func renderHelpPanel(m Model) string {
 	renderHelpGroup(&b, "Workflow", allSlash[0:20], wrapWidth)
 	renderHelpGroup(&b, "Git", allSlash[20:28], wrapWidth)
 	renderHelpGroup(&b, "Integrations", allSlash[28:29], wrapWidth)
-	renderHelpGroup(&b, "Utilities", allSlash[29:41], wrapWidth)
-	renderHelpGroup(&b, "Mode", allSlash[41:42], wrapWidth)
-	renderHelpGroup(&b, "Meta", allSlash[42:], wrapWidth)
+	renderHelpGroup(&b, "Utilities", allSlash[29:42], wrapWidth)
+	renderHelpGroup(&b, "Mode", allSlash[42:43], wrapWidth)
+	renderHelpGroup(&b, "Meta", allSlash[43:], wrapWidth)
 	if len(m.customSlash) > 0 {
 		renderHelpDetailSection(&b, "Custom commands", m.customSlash, width, popupW, m.cwd)
 	}

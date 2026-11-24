@@ -53,6 +53,9 @@ func collectAXForest(ctx context.Context) (*axForest, error) {
 			}
 			sub, err := fullAXTreeFrame(ctx, d.FrameID)
 			if err != nil || len(sub) == 0 {
+				// Usually a cross-origin frame living in its own process. Say so,
+				// so an empty frame is not mistaken for an empty page.
+				n.Value = &accessibility.Value{Type: "string", Value: []byte(`"content not readable (cross-origin frame)"`)}
 				continue
 			}
 			count++

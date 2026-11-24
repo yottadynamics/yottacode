@@ -24,6 +24,7 @@ func TestBrowserTarget_MappedVerbs(t *testing.T) {
 		{"browser_select", `{"selector":"#s","value":"a"}`, "select"},
 		{"browser_response_body", `{"request_id":"1"}`, "response_body"},
 		{"browser_hover", `{"selector":"#m"}`, "hover"},
+		{"browser_dialog", `{"action":"accept"}`, "dialog"},
 		{"browser_drag", `{"from":"#a","to":"#b"}`, "drag"},
 		{"browser_find", `{"text":"Submit"}`, "find"},
 		{"browser_extract", `{}`, "extract"},

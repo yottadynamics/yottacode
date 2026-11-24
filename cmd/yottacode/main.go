@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/yottadynamics/yottacode/internal/adapter"
+	"github.com/yottadynamics/yottacode/internal/browser"
 	"github.com/yottadynamics/yottacode/internal/cli"
 	"github.com/yottadynamics/yottacode/internal/config"
 	"github.com/yottadynamics/yottacode/internal/oneshot"
@@ -397,6 +398,7 @@ Use --json for scripting.`,
 			summary := newDoctorSummary(providerResult, githubResult, lspResult, mediaResult, sandboxResult, permissionsResult)
 			if browserFeatureEnabled(fileCfg, opts.Experimental) {
 				br := probeBrowserDoctor(cmd.Context())
+				addPersistentProfile(&br, fileCfg, browser.DefaultPersistentProfileDir)
 				summary.Browser, summary.BrowserDetail = br.Status, &br
 			}
 			if jsonOutput {

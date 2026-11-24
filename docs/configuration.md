@@ -350,7 +350,7 @@ The experimental `browser_*` tools use a fresh throwaway Chrome profile per sess
 
 ```toml
 [browser]
-persistent_profile = false   # true keeps one profile in ~/.yottacode/browser-profile; yottacode never deletes it
+persistent_profile = false   # true keeps one profile in ~/.yottacode/browser-profile (or $YOTTACODE_HOME); cleared only by /browser clear
 ```
 
 See [`browser.md`](browser.md#persistent-profile-opt-in).

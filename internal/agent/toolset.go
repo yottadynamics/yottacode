@@ -205,6 +205,7 @@ func RegisterCoreCwdTools(reg *Registry, cwd *CwdRef, deps CoreToolDeps) {
 		reg.Register(&BrowserNetworkRequestsTool{browserToolBase: base})
 		reg.Register(&BrowserSelectTool{browserToolBase: base})
 		reg.Register(&BrowserResponseBodyTool{browserToolBase: base})
+		reg.Register(&BrowserDialogTool{browserToolBase: base})
 		reg.Register(&BrowserHoverTool{browserToolBase: base})
 		reg.Register(&BrowserDragTool{browserToolBase: base})
 		reg.Register(&BrowserFindTool{browserToolBase: base})

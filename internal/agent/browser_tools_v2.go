@@ -336,3 +336,62 @@ var (
 	_ Tool = (*BrowserExtractTool)(nil)
 	_ Tool = (*BrowserFillFormTool)(nil)
 )
+
+// BrowserDialogTool arms the answer to the next JavaScript confirm or prompt.
+type BrowserDialogTool struct{ browserToolBase }
+
+func (t *BrowserDialogTool) Name() string { return "browser_dialog" }
+func (t *BrowserDialogTool) Description() string {
+	return "Choose how the NEXT JavaScript confirm() or prompt() dialog is answered. By default every confirm/prompt is cancelled and reported in the action's page changes (\"dialog: confirm cancelled automatically: Delete this item?\"). If the user wants that dialog accepted, call this with action \"accept\" (and \"text\" for a prompt) and then repeat the action that opened it. One-shot: it answers only the next confirm/prompt and expires after 60 seconds; alert and beforeunload dialogs are unaffected. Requires approval because accepting answers a question on the user's behalf."
+}
+func (t *BrowserDialogTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action": map[string]any{"type": "string", "enum": []string{"accept", "dismiss", "clear"}, "description": "accept or dismiss the next confirm/prompt; clear removes an armed answer."},
+			"text":   map[string]any{"type": "string", "description": "For a prompt dialog with action accept: the text to enter."},
+		},
+		"required": []string{"action"},
+	}
+}
+func (t *BrowserDialogTool) RequiresApproval(string) bool { return t.Enabled }
+func (t *BrowserDialogTool) PreviewCall(argsJSON string) string {
+	var a struct{ Action, Text string }
+	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if a.Text != "" {
+		return fmt.Sprintf("browser_dialog(%s, text=%s)", a.Action, previewQuote(a.Text, previewTextMax))
+	}
+	return fmt.Sprintf("browser_dialog(%s)", a.Action)
+}
+func (t *BrowserDialogTool) Execute(ctx context.Context, argsJSON string) (string, error) {
+	if !t.Enabled {
+		return browserDisabledMessage, nil
+	}
+	var a struct {
+		Action string `json:"action"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("browser_dialog: invalid args: %w", err)
+	}
+	switch a.Action {
+	case "accept", "dismiss", "clear":
+	default:
+		return "", fmt.Errorf("browser_dialog: action must be accept, dismiss or clear")
+	}
+	if a.Text != "" && a.Action != "accept" {
+		return "", fmt.Errorf("browser_dialog: text only applies to action accept")
+	}
+	if err := t.Session.ArmDialog(ctx, a.Action == "accept", a.Text, a.Action == "clear"); err != nil {
+		return "", fmt.Errorf("browser_dialog: %w", err)
+	}
+	switch a.Action {
+	case "clear":
+		return "cleared: confirm/prompt dialogs are cancelled automatically again", nil
+	case "dismiss":
+		return "armed: the next confirm/prompt will be dismissed (expires in 60s). Repeat the action that opens it.", nil
+	}
+	return "armed: the next confirm/prompt will be accepted (expires in 60s). Repeat the action that opens it.", nil
+}
+
+var _ Tool = (*BrowserDialogTool)(nil)

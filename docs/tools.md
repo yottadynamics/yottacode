@@ -137,6 +137,7 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
 | [`browser_select`](#browser_select) | required | Experimental behind `browser`; select an option in a `<select>` element |
 | [`browser_response_body`](#browser_response_body) | required | Experimental behind `browser`; return a buffered response body by request ID or URL match |
+| [`browser_dialog`](#browser_dialog) | required | Experimental behind `browser`; choose how the next JavaScript confirm/prompt is answered |
 | [`browser_hover`](#browser_hover) | required | Experimental behind `browser`; move the mouse over an element (hover menus, tooltips) |
 | [`browser_drag`](#browser_drag) | required | Experimental behind `browser`; press on one element, move to another and release (sliders, sortable lists) |
 | [`browser_find`](#browser_find) | required | Experimental behind `browser`; find elements by visible text and/or role, returning refs |
@@ -2515,6 +2516,15 @@ direction (a default ~400px magnitude) or an explicit pixel delta.
 | `selector` | string | — | Scroll this element into view |
 | `direction` | string | — | `up`, `down`, `left`, or `right` |
 | `delta_x` / `delta_y` | number | — | Explicit pixel delta; overrides `direction` |
+| `until_end` | boolean | `false` | Scroll to the bottom repeatedly until the content stops growing, for infinite feeds and lazy lists. With `selector`, that scrollable container is scrolled (and `selector` is **not** scrolled into view); `direction`/deltas are ignored |
+| `max_steps` | integer | `10` | With `until_end`: most load-and-scroll cycles (maximum `30`) |
+
+With `until_end` the tool jumps to the bottom, waits for the network and lazy
+content, and repeats until the scrollable height has not grown for two cycles
+in a row (`reached the end`), `max_steps` cycles have run, or the action
+deadline hits. The reply gives the number of steps and the height before and
+after, says whether more may remain (call again to continue), and lists page
+changes. Read what loaded with `browser_extract` or `browser_find`.
 
 Always prompts for approval.
 
@@ -2729,6 +2739,26 @@ request. Binary responses are described but their bytes are not returned.
 
 Always prompts for approval. Response bodies may contain private data and
 are wrapped as untrusted web content.
+
+## browser_dialog
+
+Choose how the **next** JavaScript `confirm()` or `prompt()` is answered. By
+default every confirm and prompt is cancelled and the acting tool's page
+changes say so (`dialog: confirm cancelled automatically: Delete this item?`).
+To have it accepted, call `browser_dialog` with `accept` and then repeat the
+action that opened the dialog. The answer is one-shot, applies to whichever open
+tab raises the next confirm/prompt first, and expires after 60 seconds, so it
+can never answer an unrelated dialog later. `alert` and `beforeunload` keep
+their fixed policy (accepted).
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `action` | string | — (required) | `accept`, `dismiss`, or `clear` (remove an armed answer) |
+| `text` | string | — | For a prompt with `accept`: the text to enter |
+
+Always prompts for approval, and the prompt shows the action and any text,
+because accepting answers a question on your behalf. It never launches a
+browser: with no open session it fails and asks for a navigation first.
 
 ## browser_hover
 

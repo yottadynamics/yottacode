@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -56,5 +59,37 @@ func TestDoctorReportShowsBrowserSection(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestDoctorBrowserShowsPersistentProfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Cookies"), make([]byte, 3000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var off BrowserDoctorResult
+	addPersistentProfile(&off, config.Config{}, func() (string, error) { t.Fatal("dir must not be resolved when off"); return "", nil })
+	var b strings.Builder
+	renderBrowserSection(&b, off)
+	if !strings.Contains(b.String(), "persistent profile: off") {
+		t.Errorf("off: %s", b.String())
+	}
+
+	var on BrowserDoctorResult
+	cfg := config.Config{Browser: config.BrowserConfig{PersistentProfile: true}}
+	addPersistentProfile(&on, cfg, func() (string, error) { return dir, nil })
+	if !on.PersistentProfile || on.ProfileDir != dir || on.ProfileBytes != 3000 {
+		t.Fatalf("on: %+v", on)
+	}
+	b.Reset()
+	renderBrowserSection(&b, on)
+	if out := b.String(); !strings.Contains(out, "persistent profile: on") || !strings.Contains(out, dir) || !strings.Contains(out, "/browser clear") {
+		t.Errorf("on: %s", out)
+	}
+
+	var broken BrowserDoctorResult
+	addPersistentProfile(&broken, cfg, func() (string, error) { return "", errors.New("no home") })
+	if len(broken.Warnings) != 1 || broken.Status != doctorStatusWarning {
+		t.Errorf("unresolvable dir should warn: %+v", broken)
 	}
 }

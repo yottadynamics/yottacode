@@ -53,10 +53,13 @@ type fakeBrowserSession struct {
 
 	// digests are returned by successive PageDigest calls (the last repeats),
 	// without being recorded in calls so existing call assertions are unchanged.
-	digests     []browser.PageDigest
-	digestIdx   int
-	findText    string
-	extractText string
+	digests         []browser.PageDigest
+	digestIdx       int
+	scrollEndResult browser.ScrollResult
+	scrollEndErr    error
+	armErr          error
+	findText        string
+	extractText     string
 
 	calls []string
 }
@@ -150,6 +153,14 @@ func (f *fakeBrowserSession) InspectMode(ctx context.Context, selector, mode str
 func (f *fakeBrowserSession) ClickWith(ctx context.Context, selector string, o browser.ClickOptions) error {
 	f.calls = append(f.calls, fmt.Sprintf("click_with:%s:%s:%t", selector, o.Button, o.Double))
 	return f.clickErr
+}
+func (f *fakeBrowserSession) ScrollUntilEnd(ctx context.Context, selector string, maxSteps int) (browser.ScrollResult, error) {
+	f.calls = append(f.calls, fmt.Sprintf("scroll_until_end:%s:%d", selector, maxSteps))
+	return f.scrollEndResult, f.scrollEndErr
+}
+func (f *fakeBrowserSession) ArmDialog(ctx context.Context, accept bool, text string, clear bool) error {
+	f.calls = append(f.calls, fmt.Sprintf("arm_dialog:%t:%s:%t", accept, text, clear))
+	return f.armErr
 }
 func (f *fakeBrowserSession) Hover(ctx context.Context, selector string) error {
 	f.calls = append(f.calls, "hover:"+selector)

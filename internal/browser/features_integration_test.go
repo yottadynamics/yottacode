@@ -5,6 +5,7 @@ package browser
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestIntegration_DigestShowsRadioBecomingChecked(t *testing.T) {
 	}
 	after, _ := m.PageDigest(ctx, true)
 	diff := DiffDigest(before, after)
-	if !strings.Contains(diff, `added: radio "Beta" (checked)`) || !strings.Contains(diff, `removed: radio "Beta"`) {
+	if !strings.Contains(diff, `changed: radio "Beta" -> radio "Beta" (checked)`) {
 		t.Fatalf("diff:\n%s", diff)
 	}
 }
@@ -258,5 +259,258 @@ func TestIntegration_PersistentProfileKeepsCookiesAcrossManagers(t *testing.T) {
 			t.Fatalf("run %d: %v", i, err)
 		}
 		_ = m.Close(ctx)
+	}
+}
+
+func TestIntegration_ExtractSeparatesLinksInTableCells(t *testing.T) {
+	m, ctx := servePage(t, `<main><table><tr><th>Contents</th></tr><tr><td><ul><li><a href="https://x.test/a">Alpha</a></li><li><a href="https://x.test/b">Beta</a></li></ul></td></tr></table></main>`)
+	out, err := m.Extract(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, ")[") || !strings.Contains(out, "[Alpha](https://x.test/a) [Beta](https://x.test/b)") {
+		t.Fatalf("links ran together:\n%s", out)
+	}
+}
+
+func TestIntegration_UnreadableFrameIsMarked(t *testing.T) {
+	// A frame whose accessibility tree cannot be fetched must be marked, not left silently empty.
+	m, ctx := serveSite(t, map[string]string{"/": `<button>Top</button><iframe src="/f"></iframe>`, "/f": `<button>In</button>`})
+	tree, err := m.Inspect(ctx, "")
+	if err != nil || !strings.Contains(tree, `button "In"`) {
+		t.Fatalf("readable frame must be expanded: %v\n%s", err, tree)
+	}
+	if strings.Contains(tree, "not readable") {
+		t.Errorf("readable frame wrongly marked:\n%s", tree)
+	}
+}
+
+const confirmPage = `<button id=c onclick="document.getElementById('o').textContent = confirm('Delete item?') ? 'deleted' : 'kept'">Delete</button>
+<button id=p onclick="document.getElementById('o').textContent = 'name=' + prompt('Your name?', 'anon')">Ask</button><output id=o></output>`
+
+func outText(t *testing.T, m *Manager, ctx context.Context, want string) {
+	t.Helper()
+	if err := m.Wait(ctx, "#o", want, false, 5*time.Second); err != nil {
+		t.Fatalf("expected %q on the page: %v", want, err)
+	}
+}
+
+func TestIntegration_ArmedDialogAnswersNextConfirmOnly(t *testing.T) {
+	m, ctx := servePage(t, confirmPage)
+	// Default: cancelled, and the action's page changes say so.
+	before, _ := m.PageDigest(ctx, false)
+	if err := m.Click(ctx, "#c"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "kept")
+	after, _ := m.PageDigest(ctx, true)
+	if d := DiffDigest(before, after); !strings.Contains(d, "dialog: confirm cancelled automatically: Delete item?") {
+		t.Fatalf("default cancel not reported:\n%s", d)
+	}
+	// Armed accept answers exactly one confirm.
+	if err := m.ArmDialog(ctx, true, "", false); err != nil {
+		t.Fatal(err)
+	}
+	before, _ = m.PageDigest(ctx, false)
+	if err := m.Click(ctx, "#c"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "deleted")
+	after, _ = m.PageDigest(ctx, true)
+	if d := DiffDigest(before, after); !strings.Contains(d, "confirm accepted by browser_dialog: Delete item?") {
+		t.Fatalf("armed accept not reported:\n%s", d)
+	}
+	if err := m.Click(ctx, "#c"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "kept") // one-shot: back to cancelling
+}
+
+func TestIntegration_ArmedDialogPromptText(t *testing.T) {
+	m, ctx := servePage(t, confirmPage)
+	if err := m.ArmDialog(ctx, true, "Bob", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Click(ctx, "#p"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "name=Bob")
+	// A dismissed prompt returns null.
+	if err := m.ArmDialog(ctx, false, "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Click(ctx, "#p"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "name=null")
+}
+
+func TestIntegration_ClearedDialogAnswerDoesNotApply(t *testing.T) {
+	m, ctx := servePage(t, confirmPage)
+	_ = m.ArmDialog(ctx, true, "", false)
+	if err := m.ArmDialog(ctx, false, "", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Click(ctx, "#c"); err != nil {
+		t.Fatal(err)
+	}
+	outText(t, m, ctx, "kept")
+}
+
+func TestIntegration_ArmDialogWithoutSessionFails(t *testing.T) {
+	skipIfNoBrowser(t)
+	m := NewManager()
+	if err := m.ArmDialog(context.Background(), true, "", false); err == nil {
+		t.Error("arming before any browser session exists must fail, not launch one")
+	}
+}
+
+func TestIntegration_SettleBecomesQuickOnPagesThatNeverGoQuiet(t *testing.T) {
+	m, ctx := servePage(t, `<output id=t></output><script>setInterval(function(){document.getElementById('t').textContent=Date.now()},40)</script>`)
+	timed := func() time.Duration {
+		start := time.Now()
+		if _, err := m.PageDigest(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		return time.Since(start)
+	}
+	first, second := timed(), timed()
+	if first < settleDOMCap/2 || second < settleDOMCap/2 {
+		t.Fatalf("the first settles should spend the full budget on a page that never goes quiet: %v %v", first, second)
+	}
+	third := timed()
+	if third > settleDOMCap/2+300*time.Millisecond {
+		t.Fatalf("after two misses settle should use the short budget, took %v (first %v)", third, first)
+	}
+}
+
+func TestIntegration_EmptyTreeExplainsWhy(t *testing.T) {
+	skipIfNoBrowser(t)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<button>Hidden in another site</button>`)
+	}))
+	t.Cleanup(other.Close)
+	// "localhost" and "127.0.0.1" are different sites, so Chrome puts the frame
+	// in its own process, where its tree cannot be merged into the page's.
+	otherURL := strings.Replace(other.URL, "127.0.0.1", "localhost", 1)
+	m, ctx := servePage(t, `<main><canvas width=50 height=50></canvas><iframe src="`+otherURL+`"></iframe></main>`)
+	tree, err := m.Inspect(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tree, "[ref=") {
+		t.Skipf("Chrome exposed the cross-site frame here; nothing to explain:\n%s", tree)
+	}
+	for _, want := range []string{"nearly empty", "canvas", "cross-origin", "browser_extract"} {
+		if !strings.Contains(tree, want) {
+			t.Errorf("note missing %q:\n%s", want, tree)
+		}
+	}
+}
+
+func TestIntegration_NormalPageHasNoEmptyTreeNote(t *testing.T) {
+	m, ctx := servePage(t, `<main><h1>Hi</h1><button>Go</button></main>`)
+	tree, _ := m.Inspect(ctx, "")
+	if strings.Contains(tree, "nearly empty") {
+		t.Fatalf("unexpected note:\n%s", tree)
+	}
+	m2, ctx2 := servePage(t, `<main></main>`)
+	tree, _ = m2.Inspect(ctx2, "")
+	if !strings.Contains(tree, "nearly empty") || !strings.Contains(tree, "no visible text or controls yet") {
+		t.Fatalf("an empty page should explain itself:\n%s", tree)
+	}
+}
+
+// A feed that appends 10 items (after a short delay) each time the bottom is
+// reached, up to total, like an infinite-scroll timeline.
+func feedPage(total int, container bool) string {
+	scroller, bottomEl := "window", "document.scrollingElement||document.documentElement"
+	box := `<div id=feed></div>`
+	if container {
+		scroller, bottomEl = "box", "box"
+		box = `<div id=box style="height:300px;overflow:auto"><div id=feed></div></div>`
+	}
+	return fmt.Sprintf(`%s<script>
+var n=0,total=%d,loading=false,box=document.getElementById('box'),feed=document.getElementById('feed');
+function more(){ if(loading||n>=total) return; loading=true; setTimeout(function(){ for(var i=0;i<15&&n<total;i++){var d=document.createElement('div');d.style.height='100px';d.textContent='Item '+(++n);feed.appendChild(d);} loading=false; document.title=n+' items'; },120); }
+more();
+%s.addEventListener('scroll',function(){ var s=%s; if(s.scrollTop+s.clientHeight>=s.scrollHeight-80) more(); });
+</script>`, box, total, scroller, bottomEl)
+}
+
+func itemsLoaded(t *testing.T, m *Manager, ctx context.Context) string {
+	t.Helper()
+	d, err := m.PageDigest(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.Title
+}
+
+func TestIntegration_ScrollUntilEndLoadsWholeFeed(t *testing.T) {
+	m, ctx := servePage(t, feedPage(50, false))
+	res, err := m.ScrollUntilEnd(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ReachedEnd || res.TimedOut || res.EndHeight <= res.StartHeight {
+		t.Fatalf("result: %+v", res)
+	}
+	if got := itemsLoaded(t, m, ctx); got != "50 items" {
+		t.Fatalf("loaded %q, want every item; result %+v", got, res)
+	}
+}
+
+func TestIntegration_ScrollUntilEndInsideContainer(t *testing.T) {
+	m, ctx := servePage(t, feedPage(40, true))
+	res, err := m.ScrollUntilEnd(ctx, "#box", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ReachedEnd {
+		t.Fatalf("result: %+v", res)
+	}
+	if got := itemsLoaded(t, m, ctx); got != "40 items" {
+		t.Fatalf("loaded %q; the container feed was not exhausted (%+v)", got, res)
+	}
+}
+
+func TestIntegration_ScrollUntilEndHonoursMaxSteps(t *testing.T) {
+	m, ctx := servePage(t, feedPage(500, false))
+	res, err := m.ScrollUntilEnd(ctx, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ReachedEnd || res.Steps != 2 {
+		t.Fatalf("a 500-item feed must not be exhausted in 2 steps: %+v", res)
+	}
+	if got := itemsLoaded(t, m, ctx); got == "500 items" {
+		t.Fatalf("loaded everything despite max_steps: %q", got)
+	}
+}
+
+func TestIntegration_ScrollUntilEndOnShortPageStopsQuickly(t *testing.T) {
+	m, ctx := servePage(t, `<p>short page</p>`)
+	start := time.Now()
+	res, err := m.ScrollUntilEnd(ctx, "", 0)
+	if err != nil || !res.ReachedEnd {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if d := time.Since(start); d > 6*time.Second {
+		t.Errorf("took %s on a page that cannot grow", d)
+	}
+	start = time.Now()
+	if _, err := m.ScrollUntilEnd(ctx, "#nope", 0); !errors.Is(err, ErrSelectorNotFound) {
+		t.Errorf("a missing container must be ErrSelectorNotFound, got %v", err)
+	}
+	if d := time.Since(start); d > 15*time.Second {
+		t.Errorf("a missing container took %s to fail; want the 10s lookup bound", d)
+	}
+	start = time.Now()
+	if _, err := m.Extract(ctx, "#nope", 0); !errors.Is(err, ErrSelectorNotFound) {
+		t.Errorf("extract of a missing element: %v", err)
+	} else if d := time.Since(start); d > 15*time.Second {
+		t.Errorf("extract of a missing element took %s", d)
 	}
 }

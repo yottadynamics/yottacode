@@ -27,7 +27,7 @@ const (
 )
 
 // browserSelectorHelp is appended to every selector parameter's description.
-const browserSelectorHelp = ` Accepts a CSS selector, a "ref=eN" element ref printed by browser_inspect or browser_find (valid until navigation; refs also address elements inside iframes, and a ref whose element the page re-rendered is re-resolved by role and name when exactly one element matches), or "iframe-selector >>> selector" to reach inside an iframe.`
+const browserSelectorHelp = ` Accepts a CSS selector (plain CSS only: not Playwright's text=, :has-text() or :visible; to locate an element by its text or role use browser_find), a "ref=eN" element ref printed by browser_inspect or browser_find (valid until navigation; refs also address elements inside iframes, and a ref whose element the page re-rendered is re-resolved by role and name when exactly one element matches), or "iframe-selector >>> selector" to reach inside an iframe.`
 
 // urlForModel renders a page-controlled URL for a short status line: quoted so
 // it reads as a single data value, and capped so a hostile page cannot smuggle

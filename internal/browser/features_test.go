@@ -18,12 +18,12 @@ func TestDiffDigest(t *testing.T) {
 		Elements: []string{`radio "A"`, `radio "B" (checked)`, `button "Submit"`},
 		Alerts:   []string{"Saved"}, Dialogs: []string{"alert accepted automatically: hi"}}
 	got := DiffDigest(before, after)
-	for _, want := range []string{`removed: radio "B"`, `added: radio "B" (checked)`, "alert: Saved", "dialog: alert accepted automatically: hi"} {
+	for _, want := range []string{`changed: radio "B" -> radio "B" (checked)`, "alert: Saved", "dialog: alert accepted automatically: hi"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "url:") || strings.Contains(got, "Submit") {
+	if strings.Contains(got, "added: radio") || strings.Contains(got, "removed: radio") || strings.Contains(got, "url:") || strings.Contains(got, "Submit") {
 		t.Errorf("unchanged things must not be reported:\n%s", got)
 	}
 }
@@ -180,4 +180,133 @@ func TestAXForestDFSAndChains(t *testing.T) {
 	if strings.Join(got, ",") != "1,2,f1:1,f1:2" {
 		t.Errorf("dfs order = %v", got)
 	}
+}
+
+func TestPairChanges(t *testing.T) {
+	added := []string{`radio "B" (checked)`, `button "New"`, `textbox "Name" ="x"`}
+	removed := []string{`radio "B"`, `link "Gone"`, `textbox "Name"`}
+	a, r, c := pairChanges(added, removed)
+	if strings.Join(c, "|") != `radio "B" -> radio "B" (checked)|textbox "Name" -> textbox "Name" ="x"` {
+		t.Errorf("changed = %v", c)
+	}
+	if len(a) != 1 || a[0] != `button "New"` || len(r) != 1 || r[0] != `link "Gone"` {
+		t.Errorf("leftovers: added=%v removed=%v", a, r)
+	}
+	// Two identical elements changing pair one-to-one, not many-to-one.
+	_, _, c = pairChanges([]string{`radio "A" (checked)`, `radio "A" (checked)`}, []string{`radio "A"`})
+	if len(c) != 1 {
+		t.Errorf("one removal must pair with one addition, got %v", c)
+	}
+}
+
+func TestSparseTree(t *testing.T) {
+	if !sparseTree("RootWebArea \"x\"\n  main\n    generic\n") {
+		t.Error("an empty main must count as sparse")
+	}
+	if sparseTree("RootWebArea\n  button \"Go\" [ref=e1]\n") {
+		t.Error("a tree with a ref is not sparse")
+	}
+	if sparseTree(strings.Repeat("paragraph \"long enough text\"\n", 40)) {
+		t.Error("a tree with plenty of text is not sparse")
+	}
+}
+
+func TestSetPersistentProfileRefusesForeignDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "important.txt"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{}
+	if err := m.SetPersistentProfile(dir); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("a non-empty directory we did not create must be refused, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "important.txt")); err != nil {
+		t.Fatal("the foreign file must be untouched")
+	}
+	// An empty directory is fine, gets the marker, and may be re-adopted later.
+	empty := t.TempDir()
+	if err := m.SetPersistentProfile(empty); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Manager{}).SetPersistentProfile(empty); err != nil {
+		t.Fatalf("re-adopting our own directory: %v", err)
+	}
+}
+
+func TestClearPersistentProfile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	fs := &fakeSession{}
+	m := &Manager{
+		findBinary: func() (string, error) { return "/bin/chrome", nil },
+		newSession: func(_ context.Context, _, _ string) (pageSession, error) { return fs, nil },
+	}
+	if _, err := m.ClearPersistentProfile(); err == nil {
+		t.Error("clearing when the persistent profile is off must fail")
+	}
+	if err := m.SetPersistentProfile(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Inspect(context.Background(), ""); err != nil { // launches the (fake) session
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Cookies"), make([]byte, 2000), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freed, err := m.ClearPersistentProfile()
+	if err != nil || freed < 2000 {
+		t.Fatalf("freed=%d err=%v", freed, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Cookies")); !os.IsNotExist(err) {
+		t.Error("Cookies not deleted")
+	}
+	if !fs.closed() {
+		t.Error("the live session must be closed before its profile is deleted")
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("profile dir must exist 0700 afterwards: %v %v", fi, err)
+	}
+	if m.Status().Active {
+		t.Error("no session should be active after clearing")
+	}
+	// Not a permanent close: the next action relaunches.
+	if _, err := m.Inspect(context.Background(), ""); err != nil {
+		t.Fatalf("browser must relaunch after clear: %v", err)
+	}
+	// Without the marker nothing is deleted.
+	if err := os.Remove(filepath.Join(dir, profileMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.ClearPersistentProfile(); err == nil {
+		t.Fatal("a directory without the marker must not be cleared")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "keep.txt")); err != nil {
+		t.Error("file deleted despite the missing marker")
+	}
+}
+
+func TestProfileUsage(t *testing.T) {
+	if ok, _ := ProfileUsage(filepath.Join(t.TempDir(), "none")); ok {
+		t.Error("missing dir reported as existing")
+	}
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "a", "b"), 0o700)
+	_ = os.WriteFile(filepath.Join(dir, "a", "b", "f"), make([]byte, 1000), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "g"), make([]byte, 24), 0o600)
+	if ok, n := ProfileUsage(dir); !ok || n != 1024 {
+		t.Errorf("usage = %v %d", ok, n)
+	}
+}
+
+func (f *fakeSession) closed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.calls {
+		if c == "close" {
+			return true
+		}
+	}
+	return false
 }

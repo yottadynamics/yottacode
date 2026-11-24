@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -58,6 +57,9 @@ type Runtime struct {
 
 	LSPManager      *lsp.Manager
 	CodeMapProvider codemap.Provider
+	// BrowserManager drives the experimental browser_* tools; /browser uses it
+	// to inspect and clear the persistent profile.
+	BrowserManager *browser.Manager
 
 	Adapter        adapter.Client
 	RouterAdapters *cli.RouterAdapters
@@ -460,9 +462,10 @@ func (b *Builder) Build(ctx context.Context, spec SessionSpec) (*Runtime, error)
 	// discovery happens, until the first browser_* tool call actually
 	// needs it (see Manager.ensureLocked).
 	browserMgr := browser.NewManager()
+	rt.BrowserManager = browserMgr
 	if fileCfg.Browser.PersistentProfile {
-		if home, herr := os.UserHomeDir(); herr == nil {
-			if perr := browserMgr.SetPersistentProfile(filepath.Join(home, ".yottacode", "browser-profile")); perr != nil {
+		if dir, derr := browser.DefaultPersistentProfileDir(); derr == nil {
+			if perr := browserMgr.SetPersistentProfile(dir); perr != nil {
 				fmt.Fprintf(os.Stderr, "browser: persistent profile unavailable (%v); using a throwaway profile\n", perr)
 			}
 		}

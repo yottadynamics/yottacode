@@ -4,9 +4,11 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,5 +84,52 @@ func TestIntegration_ClickSelectorAlsoMentionedInStylesheet(t *testing.T) {
 	}
 	if time.Since(start) > 10*time.Second {
 		t.Fatalf("click took %s", time.Since(start))
+	}
+}
+
+// A selector that is not CSS (Playwright's :has-text(), text=, :visible) can
+// never match; it must fail at once with the reason, not be retried until the
+// deadline and then blamed on a hidden element.
+func TestIntegration_InvalidSelectorFailsFastWithHint(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<button id=go onclick="document.title='hit'">Next</button><input id=i>`)
+	}))
+	t.Cleanup(srv.Close)
+	m := NewManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _ = m.Close(ctx) })
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatal(err)
+	}
+	for _, sel := range []string{`button:has-text('Next'), a:has-text('Next')`, `text=Next`, `button:visible`, `div[`} {
+		for name, act := range map[string]func() error{
+			"click": func() error { return m.Click(ctx, sel) },
+			"type":  func() error { return m.Type(ctx, sel, "x", false) },
+			"hover": func() error { return m.Hover(ctx, sel) },
+		} {
+			start := time.Now()
+			err := act()
+			if err == nil || !errors.Is(err, ErrInvalidSelector) {
+				t.Errorf("%s %q: want ErrInvalidSelector, got %v", name, sel, err)
+				continue
+			}
+			if d := time.Since(start); d > 3*time.Second {
+				t.Errorf("%s %q took %s; an invalid selector must fail immediately", name, sel, d)
+			}
+			if !strings.Contains(err.Error(), "browser_find") {
+				t.Errorf("%s %q: error should point at browser_find: %v", name, sel, err)
+			}
+		}
+	}
+	if err := m.Click(ctx, `button:has-text('Next')`); err == nil || !strings.Contains(err.Error(), "Playwright") {
+		t.Errorf("Playwright syntax should be named as such: %v", err)
+	}
+	// Valid selectors still work, including lists, :has(), and XPath.
+	for _, sel := range []string{`a.none, #go`, `body:has(#go) #go`, `//button[@id='go']`} {
+		if err := m.Click(ctx, sel); err != nil {
+			t.Errorf("valid selector %q rejected: %v", sel, err)
+		}
 	}
 }

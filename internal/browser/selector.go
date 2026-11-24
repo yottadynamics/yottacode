@@ -152,6 +152,30 @@ func plainQueryOpts(sel string) []chromedp.QueryOption {
 	return []chromedp.QueryOption{chromedp.ByQuery}
 }
 
+// playwrightSyntaxRE matches selector forms that come from Playwright, not CSS.
+var playwrightSyntaxRE = regexp.MustCompile(`(?i):has-text\(|:text\(|:text-is\(|:text-matches\(|:nth-match\(|:visible\b|:enabled-text|^\s*(text|role|css|xpath|id|data-testid)=|>>\s*nth=`)
+
+// validateCSS fails fast, with the real reason, on a selector the browser will
+// never accept. Without it an invalid selector is retried until the action
+// deadline and the final error blames a hidden or covered element. XPath
+// expressions (starting with "/" or "(") are not CSS and are skipped.
+func (s *session) validateCSS(c context.Context, sel string) error {
+	t := strings.TrimSpace(sel)
+	if t == "" || strings.HasPrefix(t, "/") || strings.HasPrefix(t, "(") {
+		return nil
+	}
+	arg, _ := json.Marshal(t)
+	var msg string
+	if err := chromedp.Run(c, chromedp.Evaluate(`(function(s){try{document.createDocumentFragment().querySelector(s);return ''}catch(e){return String(e && e.message || 'invalid')}})(`+string(arg)+`)`, &msg)); err != nil || msg == "" {
+		return nil // can't ask the page (it is going away): let the action report it
+	}
+	hint := " Selectors are CSS only."
+	if playwrightSyntaxRE.MatchString(t) {
+		hint = " That is Playwright selector syntax, which is not CSS."
+	}
+	return fmt.Errorf("%w: %q is not a valid CSS selector (%s).%s To find an element by its visible text or role, call browser_find and use the ref it returns; or take a ref from browser_inspect", ErrInvalidSelector, sel, msg, hint)
+}
+
 // query resolves an agent selector into the selector string and chromedp query
 // options to run it with. A plain CSS selector returns unchanged with no
 // options, so existing behavior is untouched.
@@ -164,21 +188,36 @@ func (s *session) query(c context.Context, sel string) (string, []chromedp.Query
 				return "", nil, err
 			}
 			if !strings.Contains(css, frameSep) {
-				return css, []chromedp.QueryOption{chromedp.ByQuery}, nil
+				// BySearch (DOM.performSearch) finds the tagged node even inside an
+				// open shadow root, which querySelector cannot see. The tag value is
+				// a fresh random nonce, so unlike a page-supplied selector it cannot
+				// collide with the page's own CSS or script text.
+				return css, []chromedp.QueryOption{chromedp.BySearch}, nil
 			}
 			// A ref inside an iframe resolves to "frame >>> element", which the
 			// frame handling below walks like a hand-written path.
 			frames, inner = splitFrames(css)
 		} else {
+			if err := s.validateCSS(c, inner); err != nil {
+				return "", nil, err
+			}
 			return inner, plainQueryOpts(inner), nil
 		}
 	} else if refPattern.MatchString(inner) {
 		return "", nil, fmt.Errorf("%w: write a ref on its own (ref=eN reaches into iframes by itself); %q cannot prefix a ref", ErrSelectorNotFound, frameSep)
 	}
+	if inner != "" {
+		if err := s.validateCSS(c, inner); err != nil {
+			return "", nil, err
+		}
+	}
 	var opts []chromedp.QueryOption
 	for _, f := range frames {
 		if f == "" {
 			return "", nil, fmt.Errorf("%w: empty frame selector before %q", ErrSelectorNotFound, frameSep)
+		}
+		if err := s.validateCSS(c, f); err != nil {
+			return "", nil, err
 		}
 		var nodes []*cdp.Node
 		qo := append(append([]chromedp.QueryOption{}, opts...), chromedp.ByQuery, chromedp.AtLeast(1))

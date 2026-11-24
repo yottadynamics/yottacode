@@ -57,19 +57,68 @@ const (
 	settleNetworkIdle = 200 * time.Millisecond
 )
 
+// After settleQuickAfter consecutive settles that spent their whole budget on
+// the same page without it ever going quiet (an animation, a poller, a ticking
+// clock), later settles on that page use a short budget instead, so such a page
+// does not cost seconds on every read. A settle that finishes normally, or a
+// navigation to another page, brings the full budget back.
+const (
+	settleQuickAfter   = 2
+	settleQuickNetwork = 500 * time.Millisecond
+	settleQuickDOM     = 300 * time.Millisecond
+)
+
+// settleKeyOf identifies "the same page" for settle tuning: scheme, host and path.
+func settleKeyOf(raw string) string {
+	if i := strings.IndexAny(raw, "?#"); i >= 0 {
+		raw = raw[:i]
+	}
+	return raw
+}
+
+// settleBudget returns the caps to use for the page at url.
+func (p *trackedPage) settleBudget(url string) (network, dom time.Duration, quick bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.settleKey == settleKeyOf(url) && p.settleMisses >= settleQuickAfter {
+		return settleQuickNetwork, settleQuickDOM, true
+	}
+	return settleNetworkCap, settleDOMCap, false
+}
+
+// noteSettle records whether a settle that used the budget returned by
+// settleBudget ran out of it. A quick-mode miss changes nothing: only a clean
+// finish lifts quick mode.
+func (p *trackedPage) noteSettle(url string, capped, quick bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	key := settleKeyOf(url)
+	if p.settleKey != key {
+		p.settleKey, p.settleMisses = key, 0
+	}
+	switch {
+	case !capped:
+		p.settleMisses = 0
+	case !quick:
+		p.settleMisses++
+	}
+}
+
 // settle waits, bounded, for the page to stop changing: no request in flight
 // and no DOM mutation for a short quiet period. It never fails; a page that
-// never goes quiet (animation, polling) just proceeds after the cap.
+// never goes quiet just proceeds after the cap (see the tuning above).
 func (s *session) settle(ctx context.Context, p *trackedPage) {
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
-	nc, ncancel := context.WithTimeout(c, settleNetworkCap)
-	_ = s.waitNetworkIdle(nc, p, settleNetworkIdle)
+	url := p.getURL()
+	netCap, domCap, quick := p.settleBudget(url)
+	nc, ncancel := context.WithTimeout(c, netCap)
+	netErr := s.waitNetworkIdle(nc, p, settleNetworkIdle)
 	ncancel()
-	dc, dcancel := context.WithTimeout(c, settleDOMCap)
+	dc, dcancel := context.WithTimeout(c, domCap)
 	defer dcancel()
 	var ok bool
-	_ = chromedp.Run(dc, chromedp.Evaluate(fmt.Sprintf(`new Promise(function(resolve){
+	domErr := chromedp.Run(dc, chromedp.Evaluate(fmt.Sprintf(`new Promise(function(resolve){
 		var t, mo = new MutationObserver(function(){ clearTimeout(t); t = setTimeout(done, %d); });
 		function done(){ mo.disconnect(); resolve(true); }
 		mo.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
@@ -77,6 +126,10 @@ func (s *session) settle(ctx context.Context, p *trackedPage) {
 	})`, settleDOMQuiet.Milliseconds(), settleDOMQuiet.Milliseconds()), &ok, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 		return p.WithAwaitPromise(true)
 	}))
+	if c.Err() != nil {
+		return // the caller gave up; that says nothing about the page
+	}
+	p.noteSettle(url, netErr != nil || domErr != nil || !ok, quick)
 }
 
 // PageDigest is a cheap snapshot of the visible, actionable state of the page,
@@ -92,6 +145,13 @@ type PageDigest struct {
 }
 
 const digestJS = `(function(){
+	// querySelectorAll that also looks inside open shadow roots.
+	function deepAll(root, sel, out){
+		out = out || [];
+		root.querySelectorAll(sel).forEach(function(e){ out.push(e); });
+		root.querySelectorAll('*').forEach(function(e){ if (e.shadowRoot) deepAll(e.shadowRoot, sel, out); });
+		return out;
+	}
 	function vis(el){ var r = el.getBoundingClientRect(); if (!r.width && !r.height) return false;
 		var s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none'; }
 	function clean(t){ return (t||'').replace(/\s+/g,' ').trim().slice(0,80); }
@@ -107,7 +167,7 @@ const digestJS = `(function(){
 		return t || clean(el.innerText || el.value || el.title);
 	}
 	var els = [], q = 'a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=link],[role=radio],[role=checkbox],[role=tab],[role=menuitem],[role=switch]';
-	document.querySelectorAll(q).forEach(function(el){
+	deepAll(document, q).forEach(function(el){
 		if (els.length >= 150) return;
 		var isInput = el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox');
 		if (!isInput && !vis(el)) return;
@@ -123,7 +183,7 @@ const digestJS = `(function(){
 		els.push(line);
 	});
 	var alerts = [];
-	document.querySelectorAll('[role=alert],[role=status],[aria-live=assertive]').forEach(function(el){
+	deepAll(document, '[role=alert],[role=status],[aria-live=assertive]').forEach(function(el){
 		var t = (el.innerText||'').replace(/\s+/g,' ').trim().slice(0,200); if (t && alerts.length < 5) alerts.push(t);
 	});
 	return JSON.stringify({url: location.href, title: document.title, els: els, alerts: alerts});
@@ -175,6 +235,11 @@ func DiffDigest(before, after PageDigest) string {
 		lines = append(lines, fmt.Sprintf("title: %q -> %q", before.Title, after.Title))
 	}
 	added, removed := multisetDiff(before.Elements, after.Elements)
+	// An element that only changed state ("radio "B"" -> "radio "B" (checked)")
+	// is one change, not a removal plus an addition.
+	var changed []string
+	added, removed, changed = pairChanges(added, removed)
+	lines = append(lines, capLines("changed", changed, 8)...)
 	lines = append(lines, capLines("removed", removed, 8)...)
 	lines = append(lines, capLines("added", added, 8)...)
 	newAlerts, _ := multisetDiff(before.Alerts, after.Alerts)
@@ -186,6 +251,47 @@ func DiffDigest(before, after PageDigest) string {
 		lines = append(lines, "dialog: "+d)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// elementKey identifies an element across a state change: its role and quoted
+// name, i.e. the line up to the closing quote of the name.
+func elementKey(line string) string {
+	i := strings.IndexByte(line, '"')
+	if i < 0 {
+		return line
+	}
+	j := strings.IndexByte(line[i+1:], '"')
+	if j < 0 {
+		return line
+	}
+	return line[:i+1+j+1]
+}
+
+// pairChanges matches removed and added lines that describe the same element
+// (same role and name) one-to-one, in order, and returns them as "old -> new"
+// changes; what is left over stays removed or added.
+func pairChanges(added, removed []string) (restAdded, restRemoved, changed []string) {
+	byKey := map[string][]int{}
+	for i, a := range added {
+		byKey[elementKey(a)] = append(byKey[elementKey(a)], i)
+	}
+	used := map[int]bool{}
+	for _, r := range removed {
+		k := elementKey(r)
+		if idx := byKey[k]; len(idx) > 0 {
+			changed = append(changed, r+" -> "+added[idx[0]])
+			used[idx[0]] = true
+			byKey[k] = idx[1:]
+			continue
+		}
+		restRemoved = append(restRemoved, r)
+	}
+	for i, a := range added {
+		if !used[i] {
+			restAdded = append(restAdded, a)
+		}
+	}
+	return restAdded, restRemoved, changed
 }
 
 func capLines(label string, items []string, max int) []string {
@@ -417,9 +523,19 @@ const extractJS = `(function(root, max){
 		if (el.hidden || el.getAttribute('aria-hidden') === 'true') return true;
 		var s = getComputedStyle(el); return s.display === 'none' || s.visibility === 'hidden';
 	}
+	// Children as rendered: an open shadow root replaces the host's own
+	// children, and a <slot> shows the nodes assigned to it.
+	function kids(el){
+		if (el.shadowRoot) return Array.from(el.shadowRoot.childNodes);
+		if (el.tagName === 'SLOT') {
+			var a = el.assignedNodes({flatten:true});
+			if (a.length) return a;
+		}
+		return Array.from(el.childNodes);
+	}
 	function inline(el){
 		var s = '';
-		el.childNodes.forEach(function(n){
+		kids(el).forEach(function(n){
 			if (n.nodeType === 3) s += n.textContent;
 			else if (n.nodeType === 1 && !hidden(n)) {
 				var t = n.tagName;
@@ -430,6 +546,7 @@ const extractJS = `(function(root, max){
 				else if (t === 'STRONG' || t === 'B') { var b = inline(n).trim(); s += b ? '**' + b + '**' : ''; }
 				else if (t === 'CODE') s += '` + "`" + `' + n.textContent + '` + "`" + `';
 				else if (t === 'INPUT' && (n.type === 'radio' || n.type === 'checkbox')) s += n.checked ? '[x] ' : '[ ] ';
+				else if (/^(DIV|P|UL|OL|LI|TR|SECTION|ARTICLE|HEADER|FOOTER|ASIDE|FORM|FIELDSET|DL|DT|DD|TABLE|H[1-6])$/.test(t)) s += ' ' + inline(n) + ' ';
 				else s += inline(n);
 			}
 		});
@@ -458,9 +575,10 @@ const extractJS = `(function(root, max){
 			var s = inline(el).trim(); if (s) push(s + '\n\n'); return;
 		}
 		var hasBlock = false;
-		for (var i = 0; i < el.children.length; i++) { if (!/^(A|SPAN|B|STRONG|EM|I|CODE|IMG|BR|SMALL|INPUT)$/.test(el.children[i].tagName)) { hasBlock = true; break; } }
+		var ks = kids(el).filter(function(k){ return k.nodeType === 1; });
+		for (var i = 0; i < ks.length; i++) { if (!/^(A|SPAN|B|STRONG|EM|I|CODE|IMG|BR|SMALL|INPUT)$/.test(ks[i].tagName)) { hasBlock = true; break; } }
 		if (!hasBlock) { var s2 = inline(el).trim(); if (s2) push(s2 + '\n\n'); return; }
-		el.childNodes.forEach(function(n){
+		kids(el).forEach(function(n){
 			if (n.nodeType === 1) walk(n);
 			else if (n.nodeType === 3 && n.textContent.trim()) push(n.textContent.trim() + '\n\n');
 		});
@@ -495,7 +613,9 @@ func (s *session) extract(ctx context.Context, sel string, maxChars int) (string
 		}
 		// Resolve the element (possibly inside an iframe) and run the converter
 		// with it as `this`, so the same code serves the page and any frame.
-		err = chromedp.Run(c, chromedp.QueryAfter(inner, func(ctx context.Context, _ runtime.ExecutionContextID, nodes ...*cdp.Node) error {
+		lc, lcancel := context.WithTimeout(c, selectorLookupTimeout)
+		defer lcancel()
+		err = chromedp.Run(lc, chromedp.QueryAfter(inner, func(ctx context.Context, _ runtime.ExecutionContextID, nodes ...*cdp.Node) error {
 			if len(nodes) == 0 {
 				return fmt.Errorf("selector %q did not return any nodes", sel)
 			}
@@ -618,4 +738,125 @@ func (s *session) screenshotAnnotated(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("browser screenshot: %w", err)
 	}
 	return b, nil
+}
+
+// ScrollResult describes a scroll-until-the-end run.
+type ScrollResult struct {
+	Steps       int  // load-and-scroll cycles performed
+	StartHeight int  // scrollable height before, in px
+	EndHeight   int  // scrollable height after, in px
+	ReachedEnd  bool // the height stopped growing (the list is exhausted)
+	TimedOut    bool // the action deadline hit first
+}
+
+const (
+	scrollEndStalls    = 2 // consecutive cycles without growth that mean "the end"
+	scrollStepSettle   = 250 * time.Millisecond
+	scrollStepNetwork  = 2 * time.Second
+	DefaultScrollSteps = 10
+	MaxScrollSteps     = 30
+)
+
+// scrollUntilEnd scrolls the page (or the scrollable element sel) to its bottom
+// repeatedly, waiting for lazy-loaded content after each jump, until the
+// scrollable height stops growing for two cycles, maxSteps cycles have run, or
+// the action deadline hits. Infinite feeds load more as the bottom is reached.
+func (s *session) scrollUntilEnd(ctx context.Context, sel string, maxSteps int) (ScrollResult, error) {
+	p := s.activePage()
+	c, cancel := actionContext(p.ctx, ctx)
+	defer cancel()
+	if maxSteps <= 0 {
+		maxSteps = DefaultScrollSteps
+	}
+	if maxSteps > MaxScrollSteps {
+		maxSteps = MaxScrollSteps
+	}
+
+	// step jumps to the bottom and returns the scrollable height.
+	var step func() (int, error)
+	if sel == "" {
+		step = func() (int, error) {
+			var h float64
+			err := chromedp.Run(c, chromedp.Evaluate(`(function(){var d=document.scrollingElement||document.documentElement;d.scrollTo(0,d.scrollHeight);return d.scrollHeight})()`, &h))
+			return int(h), err
+		}
+	} else {
+		inner, opts, err := s.query(c, sel)
+		if err != nil {
+			return ScrollResult{}, err
+		}
+		var objID runtime.RemoteObjectID
+		lc, lcancel := context.WithTimeout(c, selectorLookupTimeout)
+		defer lcancel()
+		err = chromedp.Run(lc, chromedp.QueryAfter(inner, func(ctx context.Context, _ runtime.ExecutionContextID, nodes ...*cdp.Node) error {
+			if len(nodes) == 0 {
+				return fmt.Errorf("selector %q did not return any nodes", sel)
+			}
+			obj, err := dom.ResolveNode().WithNodeID(nodes[0].NodeID).Do(ctx)
+			if err != nil {
+				return err
+			}
+			objID = obj.ObjectID
+			return nil
+		}, append(append([]chromedp.QueryOption{}, opts...), chromedp.NodeReady)...))
+		if err != nil {
+			return ScrollResult{}, classifySelectorErr(err)
+		}
+		step = func() (int, error) {
+			var h int
+			err := chromedp.Run(c, chromedp.ActionFunc(func(ctx context.Context) error {
+				r, _, err := runtime.CallFunctionOn(`function(){this.scrollTo(0,this.scrollHeight);return this.scrollHeight}`).
+					WithObjectID(objID).WithReturnByValue(true).Do(ctx)
+				if err != nil {
+					return err
+				}
+				if r != nil {
+					var f float64
+					if json.Unmarshal(r.Value, &f) == nil {
+						h = int(f)
+					}
+				}
+				return nil
+			}))
+			return h, err
+		}
+	}
+
+	var res ScrollResult
+	h, err := step()
+	if err != nil {
+		return res, classifySelectorErr(err)
+	}
+	res.StartHeight, res.EndHeight = h, h
+	stalls := 0
+	for res.Steps < maxSteps {
+		res.Steps++
+		select {
+		case <-c.Done():
+			res.TimedOut = true
+			return res, nil
+		case <-time.After(scrollStepSettle):
+		}
+		nc, ncancel := context.WithTimeout(c, scrollStepNetwork)
+		_ = s.waitNetworkIdle(nc, p, settleNetworkIdle)
+		ncancel()
+		next, err := step()
+		if err != nil {
+			if c.Err() != nil {
+				res.TimedOut = true
+				return res, nil
+			}
+			return res, classifySelectorErr(err)
+		}
+		if next > res.EndHeight {
+			res.EndHeight = next
+			stalls = 0
+			continue
+		}
+		if stalls++; stalls >= scrollEndStalls {
+			res.ReachedEnd = true
+			break
+		}
+	}
+	return res, nil
 }

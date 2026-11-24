@@ -46,6 +46,8 @@ type browserSession interface {
 	ResponseBody(ctx context.Context, requestID string, maxBytes, offset int) (browser.ResponseBody, error)
 	InspectMode(ctx context.Context, selector, mode string) (string, error)
 	ClickWith(ctx context.Context, selector string, o browser.ClickOptions) error
+	ArmDialog(ctx context.Context, accept bool, text string, clear bool) error
+	ScrollUntilEnd(ctx context.Context, selector string, maxSteps int) (browser.ScrollResult, error)
 	Hover(ctx context.Context, selector string) error
 	Drag(ctx context.Context, from, to string) error
 	Find(ctx context.Context, text, role string, limit int) (string, error)
@@ -471,7 +473,7 @@ type BrowserScrollTool struct{ browserToolBase }
 
 func (t *BrowserScrollTool) Name() string { return "browser_scroll" }
 func (t *BrowserScrollTool) Description() string {
-	return "Scroll an element into view (if selector is given), or scroll the page by a direction or explicit pixel delta."
+	return "Scroll an element into view (if selector is given), or scroll the page by a direction or explicit pixel delta. With until_end, scroll the page (or, with selector, that scrollable container) to the bottom repeatedly, waiting for lazy-loaded content each time, until it stops growing: use it for infinite feeds and lazy lists, then browser_extract or browser_find to read what loaded."
 }
 func (t *BrowserScrollTool) Schema() map[string]any {
 	return map[string]any{
@@ -481,6 +483,8 @@ func (t *BrowserScrollTool) Schema() map[string]any {
 			"direction": map[string]any{"type": "string", "enum": []string{"up", "down", "left", "right"}, "description": "Scroll direction, applied at a default magnitude. Ignored if delta_x/delta_y is non-zero."},
 			"delta_x":   map[string]any{"type": "number", "description": "Explicit horizontal scroll delta in pixels. Overrides direction."},
 			"delta_y":   map[string]any{"type": "number", "description": "Explicit vertical scroll delta in pixels. Overrides direction."},
+			"until_end": map[string]any{"type": "boolean", "description": "Keep scrolling to the bottom until the content stops growing. With selector, scrolls that container instead of the page (selector is then NOT scrolled into view). Direction and deltas are ignored."},
+			"max_steps": map[string]any{"type": "integer", "description": "With until_end: most load-and-scroll cycles (default 10, max 30)."},
 		},
 	}
 }
@@ -489,8 +493,12 @@ func (t *BrowserScrollTool) PreviewCall(argsJSON string) string {
 	var a struct {
 		Selector  string `json:"selector"`
 		Direction string `json:"direction"`
+		UntilEnd  bool   `json:"until_end"`
 	}
 	_ = json.Unmarshal([]byte(argsJSON), &a)
+	if a.UntilEnd {
+		return fmt.Sprintf("browser_scroll(until_end %s)", a.Selector)
+	}
 	if a.Selector != "" {
 		return fmt.Sprintf("browser_scroll(%s)", a.Selector)
 	}
@@ -505,9 +513,36 @@ func (t *BrowserScrollTool) Execute(ctx context.Context, argsJSON string) (strin
 		Direction string  `json:"direction"`
 		DeltaX    float64 `json:"delta_x"`
 		DeltaY    float64 `json:"delta_y"`
+		UntilEnd  bool    `json:"until_end"`
+		MaxSteps  int     `json:"max_steps"`
 	}
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 		return "", fmt.Errorf("browser_scroll: invalid args: %w", err)
+	}
+	if a.UntilEnd {
+		var res browser.ScrollResult
+		changes, err := t.observe(ctx, func() error {
+			var e error
+			res, e = t.Session.ScrollUntilEnd(ctx, a.Selector, a.MaxSteps)
+			return e
+		})
+		if err != nil {
+			return "", fmt.Errorf("browser_scroll: %w", err)
+		}
+		where := "the page"
+		if strings.TrimSpace(a.Selector) != "" {
+			where = fmt.Sprintf("%q", a.Selector)
+		}
+		var verdict string
+		switch {
+		case res.ReachedEnd:
+			verdict = "reached the end (no more content loaded)"
+		case res.TimedOut:
+			verdict = "stopped at the time limit; more may remain: call again to continue"
+		default:
+			verdict = "stopped at max_steps; more may remain: call again to continue"
+		}
+		return fmt.Sprintf("scrolled %s to the bottom in %d step(s): height %d -> %d px; %s", where, res.Steps, res.StartHeight, res.EndHeight, verdict) + changes, nil
 	}
 	if strings.TrimSpace(a.Selector) != "" {
 		if err := t.Session.Scroll(ctx, a.Selector, 0, 0); err != nil {
