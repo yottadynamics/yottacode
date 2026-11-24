@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -309,4 +310,42 @@ func (f *fakeSession) closed() bool {
 		}
 	}
 	return false
+}
+
+func TestLoadMoreRegexp(t *testing.T) {
+	for _, yes := range []string{"Load more", "load More results", "Show more", "View older comments", "See more", "More", "More results", "Next page »", "Load more posts"} {
+		if !loadMoreRE.MatchString(yes) {
+			t.Errorf("%q should match", yes)
+		}
+	}
+	for _, no := range []string{"Submit", "Learn more about us", "Read more", "Home", "Add to cart", "Nextdoor", "Moreover"} {
+		if loadMoreRE.MatchString(no) {
+			t.Errorf("%q should not match", no)
+		}
+	}
+}
+
+func TestRawAXTreeDecodesPropertiesIncludingUnknownNames(t *testing.T) {
+	reply := `{"nodes":[{"nodeId":"1","ignored":false,"role":{"type":"role","value":"radio"},"name":{"type":"computedString","value":"B"},
+	"properties":[{"name":"checked","value":{"type":"tristate","value":"true"}},
+	              {"name":"someFutureProperty","value":{"type":"string","value":"x"}},
+	              {"name":"disabled","value":{"type":"boolean","value":true}}],"backendDOMNodeId":5}]}`
+	var tree rawAXTree
+	if err := json.Unmarshal([]byte(reply), &tree); err != nil {
+		t.Fatal(err)
+	}
+	nodes := tree.nodes()
+	if len(nodes) != 1 || len(nodes[0].Properties) != 3 {
+		t.Fatalf("properties not decoded: %+v", nodes)
+	}
+	if got := axStateSuffix(nodes[0]); got != " (checked, disabled)" {
+		t.Errorf("state suffix = %q", got)
+	}
+}
+
+func TestTreeTextLen(t *testing.T) {
+	r := "RootWebArea\n  heading \"Hello\"\n  paragraph\n    StaticText \"This is \\\"quoted\\\" text\"\n"
+	if got := treeTextLen(r); got != len("Hello")+len(`This is \"quoted\" text`) {
+		t.Errorf("treeTextLen = %d", got)
+	}
 }

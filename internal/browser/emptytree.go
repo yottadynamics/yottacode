@@ -4,10 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/chromedp/chromedp"
 )
+
+var quotedRE = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+
+// treeTextLen is the number of characters in the quoted names and values of a
+// rendered tree: the text the tree actually carries.
+func treeTextLen(rendered string) int {
+	n := 0
+	for _, m := range quotedRE.FindAllStringSubmatch(rendered, -1) {
+		n += len(m[1])
+	}
+	return n
+}
 
 // sparseTree reports whether a rendered full-page tree gives the agent nothing
 // to act on: no element carries a ref and there is next to no text.
@@ -35,7 +48,7 @@ const pageFactsJS = `(function(){
 // emptyTreeNote explains, from cheap page facts, why the accessibility tree
 // came back (nearly) empty and what to try next. It contains only counts — no
 // page text — so it is safe to show next to untrusted content.
-func (s *session) emptyTreeNote(c context.Context) string {
+func (s *session) emptyTreeNote(c context.Context, rendered string) string {
 	var raw string
 	if err := chromedp.Run(c, chromedp.Evaluate(pageFactsJS, &raw)); err != nil {
 		return ""
@@ -65,10 +78,15 @@ func (s *session) emptyTreeNote(c context.Context) string {
 	if f.ClosedShadow > 0 {
 		why = append(why, fmt.Sprintf("%d custom element(s) without a readable shadow root (possibly closed)", f.ClosedShadow))
 	}
-	if f.BodyText > 0 {
-		why = append(why, fmt.Sprintf("the page has %d characters of visible text that are not in the tree: browser_extract reads them", f.BodyText))
+	// Only claim missing text when the page really has noticeably more than the
+	// tree shows; a small page whose text is all in the tree is just small.
+	if tt := treeTextLen(rendered); f.BodyText > tt+50 {
+		why = append(why, fmt.Sprintf("the page has about %d characters of visible text but the tree shows only about %d: browser_extract reads the rest", f.BodyText, tt))
 	}
 	if len(why) == 0 {
+		if f.BodyText > 0 {
+			return "" // a small page that the tree describes fully: nothing to explain
+		}
 		why = append(why, "the page has no visible text or controls yet; content may be added by a timer or script: browser_wait for it")
 	}
 	return "\nnote: this tree is nearly empty. " + strings.Join(why, "; ") +

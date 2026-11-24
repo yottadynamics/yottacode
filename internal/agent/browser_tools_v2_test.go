@@ -225,3 +225,19 @@ func TestScrollUntilEndRoutesAndReports(t *testing.T) {
 		t.Errorf("preview=%q", p)
 	}
 }
+
+func TestScrollUntilEndReportsLoadMoreControl(t *testing.T) {
+	f := &fakeBrowserSession{scrollEndResult: browser.ScrollResult{Steps: 2, StartHeight: 1, EndHeight: 1, ReachedEnd: true, LoadMore: `button "Load more" [ref=e12]`}}
+	out, err := (&BrowserScrollTool{enabledBase(f)}).Execute(context.Background(), `{"until_end":true}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `button "Load more" [ref=e12]`) || !strings.Contains(out, "untrusted_web_content") || !strings.Contains(out, "click it") {
+		t.Errorf("load more not reported safely:\n%s", out)
+	}
+	f.scrollEndResult.LoadMore = ""
+	out, _ = (&BrowserScrollTool{enabledBase(f)}).Execute(context.Background(), `{"until_end":true}`)
+	if strings.Contains(out, "load more") {
+		t.Errorf("no control, no note:\n%s", out)
+	}
+}

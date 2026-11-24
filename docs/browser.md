@@ -46,7 +46,7 @@ The check covers **every target**, not just the page you are looking at: cross-s
 
 `browser_inspect` prints a compact accessibility tree: `InlineTextBox` and `StaticText` that repeat their parent's name are dropped, anonymous `generic` wrappers are collapsed, and state the agent needs to verify an action is shown inline (`checked`, `selected`, `expanded`, `disabled`, …). `mode: "interactive"` goes further and lists only actionable elements, headings and groups as a flat list. `browser_find` and `browser_extract` read less still: the first returns only matching elements, the second the page's readable text as markdown. Before reading, these tools wait up to a few seconds for the page to settle (no request in flight, no DOM mutation for 250 ms); a page that never goes quiet proceeds after the cap. If that happens twice in a row on the same page (an animation, a poller, a ticking clock), later settles on it use a short budget (0.5 s network, 0.3 s DOM) so the page does not cost seconds on every read; a clean settle, or moving to another page, restores the full budget.
 
-If a full-page `browser_inspect` comes back nearly empty (no element with a ref and almost no text), it ends with a `note:` that says why, from page facts alone (counts, never page text): the page is still loading, cross-origin iframes whose content cannot be read, `canvas`/`video` elements, custom elements without a readable shadow root, visible text that is not in the tree (`browser_extract` reads it), or simply nothing there yet (a timer or script may add content: `browser_wait`). It ends by pointing at `browser_screenshot` with `annotate`, `browser_extract` and `browser_handoff`, so the agent picks a next step instead of re-inspecting the same empty tree.
+If a full-page `browser_inspect` comes back nearly empty (no element with a ref and almost no text), it ends with a `note:` that says why, from page facts alone (counts, never page text): the page is still loading, cross-origin iframes whose content cannot be read, `canvas`/`video` elements, custom elements without a readable shadow root, visible text that is not in the tree (`browser_extract` reads it), or simply nothing there yet (a timer or script may add content: `browser_wait`). The "visible text that is not in the tree" claim is only made when the page has noticeably more text than the tree shows, and a small page the tree describes fully gets no note at all. It ends by pointing at `browser_screenshot` with `annotate`, `browser_extract` and `browser_handoff`, so the agent picks a next step instead of re-inspecting the same empty tree.
 
 ## Page changes after actions
 
@@ -54,7 +54,7 @@ If a full-page `browser_inspect` comes back nearly empty (no element with a ref 
 
 ## Shadow DOM
 
-Elements inside **open** shadow roots (web components), including nested ones, are listed by `browser_inspect` and `browser_find` with refs, shown in `page changes`, and read by `browser_extract` (slotted content included). Use the ref: `ref=e7` finds the element through the shadow boundary. CSS selectors do not pierce shadow roots, so a hand-written `my-widget #inner` will not match and `>>>` is for iframes only. A **closed** shadow root is visible to the accessibility tree, so its elements still get refs and can be clicked, but `page changes` and `browser_extract` cannot read it.
+Elements inside **open** shadow roots (web components), including nested ones, are listed by `browser_inspect` and `browser_find` with refs, shown in `page changes`, and read by `browser_extract` (slotted content included). Use the ref: `ref=e7` finds the element through the shadow boundary. CSS selectors do not pierce shadow roots, so a hand-written `my-widget #inner` will not match and `>>>` is for iframes only. A ref also works for an element in a shadow root inside an iframe. A **closed** shadow root is visible to the accessibility tree, so its elements get refs, can be clicked, and show up in `page changes` (when a page has custom elements whose shadow content script cannot read, the digest takes its element list from the accessibility tree); `browser_extract` reads the page from the DOM, so for a page with such elements it appends a section, "Text from custom elements the page script cannot read", holding any accessible text the DOM walk missed (text it already has is not repeated). Ordinary pages pay nothing for this.
 
 ## Persistent profile (opt-in)
 
@@ -108,7 +108,7 @@ Chrome refuses to start its sandbox as uid 0, and yottacode deliberately does no
 
 - No local-file, `chrome://`, `javascript:`, or `data:` navigation; only HTTP(S) and `about:blank`.
 - No proxying or CAPTCHA-solving. Persistent login profiles are opt-in only (see above). No sandbox or network-policy changes outside the browser.
-- No device emulation, native HTML5 drag-and-drop (`browser_drag` synthesises mouse events), request mocking, or default visible window.
+- No device emulation, request mocking, or default visible window.
 - Downloads are temporary, cleaned after success/failure, and rejected above the fixed safety limit.
 
 ## Verification

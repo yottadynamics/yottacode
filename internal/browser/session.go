@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -115,6 +116,9 @@ type trackedPage struct {
 	lastBlock error
 	// dialogArm is the armed one-shot answer for the next confirm/prompt.
 	dialogArm *dialogAnswer
+	// dragData is what Chrome handed over when a native HTML5 drag started
+	// while drag interception was on (see drag).
+	dragData *input.DragData
 	// settleKey/settleMisses tune how long settle waits on a page that never
 	// goes quiet (see settleBudget).
 	settleKey    string
@@ -586,6 +590,10 @@ func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 			go func() {
 				_ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept).WithPromptText(promptText))
 			}()
+		case *input.EventDragIntercepted:
+			p.mu.Lock()
+			p.dragData = e.Data
+			p.mu.Unlock()
 		case *runtime.EventConsoleAPICalled:
 			var b strings.Builder
 			for _, a := range e.Args {
@@ -1003,7 +1011,7 @@ func (s *session) inspectMode(ctx context.Context, sel, mode string) (string, er
 	}
 	out := renderAXTreeOpts(nodes, refs, axRenderOpts{interactiveOnly: mode == "interactive"})
 	if sel == "" && sparseTree(out) {
-		out += s.emptyTreeNote(c)
+		out += s.emptyTreeNote(c, out)
 	}
 	return out, nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -186,7 +187,9 @@ const digestJS = `(function(){
 	deepAll(document, '[role=alert],[role=status],[aria-live=assertive]').forEach(function(el){
 		var t = (el.innerText||'').replace(/\s+/g,' ').trim().slice(0,200); if (t && alerts.length < 5) alerts.push(t);
 	});
-	return JSON.stringify({url: location.href, title: document.title, els: els, alerts: alerts});
+	var opaque = 0;
+	document.querySelectorAll('*').forEach(function(e){ if (e.tagName.indexOf('-') > 0 && !e.shadowRoot) opaque++; });
+	return JSON.stringify({url: location.href, title: document.title, els: els, alerts: alerts, opaque: opaque});
 })()`
 
 // digest snapshots the page. With settle, it first waits for the page to go quiet.
@@ -208,9 +211,18 @@ func (s *session) digest(ctx context.Context, settle bool) (PageDigest, error) {
 		URL, Title string
 		Els        []string
 		Alerts     []string
+		Opaque     int
 	}
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
 		return PageDigest{}, err
+	}
+	if v.Opaque > 0 {
+		// Custom elements whose shadow root script cannot read (closed roots):
+		// the accessibility tree still shows what is inside, so take the
+		// element list from it instead.
+		if els, ok := s.axDigestElements(c); ok {
+			v.Els = els
+		}
 	}
 	d := PageDigest{Valid: true, URL: v.URL, Title: v.Title, Elements: v.Els, Alerts: v.Alerts}
 	for _, e := range p.consoleSnapshot(maxBufferedEntries) {
@@ -219,6 +231,39 @@ func (s *session) digest(ctx context.Context, settle bool) (PageDigest, error) {
 		}
 	}
 	return d, nil
+}
+
+// axDigestElements lists the interactive elements from the accessibility tree
+// (page, iframes, and shadow roots including closed ones) in the digest's
+// `role "name" ="value" (state)` form.
+func (s *session) axDigestElements(c context.Context) ([]string, bool) {
+	var forest *axForest
+	if err := runChromedp(c, func(ctx context.Context) error {
+		var err error
+		forest, err = collectAXForest(ctx)
+		return err
+	}); err != nil {
+		return nil, false
+	}
+	var out []string
+	for _, n := range forest.dfs() {
+		role := axValueString(n.Role)
+		if n.Ignored || !interactiveRoles[role] {
+			continue
+		}
+		line := role
+		if name := axValueString(n.Name); name != "" {
+			line += fmt.Sprintf(" %q", truncRunes(name, 80))
+		}
+		if v := axValueString(n.Value); v != "" && role != "radio" && role != "checkbox" && role != "button" {
+			line += fmt.Sprintf(" =%q", truncRunes(v, 40))
+		}
+		out = append(out, line+axStateSuffix(n))
+		if len(out) >= 150 {
+			break
+		}
+	}
+	return out, true
 }
 
 // DiffDigest describes what changed between two digests, or "" if nothing did.
@@ -390,9 +435,26 @@ func (s *session) hover(ctx context.Context, sel string) error {
 	return classifySelectorErr(chromedp.Run(c, chromedp.MouseEvent(input.MouseMoved, x, y)))
 }
 
+// currentDragData returns the data of an intercepted native drag, if any.
+func (p *trackedPage) currentDragData() *input.DragData {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dragData
+}
+
+func (p *trackedPage) resetDragData() {
+	p.mu.Lock()
+	p.dragData = nil
+	p.mu.Unlock()
+}
+
 // drag presses on the centre of from, moves in steps and releases over to.
-// It synthesises mouse events, which drives sliders, sortable lists and
-// canvas-style widgets; native HTML5 draggable elements may not respond.
+// It works for both kinds of drag. Sliders, sortable lists and canvas widgets
+// listen to mouse events, which the stepped moves drive. A native HTML5
+// draggable never sees synthetic mouse moves finish a drag: Chrome starts an
+// OS-level drag instead, so interception is switched on, the drag data Chrome
+// reports is captured, and dragEnter/dragOver/drop are dispatched at the target
+// by hand.
 func (s *session) drag(ctx context.Context, from, to string) error {
 	p := s.activePage()
 	c, cancel := actionContext(p.ctx, ctx)
@@ -405,17 +467,50 @@ func (s *session) drag(ctx context.Context, from, to string) error {
 	if err != nil {
 		return err
 	}
-	const steps = 8
-	acts := []chromedp.Action{
+	p.resetDragData()
+	if err := chromedp.Run(c, input.SetInterceptDrags(true)); err != nil {
+		return classifySelectorErr(err)
+	}
+	defer func() {
+		rc, rcancel := context.WithTimeout(p.ctx, 2*time.Second)
+		defer rcancel()
+		_ = chromedp.Run(rc, input.SetInterceptDrags(false))
+	}()
+
+	left := chromedp.ButtonType(input.Left)
+	if err := chromedp.Run(c,
 		chromedp.MouseEvent(input.MouseMoved, x1, y1),
-		chromedp.MouseEvent(input.MousePressed, x1, y1, chromedp.ButtonType(input.Left), chromedp.ClickCount(1)),
+		chromedp.MouseEvent(input.MousePressed, x1, y1, left, chromedp.ClickCount(1)),
+	); err != nil {
+		return classifySelectorErr(err)
 	}
-	for i := 1; i <= steps; i++ {
+	const steps = 8
+	var data *input.DragData
+	for i := 1; i <= steps && data == nil; i++ {
 		f := float64(i) / steps
-		acts = append(acts, chromedp.MouseEvent(input.MouseMoved, x1+(x2-x1)*f, y1+(y2-y1)*f, chromedp.ButtonType(input.Left)))
+		if err := chromedp.Run(c, chromedp.MouseEvent(input.MouseMoved, x1+(x2-x1)*f, y1+(y2-y1)*f, left)); err != nil {
+			return classifySelectorErr(err)
+		}
+		// The interception event arrives asynchronously after the move that
+		// crosses the browser's drag threshold.
+		select {
+		case <-c.Done():
+			return ctxFailure(c, "drag", c.Err())
+		case <-time.After(20 * time.Millisecond):
+		}
+		data = p.currentDragData()
 	}
-	acts = append(acts, chromedp.MouseEvent(input.MouseReleased, x2, y2, chromedp.ButtonType(input.Left), chromedp.ClickCount(1)))
-	return classifySelectorErr(chromedp.Run(c, acts...))
+	if data == nil {
+		// Not a native drag: the moves already reached the target; release there.
+		return classifySelectorErr(chromedp.Run(c, chromedp.MouseEvent(input.MouseReleased, x2, y2, left, chromedp.ClickCount(1))))
+	}
+	return classifySelectorErr(chromedp.Run(c,
+		input.DispatchDragEvent(input.DragEnter, x2, y2, data),
+		input.DispatchDragEvent(input.DragOver, x2, y2, data),
+		input.DispatchDragEvent(input.DragOver, x2+1, y2+1, data),
+		input.DispatchDragEvent(input.Drop, x2, y2, data),
+		chromedp.MouseEvent(input.MouseReleased, x2, y2, left, chromedp.ClickCount(1)),
+	))
 }
 
 // mouseClick performs a click that plain chromedp.Click cannot: right/middle
@@ -602,6 +697,11 @@ func (s *session) extract(ctx context.Context, sel string, maxChars int) (string
 		if err := chromedp.Run(c, chromedp.Evaluate(fmt.Sprintf("(%s)(document.querySelector('main,article,[role=main]') || document.body, %d)", extractJS, maxChars), &res)); err != nil {
 			return "", classifySelectorErr(fmt.Errorf("browser extract: %w", err))
 		}
+		// Script cannot read closed shadow roots, but the accessibility tree
+		// can: add any text it has that the DOM walk did not find.
+		if extra := s.closedShadowText(c, res); extra != "" {
+			res = strings.TrimSpace(res + "\n\n" + extra)
+		}
 	} else {
 		// "iframe#x >>>" with nothing after it means the frame's whole body.
 		if frames, inner := splitFrames(sel); len(frames) > 0 && inner == "" {
@@ -643,6 +743,46 @@ func (s *session) extract(ctx context.Context, sel string, maxChars int) (string
 		return "", fmt.Errorf("%w: no readable content found", ErrSelectorNotFound)
 	}
 	return res, nil
+}
+
+// closedShadowText returns, under a heading, the accessible text of the page
+// that is not already in have. It does nothing unless the page has custom
+// elements whose shadow root script cannot read (closed roots), so ordinary
+// pages pay nothing. The text comes from the accessibility tree, which sees
+// into closed shadow roots; text already extracted is skipped.
+func (s *session) closedShadowText(c context.Context, have string) string {
+	var opaque int
+	if err := chromedp.Run(c, chromedp.Evaluate(`(function(){var n=0;document.querySelectorAll('*').forEach(function(e){if(e.tagName.indexOf('-')>0&&!e.shadowRoot)n++});return n})()`, &opaque)); err != nil || opaque == 0 {
+		return ""
+	}
+	var forest *axForest
+	if err := runChromedp(c, func(ctx context.Context) error {
+		var err error
+		forest, err = collectAXForest(ctx)
+		return err
+	}); err != nil {
+		return ""
+	}
+	var lines []string
+	seen := map[string]bool{}
+	for _, n := range forest.dfs() {
+		if n.Ignored || axValueString(n.Role) != "StaticText" {
+			continue
+		}
+		t := strings.TrimSpace(axValueString(n.Name))
+		if t == "" || seen[t] || strings.Contains(have, t) {
+			continue
+		}
+		seen[t] = true
+		lines = append(lines, t)
+		if len(lines) >= 200 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "## Text from custom elements the page script cannot read\n\n" + strings.Join(lines, "\n\n")
 }
 
 const annotateOverlayID = "yottacode-annotate-overlay"
@@ -747,6 +887,41 @@ type ScrollResult struct {
 	EndHeight   int  // scrollable height after, in px
 	ReachedEnd  bool // the height stopped growing (the list is exhausted)
 	TimedOut    bool // the action deadline hit first
+	// LoadMore describes a visible "Load more"-style control found afterwards,
+	// as `button "Load more" [ref=e12]`, or "" if there is none. Lists that grow
+	// on a click, not on reaching the bottom, stop growing here.
+	LoadMore string
+}
+
+var loadMoreRE = regexp.MustCompile(`(?i)^\s*(load|show|view|see|get|fetch)\s+(more|older|next|additional)\b|\b(more|older)\s+(results|posts|comments|items|stories|replies|articles|products|reviews)\b|^\s*(more|next page)\s*[»›>…]*\s*$`)
+
+// findLoadMore looks for a "Load more"-style button or link and returns its
+// description with a usable ref, or "".
+func (s *session) findLoadMore(c context.Context) string {
+	var forest *axForest
+	if err := runChromedp(c, func(ctx context.Context) error {
+		var err error
+		forest, err = collectAXForest(ctx)
+		return err
+	}); err != nil {
+		return ""
+	}
+	refs := s.nextRefs(true)
+	refs.chains = forest.chains
+	for _, n := range forest.dfs() {
+		role := axValueString(n.Role)
+		if n.Ignored || (role != "button" && role != "link") {
+			continue
+		}
+		name := axValueString(n.Name)
+		if name == "" || !loadMoreRE.MatchString(name) {
+			continue
+		}
+		if ref := refs.assign(n); ref != "" {
+			return fmt.Sprintf("%s %q%s [ref=%s]", role, truncRunes(name, 60), axStateSuffix(n), ref)
+		}
+	}
+	return ""
 }
 
 const (
@@ -858,5 +1033,6 @@ func (s *session) scrollUntilEnd(ctx context.Context, sel string, maxSteps int) 
 			break
 		}
 	}
+	res.LoadMore = s.findLoadMore(c)
 	return res, nil
 }

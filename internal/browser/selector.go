@@ -181,6 +181,7 @@ func (s *session) validateCSS(c context.Context, sel string) error {
 // options, so existing behavior is untouched.
 func (s *session) query(c context.Context, sel string) (string, []chromedp.QueryOption, error) {
 	frames, inner := splitFrames(sel)
+	fromRef := false
 	if len(frames) == 0 {
 		if m := refPattern.FindStringSubmatch(inner); m != nil {
 			css, err := s.tagRef(c, m[1])
@@ -197,6 +198,7 @@ func (s *session) query(c context.Context, sel string) (string, []chromedp.Query
 			// A ref inside an iframe resolves to "frame >>> element", which the
 			// frame handling below walks like a hand-written path.
 			frames, inner = splitFrames(css)
+			fromRef = true
 		} else {
 			if err := s.validateCSS(c, inner); err != nil {
 				return "", nil, err
@@ -234,6 +236,11 @@ func (s *session) query(c context.Context, sel string) (string, []chromedp.Query
 			return "", nil, fmt.Errorf("%w: frame %q matched nothing", ErrSelectorNotFound, f)
 		}
 		opts = []chromedp.QueryOption{chromedp.FromNode(nodes[0])}
+	}
+	if fromRef {
+		// The ref's own tag is a random nonce, found by DOM search even inside
+		// an open shadow root (see the top-level ref case above).
+		return inner, append(opts, chromedp.BySearch), nil
 	}
 	return inner, append(opts, chromedp.ByQuery), nil
 }

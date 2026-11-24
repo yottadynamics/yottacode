@@ -542,7 +542,12 @@ func (t *BrowserScrollTool) Execute(ctx context.Context, argsJSON string) (strin
 		default:
 			verdict = "stopped at max_steps; more may remain: call again to continue"
 		}
-		return fmt.Sprintf("scrolled %s to the bottom in %d step(s): height %d -> %d px; %s", where, res.Steps, res.StartHeight, res.EndHeight, verdict) + changes, nil
+		msg := fmt.Sprintf("scrolled %s to the bottom in %d step(s): height %d -> %d px; %s", where, res.Steps, res.StartHeight, res.EndHeight, verdict)
+		if res.LoadMore != "" {
+			// The control's text is page-derived, so it goes inside the envelope.
+			msg += "\na \"load more\" control is present: click it, then scroll again if the list grows on click." + "\n" + wrapUntrusted(res.LoadMore)
+		}
+		return msg + changes, nil
 	}
 	if strings.TrimSpace(a.Selector) != "" {
 		if err := t.Session.Scroll(ctx, a.Selector, 0, 0); err != nil {

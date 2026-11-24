@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -512,5 +513,171 @@ func TestIntegration_ScrollUntilEndOnShortPageStopsQuickly(t *testing.T) {
 		t.Errorf("extract of a missing element: %v", err)
 	} else if d := time.Since(start); d > 15*time.Second {
 		t.Errorf("extract of a missing element took %s", d)
+	}
+}
+
+const html5DragPage = `<style>#zone{width:200px;height:80px;border:2px dashed #888;margin-top:30px}</style>
+<div id=card draggable=true style="width:100px;height:40px;background:#9cf">Card</div><div id=zone>drop here</div><output id=o></output>
+<script>
+var card=document.getElementById('card'), zone=document.getElementById('zone'), o=document.getElementById('o');
+card.addEventListener('dragstart',function(e){ e.dataTransfer.setData('text/plain','card-42'); e.dataTransfer.effectAllowed='move'; });
+zone.addEventListener('dragover',function(e){ e.preventDefault(); });
+zone.addEventListener('drop',function(e){ e.preventDefault(); o.textContent='dropped:'+e.dataTransfer.getData('text/plain'); });
+</script>`
+
+func TestIntegration_DragNativeHTML5DropsWithItsData(t *testing.T) {
+	m, ctx := servePage(t, html5DragPage)
+	if err := m.Drag(ctx, "#card", "#zone"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "#o", "dropped:card-42", false, 5*time.Second); err != nil {
+		t.Fatalf("the native drop did not happen with the drag data: %v", err)
+	}
+	// Headless Chrome would also finish a plain synthetic drag, so prove the
+	// interception path was the one used: Chrome reported the drag data, which
+	// is what lets a headed window avoid an OS-level drag loop.
+	if d := m.sess.(*session).activePage().currentDragData(); d == nil || len(d.Items) == 0 {
+		t.Fatalf("drag was not intercepted: %+v", d)
+	}
+}
+
+func TestIntegration_DragStillDrivesMouseOnlyWidgetsAfterHTML5Support(t *testing.T) {
+	// A mouse-listener widget on the same page must keep working: interception
+	// only triggers for real draggable elements.
+	m, ctx := servePage(t, `<div id=knob style="position:absolute;left:20px;top:50px;width:20px;height:20px;background:#333"></div>
+<div id=end style="position:absolute;left:300px;top:50px;width:20px;height:20px"></div><output id=out>0</output>
+<script>var d=false;document.getElementById('knob').onmousedown=function(){d=true};
+document.onmousemove=function(e){if(d)document.getElementById('out').textContent='moved'+(e.clientX>200?'-far':'')};
+document.onmouseup=function(){d=false};</script>`)
+	if err := m.Drag(ctx, "#knob", "#end"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "", "moved-far", false, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// Interception must be switched off again afterwards: a plain click works.
+	if err := m.Click(ctx, "#knob"); err != nil {
+		t.Fatalf("click after drag: %v", err)
+	}
+}
+
+func TestIntegration_ScrollUntilEndReportsLoadMoreButton(t *testing.T) {
+	m, ctx := servePage(t, `<div id=feed></div><button id=more onclick="more()">Load more</button><script>
+var n=0;function more(){for(var i=0;i<20;i++){var d=document.createElement('div');d.style.height='80px';d.textContent='Row '+(++n);document.getElementById('feed').appendChild(d);}document.title=n+' rows'}
+more();</script>`)
+	res, err := m.ScrollUntilEnd(ctx, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.ReachedEnd || !strings.Contains(res.LoadMore, `button "Load more"`) || !strings.Contains(res.LoadMore, "[ref=e") {
+		t.Fatalf("the click-to-load control must be reported: %+v", res)
+	}
+	if got := itemsLoaded(t, m, ctx); got != "20 rows" {
+		t.Fatalf("scrolling alone must not load more: %q", got)
+	}
+	ref := regexp.MustCompile(`\[ref=(e\d+)\]`).FindStringSubmatch(res.LoadMore)[1]
+	if err := m.Click(ctx, "ref="+ref); err != nil {
+		t.Fatalf("clicking the reported ref: %v", err)
+	}
+	if got := itemsLoaded(t, m, ctx); got != "40 rows" {
+		t.Fatalf("after the click: %q", got)
+	}
+}
+
+func TestIntegration_ScrollUntilEndWithoutLoadMoreControlReportsNone(t *testing.T) {
+	m, ctx := servePage(t, feedPage(30, false))
+	res, err := m.ScrollUntilEnd(ctx, "", 0)
+	if err != nil || res.LoadMore != "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// Regression: the raw AX decoder once dropped node properties, so the state
+// the compact tree promises ("(checked)") never showed on a real page.
+func TestIntegration_InspectShowsRealStateOnRealPage(t *testing.T) {
+	m, ctx := servePage(t, `<label><input type=radio name=q checked> On</label><label><input type=radio name=q> Off</label>
+<label><input type=checkbox disabled> Locked</label><button aria-expanded="true">Menu</button>`)
+	tree, err := m.Inspect(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`radio "On" (checked)`, `checkbox "Locked" (disabled)`, `button "Menu" (expanded)`} {
+		if !strings.Contains(tree, want) {
+			t.Errorf("missing %q in:\n%s", want, tree)
+		}
+	}
+	if strings.Contains(tree, `radio "Off" (checked)`) {
+		t.Errorf("unchecked radio shown as checked:\n%s", tree)
+	}
+}
+
+func TestIntegration_SmallCompletePageGetsNoEmptyTreeNote(t *testing.T) {
+	m, ctx := servePage(t, `<h1>Hello</h1><p>This is a small but perfectly complete page with a little text and no links at all.</p>`)
+	tree, _ := m.Inspect(ctx, "")
+	if strings.Contains(tree, "note:") {
+		t.Fatalf("a page the tree describes fully must not get a note:\n%s", tree)
+	}
+}
+
+func TestIntegration_TextMissingFromTreeIsReported(t *testing.T) {
+	// A canvas page whose text is drawn by script has visible-looking DOM text
+	// the tree hides (aria-hidden), which browser_extract can still read.
+	m, ctx := servePage(t, `<div aria-hidden="true">`+strings.Repeat("Hidden from assistive tech but visible on screen. ", 6)+`</div>`)
+	tree, _ := m.Inspect(ctx, "")
+	if !strings.Contains(tree, "browser_extract reads the rest") {
+		t.Fatalf("missing text should be reported:\n%s", tree)
+	}
+}
+
+func TestIntegration_PersistentProfileSurvivesHandoff(t *testing.T) {
+	skipIfNoBrowser(t)
+	if !displayAvailable() {
+		t.Skip("no display available for a headed browser; run under xvfb-run")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if c, err := r.Cookie("sid"); err == nil {
+			_, _ = fmt.Fprint(w, "<p>cookie:"+c.Value+"</p>")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "kept", Expires: time.Now().Add(time.Hour), Path: "/"})
+		_, _ = fmt.Fprint(w, "<p>first visit</p>")
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir() + "/prof"
+	m := NewManager()
+	ctx := context.Background()
+	if err := m.SetPersistentProfile(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close(ctx) })
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "", "first visit", false, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// Chrome locks the profile: the headless session must be gone before the
+	// headed window opens the same directory, and the cookie must come along.
+	if _, err := m.Handoff(ctx); err != nil {
+		t.Fatalf("handoff with a persistent profile: %v", err)
+	}
+	if !m.Status().Headed {
+		t.Fatal("expected a headed session after handoff")
+	}
+	if _, err := m.Navigate(ctx, srv.URL, "load"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Wait(ctx, "", "cookie:kept", false, 5*time.Second); err != nil {
+		t.Fatalf("the persistent profile's cookie did not survive the handoff: %v", err)
+	}
+	if got := m.Status().ProfileDir; got != dir {
+		t.Errorf("profile dir = %q, want %q", got, dir)
+	}
+	if err := m.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Errorf("persistent profile must outlive Close: %v", err)
 	}
 }

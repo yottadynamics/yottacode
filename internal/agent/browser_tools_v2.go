@@ -77,7 +77,7 @@ type BrowserDragTool struct{ browserToolBase }
 
 func (t *BrowserDragTool) Name() string { return "browser_drag" }
 func (t *BrowserDragTool) Description() string {
-	return "Press the mouse on one element, move to another and release, for sliders, sortable lists and drag handles. Uses synthesised mouse events, so native HTML5 draggable elements may not respond. Reports what changed on the page."
+	return "Press the mouse on one element, move to another and release, for sliders, sortable lists and drag handles. Works for mouse-driven widgets and for native HTML5 draggable elements. Reports what changed on the page."
 }
 func (t *BrowserDragTool) Schema() map[string]any {
 	return map[string]any{

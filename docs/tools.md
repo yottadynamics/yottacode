@@ -2524,7 +2524,11 @@ content, and repeats until the scrollable height has not grown for two cycles
 in a row (`reached the end`), `max_steps` cycles have run, or the action
 deadline hits. The reply gives the number of steps and the height before and
 after, says whether more may remain (call again to continue), and lists page
-changes. Read what loaded with `browser_extract` or `browser_find`.
+changes. Read what loaded with `browser_extract` or `browser_find`. Lists that
+grow on a click rather than on reaching the bottom stop growing: when a visible
+"Load more" / "Show more" / "View older comments" style button or link is
+present afterwards, the reply names it with a ref so you can click it and scroll
+again.
 
 Always prompts for approval.
 
@@ -2773,9 +2777,12 @@ Always prompts for approval.
 
 ## browser_drag
 
-Press the mouse on `from`, move to `to` in steps and release. Uses synthesised
-mouse events, so sliders, sortable lists and canvas-style handles work; native
-HTML5 `draggable` elements may not respond. Reports page changes.
+Press the mouse on `from`, move to `to` in steps and release. Sliders, sortable
+lists and canvas-style handles work through the stepped mouse events; a native
+HTML5 `draggable` element works too: drag interception is switched on for the
+gesture, the drag data Chrome reports is captured, and `dragenter`/`dragover`/
+`drop` are dispatched at the target with it (so `dataTransfer` is populated and
+a headed window never enters an OS-level drag loop). Reports page changes.
 
 | Param | Type | Default |
 |---|---|---|
