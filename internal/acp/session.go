@@ -218,17 +218,24 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 		text = built
 	}
 
-	// Resolve @file references into the system prompt, never into the
-	// persisted user text. Failures are ordinary diagnostic updates.
-	refs := filerefs.Load(filerefs.Parse(text), s.rt.Session.Cwd)
-	for _, ref := range refs {
+	// Resolve @file references and attach them to this user message (never
+	// the system prompt: file contents are data, and a per-turn system
+	// edit would break prompt caching). Confined to the session cwd — an
+	// ACP prompt may be assembled from untrusted text. Failures are
+	// ordinary diagnostic updates.
+	prep := filerefs.Prepare(text, filerefs.PrepareOptions{
+		Cwd:            s.rt.Session.Cwd,
+		ImageRejection: "image attachments via @ are only supported in the interactive TUI",
+	})
+	for _, ref := range prep.Refs {
 		if ref.Error != "" {
 			if err := emitUpdate(ctx, conn, s.id, newToolCallTracker(), agent.ErrorEvent{Err: fmt.Errorf("file reference %s: %s", ref.Token, ref.Error)}); err != nil {
 				return coderacp.PromptResponse{}, err
 			}
 		}
 	}
-	text = filerefs.Rewrite(text, refs)
+	text = prep.Text
+	userContent := prep.Content
 
 	// Capture the pre-turn conversation before appending the user message.
 	var checkpointID string
@@ -261,13 +268,12 @@ func (s *acpSession) prompt(ctx context.Context, conn *coderacp.AgentSideConnect
 	retrievalCtx, retrievalCancel := context.WithTimeout(ctx, 750*time.Millisecond)
 	base := memory.SystemPromptForSemantic(retrievalCtx, s.rt.BaseSystemPrompt, s.rt.Mem, text, s.rt.FileCfg.Retrieval, s.rt.EmbedClient)
 	retrievalCancel()
-	base = filerefs.Inject(base, refs)
 	s.historyMu.Lock()
 	if len(s.rt.Session.Messages) > 0 && s.rt.Session.Messages[0].Role == adapter.RoleSystem {
 		s.rt.Session.Messages[0].Content = base
 	}
 	submitted := time.Now()
-	s.rt.Session.Messages = append(s.rt.Session.Messages, adapter.Message{Role: adapter.RoleUser, Content: text, Timestamp: &submitted})
+	s.rt.Session.Messages = append(s.rt.Session.Messages, adapter.Message{Role: adapter.RoleUser, Content: userContent, Timestamp: &submitted})
 	s.historyMu.Unlock()
 
 	turnCtx, cancel := context.WithCancel(ctx)

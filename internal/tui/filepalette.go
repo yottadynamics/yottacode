@@ -2,15 +2,17 @@ package tui
 
 import (
 	"fmt"
-	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/yottadynamics/yottacode/internal/filerefs"
 )
 
 // fileWalkMaxDepth caps directory recursion when collecting candidates
-// for the @-palette. Four levels reaches "internal/tui/foo.go" without
-// descending into nested vendor trees that would balloon the listing.
+// for the @-palette. Six path segments reach "internal/tui/foo.go" and
+// deeper without descending into nested vendor trees that would balloon
+// the listing.
 const fileWalkMaxDepth = 6
 
 // fileWalkMaxEntries caps the candidate list. The palette is fuzzy-
@@ -56,70 +58,6 @@ type fileEntry struct {
 	IsDir bool
 }
 
-// walkFiles produces the candidate list for the @-palette: every file
-// and directory under root up to fileWalkMaxDepth, sorted by depth
-// then path, capped at fileWalkMaxEntries. Directories from
-// fileWalkSkipDirs are pruned wholesale (saves time on .git +
-// node_modules in particular).
-func walkFiles(root string) []fileEntry {
-	if root == "" {
-		return nil
-	}
-	out := make([]fileEntry, 0, 256)
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// Permission denied or transient I/O — skip the offender,
-			// keep walking. The palette is best-effort UX, not a
-			// guarantee that every readable file shows up.
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if path == root {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		// Cap depth. Walk roots count at depth 0; everything beneath is
-		// 1+. We compare segment counts on the relative path.
-		if depth := strings.Count(rel, string(filepath.Separator)); depth >= fileWalkMaxDepth {
-			if d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		base := d.Name()
-		if d.IsDir() {
-			if _, skip := fileWalkSkipDirs[base]; skip {
-				return fs.SkipDir
-			}
-		}
-		if !d.IsDir() && isSensitiveFilePath(rel) {
-			return nil
-		}
-		if len(out) >= fileWalkMaxEntries {
-			return fs.SkipAll
-		}
-		out = append(out, fileEntry{
-			Path:  filepath.ToSlash(rel),
-			IsDir: d.IsDir(),
-		})
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool {
-		di := strings.Count(out[i].Path, "/")
-		dj := strings.Count(out[j].Path, "/")
-		if di != dj {
-			return di < dj
-		}
-		return out[i].Path < out[j].Path
-	})
-	return out
-}
-
 // filterFilePalette ranks entries against the user's query (the part
 // after `@`). Empty query returns all entries in walk order. Otherwise
 // we score each candidate, cheap-fuzzy:
@@ -146,6 +84,19 @@ func filterFilePalette(query string, entries []fileEntry) []fileEntry {
 	// A slash means the user is navigating a path, not searching for a
 	// filename. Keep completion scoped to that path or its descendants so
 	// an input such as @roadmap/ cannot surface unrelated fuzzy matches.
+	if strings.Contains(query, "/") && !strings.HasSuffix(query, "/") {
+		// A partial final segment ("docs/RE", "app/[id"): plain
+		// case-insensitive prefix match on the whole path, still scoped
+		// to the typed directories.
+		prefix := strings.ToLower(strings.TrimPrefix(filepath.ToSlash(query), "./"))
+		out := make([]fileEntry, 0, 16)
+		for _, e := range entries {
+			if strings.HasPrefix(strings.ToLower(filepath.ToSlash(e.Path)), prefix) {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
 	if strings.Contains(query, "/") {
 		prefix := filepath.ToSlash(filepath.Clean(query))
 		prefix = strings.TrimPrefix(prefix, "./")
@@ -247,19 +198,6 @@ func wordInitialsMatch(query, candidate string) bool {
 	return false
 }
 
-func isSensitiveFilePath(path string) bool {
-	base := strings.ToLower(filepath.Base(filepath.ToSlash(path)))
-	if base == ".env" || strings.HasPrefix(base, ".env.") || base == "credentials" || base == "credentials.json" || base == "authorized_keys" || base == "id_rsa" || base == "id_ed25519" || base == "id_ecdsa" || base == "id_dsa" {
-		return true
-	}
-	for _, suffix := range []string{".pem", ".key", ".p12", ".pfx", ".kdbx"} {
-		if strings.HasSuffix(base, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
 func isWordSeparator(r rune) bool {
 	switch r {
 	case '-', '_', '/', '.', ' ':
@@ -349,11 +287,35 @@ func extractFileQuery(value string) (query string, atIdx int, found bool) {
 	if value == "" {
 		return "", -1, false
 	}
-	// The active token starts at the last whitespace before the end of
-	// input, plus one (or 0 if no whitespace). Everything from there
-	// to the end is the active token.
-	last := strings.LastIndexAny(value, " \t\n([{,;")
-	tokenStart := last + 1
+	// The active token starts after the last unquoted, unescaped
+	// separator. A `\ ` escape and an open `@"…` / `@'…` quote keep
+	// spaces inside the token (paths such as "Screenshot from …png").
+	tokenStart := 0
+	var inQuote byte
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case inQuote != 0:
+			if c == inQuote {
+				inQuote = 0
+			}
+		case c == '\\' && i+1 < len(value) && filerefs.IsEscapable(value[i+1]):
+			i++
+		case (c == '"' || c == '\'') && i > 0 && i-1 == tokenStart && value[i-1] == '@':
+			inQuote = c
+		case c == ' ' || c == '\t' || c == '\n':
+			tokenStart = i + 1
+		case strings.IndexByte("([{,;", c) >= 0:
+			// Inside an @-token these are path characters being typed
+			// ("@app/[id].tsx", "@(group)/x") — except a `,`/`;` glued to
+			// the next reference ("@a,@b"). Outside one they just open a
+			// new token ("(@foo").
+			inAt := tokenStart < len(value) && value[tokenStart] == '@'
+			if !inAt || ((c == ',' || c == ';') && i+1 < len(value) && value[i+1] == '@') {
+				tokenStart = i + 1
+			}
+		}
+	}
 	token := value[tokenStart:]
 	if !strings.HasPrefix(token, "@") {
 		return "", -1, false
