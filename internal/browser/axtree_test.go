@@ -85,3 +85,31 @@ func TestAxValueString_NilAndNull(t *testing.T) {
 		t.Errorf("axValueString(zero value) = %q", got)
 	}
 }
+
+func TestRenderAXTree_CompactsNoise(t *testing.T) {
+	nodes := []*accessibility.Node{
+		{NodeID: "1", Role: axVal("RootWebArea"), Name: axVal("P"), ChildIDs: []accessibility.NodeID{"2"}},
+		{NodeID: "2", ParentID: "1", Role: axVal("generic"), ChildIDs: []accessibility.NodeID{"3"}},
+		{NodeID: "3", ParentID: "2", Role: axVal("link"), Name: axVal("Home"), BackendDOMNodeID: 7, ChildIDs: []accessibility.NodeID{"4"}},
+		{NodeID: "4", ParentID: "3", Role: axVal("StaticText"), Name: axVal("Home"), ChildIDs: []accessibility.NodeID{"5"}},
+		{NodeID: "5", ParentID: "4", Role: axVal("InlineTextBox"), Name: axVal("Home")},
+	}
+	out := renderAXTreeRefs(nodes, newRefTable())
+	want := "RootWebArea \"P\"\n  link \"Home\" [ref=e1]\n"
+	if out != want {
+		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestRenderAXTree_InteractiveOnlyAndState(t *testing.T) {
+	nodes := []*accessibility.Node{
+		{NodeID: "1", Role: axVal("RootWebArea"), ChildIDs: []accessibility.NodeID{"2", "3"}},
+		{NodeID: "2", ParentID: "1", Role: axVal("paragraph"), Name: axVal("long prose")},
+		{NodeID: "3", ParentID: "1", Role: axVal("radio"), Name: axVal("B"), BackendDOMNodeID: 9,
+			Properties: []*accessibility.Property{{Name: "checked", Value: axVal("true")}}},
+	}
+	out := renderAXTreeOpts(nodes, newRefTable(), axRenderOpts{interactiveOnly: true})
+	if strings.Contains(out, "prose") || !strings.Contains(out, `radio "B" (checked) [ref=e1]`) {
+		t.Fatalf("got:\n%s", out)
+	}
+}

@@ -26,6 +26,7 @@ import (
 	"github.com/yottadynamics/yottacode/internal/adapter"
 	"github.com/yottadynamics/yottacode/internal/agent"
 	openaiauth "github.com/yottadynamics/yottacode/internal/auth/openai"
+	"github.com/yottadynamics/yottacode/internal/browser"
 	"github.com/yottadynamics/yottacode/internal/catalog"
 	"github.com/yottadynamics/yottacode/internal/checkpoint"
 	"github.com/yottadynamics/yottacode/internal/cli"
@@ -117,6 +118,7 @@ type Config struct {
 	BaseSystemPrompt  string   // pre-memory prompt — needed by /memory reload to recompose
 	EmbedClient       *memory.EmbedClient
 	LSPManager        *lsp.Manager
+	BrowserManager    *browser.Manager
 	CodeMapProvider   codemap.Provider
 
 	// FileCfg holds tunables loaded from ~/.yottacode/config.toml
@@ -258,6 +260,7 @@ type Model struct {
 	baseSystemPrompt string // pre-memory prompt; used by /memory reload
 	embedClient      *memory.EmbedClient
 	lspManager       *lsp.Manager
+	browserManager   *browser.Manager
 	codeMapProvider  codemap.Provider
 
 	// routerAdapters/routerMode hold live task-routing state for /router.
@@ -1363,6 +1366,7 @@ func New(parent context.Context, c Config) Model {
 		baseSystemPrompt:       c.BaseSystemPrompt,
 		embedClient:            c.EmbedClient,
 		lspManager:             c.LSPManager,
+		browserManager:         c.BrowserManager,
 		codeMapProvider:        c.CodeMapProvider,
 		summarizerAdapter:      summarizerOrDefault(c.SummarizerAdapter, c.Cfg.Adapter),
 		summarizerModel:        c.SummarizerModel,

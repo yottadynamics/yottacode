@@ -344,6 +344,17 @@ retention_days = 30   # set to 0 to fall back to the 30-day default; smaller val
 
 See [`tui-slash-commands.md`](tui-slash-commands.md#checkpoints---checkpoints--esc-esc) for the full feature.
 
+### Browser profile
+
+The experimental `browser_*` tools use a fresh throwaway Chrome profile per session. Opt in to keep logins and cookies across sessions:
+
+```toml
+[browser]
+persistent_profile = false   # true keeps one profile in ~/.yottacode/browser-profile (or $YOTTACODE_HOME); cleared only by /browser clear
+```
+
+See [`browser.md`](browser.md#persistent-profile-opt-in).
+
 ### Final memory turn on quit
 
 A graceful exit (`/quit` or `Ctrl+D` while idle) runs one last agent turn prompting the model to persist durable learnings via `memory_save` before the session context is gone. The turn renders in the transcript like any other; `Esc` or `Ctrl+C` skips it and completes the quit, and `Ctrl+C` as the quit gesture itself always exits immediately. A session with no turns started this launch quits instantly. Disable for always-instant exits:

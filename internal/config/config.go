@@ -41,6 +41,8 @@ type Config struct {
 	Active      Active            `toml:"active"`
 	Providers   []Provider        `toml:"providers"`
 	Checkpoints CheckpointsConfig `toml:"checkpoints"`
+	// Browser tunes the experimental browser_* tools.
+	Browser BrowserConfig `toml:"browser"`
 	// MCP controls global policy for configured Model Context Protocol
 	// servers: annotation trust, call bounds, and model-visible payload caps.
 	MCP MCPConfig `toml:"mcp"`
@@ -2125,3 +2127,11 @@ capture_reminder_every_turns = 6
 # cpus            = 4
 # pids_limit      = 256
 `
+
+// BrowserConfig holds opt-in settings for the browser_* tools.
+type BrowserConfig struct {
+	// PersistentProfile keeps one Chrome profile (cookies, logins) under
+	// ~/.yottacode/browser-profile across sessions instead of a fresh
+	// throwaway profile per session. Off by default.
+	PersistentProfile bool `toml:"persistent_profile"`
+}

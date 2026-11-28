@@ -27,7 +27,7 @@ const (
 )
 
 // browserSelectorHelp is appended to every selector parameter's description.
-const browserSelectorHelp = ` Accepts a CSS selector, a "ref=eN" element ref printed by browser_inspect (valid until the next browser_inspect or navigation), or "iframe-selector >>> selector" to reach inside an iframe.`
+const browserSelectorHelp = ` Accepts a CSS selector (plain CSS only: not Playwright's text=, :has-text() or :visible; to locate an element by its text or role use browser_find), a "ref=eN" element ref printed by browser_inspect or browser_find (valid until navigation; refs also address elements inside iframes, and a ref whose element the page re-rendered is re-resolved by role and name when exactly one element matches), or "iframe-selector >>> selector" to reach inside an iframe.`
 
 // urlForModel renders a page-controlled URL for a short status line: quoted so
 // it reads as a single data value, and capped so a hostile page cannot smuggle
@@ -108,11 +108,16 @@ func (t *BrowserSelectTool) Execute(ctx context.Context, argsJSON string) (strin
 	if a.Value == "" && a.Label == "" {
 		return "", fmt.Errorf("browser_select: one of value or label is required")
 	}
-	chosen, err := t.Session.SelectOption(ctx, a.Selector, a.Value, a.Label)
+	var chosen string
+	changes, err := t.observe(ctx, func() error {
+		var e error
+		chosen, e = t.Session.SelectOption(ctx, a.Selector, a.Value, a.Label)
+		return e
+	})
 	if err != nil {
 		return "", fmt.Errorf("browser_select: %w", err)
 	}
-	return fmt.Sprintf("selected %q in %q", chosen, a.Selector), nil
+	return fmt.Sprintf("selected %q in %q", chosen, a.Selector) + changes, nil
 }
 
 // BrowserResponseBodyTool returns the body of a response the page received,

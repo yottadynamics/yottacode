@@ -207,6 +207,24 @@ func (g *guard) call(ctx context.Context, session, method string, params any) (j
 	}
 }
 
+// callTarget runs a CDP method on the session the guard holds for the target
+// with the given id (an out-of-process iframe's target id equals its frame id).
+func (g *guard) callTarget(ctx context.Context, targetID, method string, params any) (json.RawMessage, error) {
+	g.targetsMu.Lock()
+	session := ""
+	for sid, t := range g.targets {
+		if t.id == targetID {
+			session = sid
+			break
+		}
+	}
+	g.targetsMu.Unlock()
+	if session == "" {
+		return nil, fmt.Errorf("no attached target %q", targetID)
+	}
+	return g.call(ctx, session, method, params)
+}
+
 // shutdown closes the guard on purpose; unlike a lost connection it does not
 // report a death.
 func (g *guard) shutdown() {

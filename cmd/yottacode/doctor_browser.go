@@ -24,6 +24,29 @@ type BrowserDoctorResult struct {
 	Issues     []string     `json:"issues,omitempty"`
 	Warnings   []string     `json:"warnings,omitempty"`
 	Hints      []string     `json:"hints,omitempty"`
+
+	// PersistentProfile is the opt-in [browser] persistent_profile setting;
+	// ProfileDir/ProfileBytes describe the directory when it is on.
+	PersistentProfile bool   `json:"persistent_profile"`
+	ProfileDir        string `json:"profile_dir,omitempty"`
+	ProfileBytes      int64  `json:"profile_bytes,omitempty"`
+}
+
+// addPersistentProfile fills in the persistent-profile facts. dirFn locates the
+// directory (injectable for tests).
+func addPersistentProfile(r *BrowserDoctorResult, cfg config.Config, dirFn func() (string, error)) {
+	r.PersistentProfile = cfg.Browser.PersistentProfile
+	if !r.PersistentProfile {
+		return
+	}
+	dir, err := dirFn()
+	if err != nil {
+		r.Warnings = append(r.Warnings, "persistent_profile is on but its directory cannot be resolved: "+err.Error())
+		r.Status = statusFromIssuesWarnings(r.Issues, r.Warnings)
+		return
+	}
+	r.ProfileDir = dir
+	_, r.ProfileBytes = browser.ProfileUsage(dir)
 }
 
 var probeBrowser = browser.Probe
@@ -70,6 +93,11 @@ func renderBrowserSection(b *strings.Builder, r BrowserDoctorResult) {
 		fmt.Fprintf(b, "  version: %s (warns below Chrome %d)\n", r.Version, r.MinVersion)
 	}
 	fmt.Fprintf(b, "  visible window (browser_handoff): %t\n", r.Display)
+	if r.PersistentProfile {
+		fmt.Fprintf(b, "  persistent profile: on (%s, %d KB; `/browser clear` empties it)\n", r.ProfileDir, r.ProfileBytes/1024)
+	} else {
+		b.WriteString("  persistent profile: off (a fresh throwaway profile per session)\n")
+	}
 	for _, issue := range r.Issues {
 		fmt.Fprintf(b, "  issue: %s\n", issue)
 	}

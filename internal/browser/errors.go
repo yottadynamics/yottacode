@@ -29,6 +29,14 @@ var (
 	// element before its deadline.
 	ErrSelectorNotFound = errors.New("selector not found")
 
+	// ErrActionTimeout means an action kept retrying until its deadline.
+	ErrActionTimeout = errors.New("browser action timed out")
+
+	// ErrInvalidSelector means a selector is not valid CSS (often Playwright
+	// syntax such as :has-text() or text=). It fails immediately; retrying
+	// can never help.
+	ErrInvalidSelector = errors.New("invalid selector")
+
 	// ErrCanceled means the caller canceled a browser action before it completed.
 	ErrCanceled = errors.New("browser action canceled")
 

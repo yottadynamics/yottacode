@@ -24,6 +24,7 @@ Type `/` in the TUI to open the slash-command palette. The palette filters as yo
 | `/redo` | — | Rewind the last user message and put it back in the input box |
 | `/recall` | `<query>` | Search saved sessions in an interactive results overlay |
 | `/summarize` | — | Compress the current session after snapshotting it. Successful automatic compaction lands as one compact system-message row with the before/after context size, `full history saved`, and a copyable `yottacode sessions resume <id>` command that reopens the full pre-compression transcript as a fresh session; warning color is reserved for failures or non-convergent summaries. |
+| `/browser` | `[clear]` | Show the opt-in persistent browser profile (path and size), or `clear` it: closes the browser session and deletes the profile's cookies and logins. Needs `[browser] persistent_profile = true`; see [browser.md](browser.md#persistent-profile-opt-in) |
 | `/checkpoints` | — | Open the checkpoints picker — also `Esc Esc`. Restore conversation, files, or both to any prior prompt |
 | `/memory` | — | Edit curated memory or browse agent-managed memories |
 | `/video` | `[edit\|analyze] <path>` or `prompt <goal>` | Guide media workflows: clean up one recording, or plan an asset-based marketing video from docs/screenshots/clips and render only after approval |

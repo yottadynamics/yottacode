@@ -25,6 +25,11 @@ type rawAXValue struct {
 	Value json.RawMessage `json:"value"`
 }
 
+type rawAXProperty struct {
+	Name  string      `json:"name"`
+	Value *rawAXValue `json:"value"`
+}
+
 type rawAXNode struct {
 	NodeID           accessibility.NodeID   `json:"nodeId"`
 	Ignored          bool                   `json:"ignored"`
@@ -34,6 +39,7 @@ type rawAXNode struct {
 	ParentID         accessibility.NodeID   `json:"parentId"`
 	ChildIDs         []accessibility.NodeID `json:"childIds"`
 	BackendDOMNodeID cdp.BackendNodeID      `json:"backendDOMNodeId"`
+	Properties       []rawAXProperty        `json:"properties"`
 }
 
 type rawAXTree struct {
@@ -52,6 +58,12 @@ func (v *rawAXValue) toValue() *accessibility.Value {
 func (t rawAXTree) nodes() []*accessibility.Node {
 	out := make([]*accessibility.Node, len(t.Nodes))
 	for i, n := range t.Nodes {
+		var props []*accessibility.Property
+		for _, rp := range n.Properties {
+			// Names stay plain strings cast to the enum: cdproto's own decoder
+			// rejects names it does not know, which is why this file exists.
+			props = append(props, &accessibility.Property{Name: accessibility.PropertyName(rp.Name), Value: rp.Value.toValue()})
+		}
 		out[i] = &accessibility.Node{
 			NodeID:           n.NodeID,
 			Ignored:          n.Ignored,
@@ -61,6 +73,7 @@ func (t rawAXTree) nodes() []*accessibility.Node {
 			ParentID:         n.ParentID,
 			ChildIDs:         n.ChildIDs,
 			BackendDOMNodeID: n.BackendDOMNodeID,
+			Properties:       props,
 		}
 	}
 	return out
@@ -71,6 +84,15 @@ func (t rawAXTree) nodes() []*accessibility.Node {
 func fullAXTree(ctx context.Context) ([]*accessibility.Node, error) {
 	var res rawAXTree
 	if err := cdp.Execute(ctx, accessibility.CommandGetFullAXTree, accessibility.GetFullAXTree(), &res); err != nil {
+		return nil, err
+	}
+	return res.nodes(), nil
+}
+
+// fullAXTreeFrame fetches the accessibility tree of one (same-process) frame.
+func fullAXTreeFrame(ctx context.Context, id cdp.FrameID) ([]*accessibility.Node, error) {
+	var res rawAXTree
+	if err := cdp.Execute(ctx, accessibility.CommandGetFullAXTree, accessibility.GetFullAXTree().WithFrameID(id), &res); err != nil {
 		return nil, err
 	}
 	return res.nodes(), nil

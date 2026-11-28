@@ -180,4 +180,3 @@ func runSetupGitHubRemove(out io.Writer) error {
 	fmt.Fprintf(out, "Removed saved token at %s.\n", path)
 	return nil
 }
-

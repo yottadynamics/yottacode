@@ -137,6 +137,12 @@ In addition to the built-ins, **MCP tools** register dynamically when an `[[mcp_
 | [`browser_network_requests`](#browser_network_requests) | required | Experimental behind `browser`; return buffered request/response metadata from the active page |
 | [`browser_select`](#browser_select) | required | Experimental behind `browser`; select an option in a `<select>` element |
 | [`browser_response_body`](#browser_response_body) | required | Experimental behind `browser`; return a buffered response body by request ID or URL match |
+| [`browser_dialog`](#browser_dialog) | required | Experimental behind `browser`; choose how the next JavaScript confirm/prompt is answered |
+| [`browser_hover`](#browser_hover) | required | Experimental behind `browser`; move the mouse over an element (hover menus, tooltips) |
+| [`browser_drag`](#browser_drag) | required | Experimental behind `browser`; press on one element, move to another and release (sliders, sortable lists) |
+| [`browser_find`](#browser_find) | required | Experimental behind `browser`; find elements by visible text and/or role, returning refs |
+| [`browser_extract`](#browser_extract) | required | Experimental behind `browser`; return the page's readable content as markdown |
+| [`browser_fill_form`](#browser_fill_form) | required | Experimental behind `browser`; fill several fields and optionally submit in one call |
 
 "Approval = required" means the tool always pauses for a `y` / `a` /
 `N` from the user, unless an `allow` rule in
@@ -2436,6 +2442,7 @@ the active model doesn't accept image input.
 |---|---|---|---|
 | `selector` | string | — | CSS selector to screenshot just that element |
 | `full_page` | boolean | `false` | Capture the full scrollable page, not just the viewport. Ignored when `selector` is set. |
+| `annotate` | boolean | `false` | Viewport only: draw each interactive element's ref (`e1`, `e2`, …) on it, so a vision model can pair what it sees with refs for `browser_click`/`type`/`select`. Ignored with `selector` or `full_page`. The overlay is removed after the capture. |
 
 Always prompts for approval — a screenshot can surface on-screen
 private data even without clicking anything.
@@ -2445,11 +2452,15 @@ private data even without clicking anything.
 Return an accessibility-tree text snapshot (indented role/name/value
 outline) of the current page, or of one element's subtree if
 `selector` is given. The token-cheap way to "read" a page without a
-screenshot.
+screenshot. The tree is compact: text-run duplicates (`InlineTextBox`,
+`StaticText` repeating its parent's name) and anonymous wrapper nodes are
+dropped, and state that matters is shown, e.g. `radio "B" (checked) [ref=e7]`.
+The tool waits (bounded) for the page to stop changing before reading.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `selector` | string | — | CSS selector to scope the snapshot to that element's subtree |
+| `mode` | string | `tree` | `interactive` returns a flat list of only the actionable elements (with refs) plus headings and groups — much smaller, enough for most clicking and form filling |
 
 Always prompts for approval — same privacy rationale as
 `browser_screenshot`.
@@ -2457,11 +2468,15 @@ Always prompts for approval — same privacy rationale as
 ## browser_click
 
 Click the element matching a CSS selector, waiting for it to become
-interactable first.
+interactable first. A hidden radio/checkbox `<input>` (the usual custom-styled
+control) is clicked through its visible `<label>`. After the click the tool
+reports **page changes** (see [browser.md](browser.md#page-changes-after-actions)).
 
-| Param | Type | Default |
-|---|---|---|
-| `selector` | string | — (required) |
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | — (required) | |
+| `button` | string | `left` | `left`, `right` or `middle` |
+| `double` | boolean | `false` | Double-click |
 
 Always prompts for approval.
 
@@ -2501,6 +2516,19 @@ direction (a default ~400px magnitude) or an explicit pixel delta.
 | `selector` | string | — | Scroll this element into view |
 | `direction` | string | — | `up`, `down`, `left`, or `right` |
 | `delta_x` / `delta_y` | number | — | Explicit pixel delta; overrides `direction` |
+| `until_end` | boolean | `false` | Scroll to the bottom repeatedly until the content stops growing, for infinite feeds and lazy lists. With `selector`, that scrollable container is scrolled (and `selector` is **not** scrolled into view); `direction`/deltas are ignored |
+| `max_steps` | integer | `10` | With `until_end`: most load-and-scroll cycles (maximum `30`) |
+
+With `until_end` the tool jumps to the bottom, waits for the network and lazy
+content, and repeats until the scrollable height has not grown for two cycles
+in a row (`reached the end`), `max_steps` cycles have run, or the action
+deadline hits. The reply gives the number of steps and the height before and
+after, says whether more may remain (call again to continue), and lists page
+changes. Read what loaded with `browser_extract` or `browser_find`. Lists that
+grow on a click rather than on reaching the bottom stop growing: when a visible
+"Load more" / "Show more" / "View older comments" style button or link is
+present afterwards, the reply names it with a ref so you can click it and scroll
+again.
 
 Always prompts for approval.
 
@@ -2697,7 +2725,8 @@ exactly one of `value` or `label`.
 | `value` | string | — |
 | `label` | string | — |
 
-Always prompts for approval because it changes page state.
+Always prompts for approval because it changes page state. Like click and
+type, it reports page changes afterwards.
 
 ## browser_response_body
 
@@ -2714,6 +2743,100 @@ request. Binary responses are described but their bytes are not returned.
 
 Always prompts for approval. Response bodies may contain private data and
 are wrapped as untrusted web content.
+
+## browser_dialog
+
+Choose how the **next** JavaScript `confirm()` or `prompt()` is answered. By
+default every confirm and prompt is cancelled and the acting tool's page
+changes say so (`dialog: confirm cancelled automatically: Delete this item?`).
+To have it accepted, call `browser_dialog` with `accept` and then repeat the
+action that opened the dialog. The answer is one-shot, applies to whichever tab
+(including a popup opened after arming) raises the next confirm/prompt first, and expires after 60 seconds, so it
+can never answer an unrelated dialog later. `alert` and `beforeunload` keep
+their fixed policy (accepted).
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `action` | string | — (required) | `accept`, `dismiss`, or `clear` (remove an armed answer) |
+| `text` | string | — | For a prompt with `accept`: the text to enter |
+
+Always prompts for approval, and the prompt shows the action and any text,
+because accepting answers a question on your behalf. It never launches a
+browser: with no open session it fails and asks for a navigation first.
+
+## browser_hover
+
+Move the mouse over the element (scrolled into view first) to open hover
+menus and tooltips; reports page changes.
+
+| Param | Type | Default |
+|---|---|---|
+| `selector` | string | — (required) |
+
+Always prompts for approval.
+
+## browser_drag
+
+Press the mouse on `from`, move to `to` in steps and release. Sliders, sortable
+lists and canvas-style handles work through the stepped mouse events; a native
+HTML5 `draggable` element works too: drag interception is switched on for the
+gesture, the drag data Chrome reports is captured, and `dragenter`/`dragover`/
+`drop` are dispatched at the target with it (so `dataTransfer` is populated and
+a headed window never enters an OS-level drag loop). Reports page changes.
+
+| Param | Type | Default |
+|---|---|---|
+| `from` | string | — (required) |
+| `to` | string | — (required) |
+
+Always prompts for approval.
+
+## browser_find
+
+Search the page by visible text and/or accessibility role and return a short
+list with refs, each match naming the labelled group it sits in. Far cheaper
+than a full `browser_inspect` when you know what you are after.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `text` | string | — | Case-insensitive substring of the name or value |
+| `role` | string | — | Accessibility role (`button`, `radio`, `heading`, …) |
+| `limit` | integer | `20` | Maximum `50`; the output says how many more matched |
+
+At least one of `text` or `role` is required. Refs from `browser_find` are
+the same refs `browser_inspect` hands out. Always prompts for approval; output
+is wrapped as untrusted web content.
+
+## browser_extract
+
+Return the readable content of the page — or of one element — as markdown:
+headings, paragraphs, lists, links with their URLs and tables as rows, without
+navigation chrome, scripts, styles or hidden text. Use it to read articles,
+documentation and data tables; use `browser_inspect`/`browser_find` to act on
+controls. Reaches inside iframes with `iframe#pay >>>` (the frame's body) or
+`iframe#pay >>> selector`, or with a ref to an element inside one.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `selector` | string | main content | Extract just this element |
+| `max_chars` | integer | `30000` | Maximum `100000` |
+
+Always prompts for approval; output is wrapped as untrusted web content.
+
+## browser_fill_form
+
+Fill several fields in one call and optionally click a submit element. Fields
+run in order and stop at the first failure, which is reported with how many
+were completed. Reports page changes.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `fields` | array | — (required) | Up to 30 of `{selector, kind, value}` |
+| `fields[].kind` | string | `text` | `text` types `value`; `select` chooses an option by value or label; `click` clicks a checkbox/radio/toggle |
+| `submit` | string | — | Element to click after filling |
+
+Always prompts for approval, and the approval prompt shows every value that
+will be typed.
 
 ---
 

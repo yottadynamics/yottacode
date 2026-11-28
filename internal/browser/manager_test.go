@@ -89,6 +89,40 @@ func (f *fakeSession) inspect(context.Context, string) (string, error) {
 	f.record("inspect")
 	return "tree", nil
 }
+func (f *fakeSession) inspectMode(context.Context, string, string) (string, error) {
+	f.record("inspectMode")
+	return "tree", nil
+}
+func (f *fakeSession) clickOpts(context.Context, string, ClickOptions) error {
+	f.record("clickOpts")
+	return nil
+}
+func (f *fakeSession) scrollUntilEnd(context.Context, string, int) (ScrollResult, error) {
+	f.record("scrollUntilEnd")
+	return ScrollResult{ReachedEnd: true}, nil
+}
+func (f *fakeSession) armDialog(bool, string, bool) error  { f.record("armDialog"); return nil }
+func (f *fakeSession) hover(context.Context, string) error { f.record("hover"); return nil }
+func (f *fakeSession) drag(context.Context, string, string) error {
+	f.record("drag")
+	return nil
+}
+func (f *fakeSession) find(context.Context, string, string, int) (string, error) {
+	f.record("find")
+	return "", nil
+}
+func (f *fakeSession) extract(context.Context, string, int) (string, error) {
+	f.record("extract")
+	return "", nil
+}
+func (f *fakeSession) screenshotAnnotated(context.Context) ([]byte, error) {
+	f.record("screenshotAnnotated")
+	return []byte("png"), nil
+}
+func (f *fakeSession) digest(context.Context, bool) (PageDigest, error) {
+	f.record("digest")
+	return PageDigest{}, nil
+}
 func (f *fakeSession) click(context.Context, string) error {
 	f.record("click")
 	return nil

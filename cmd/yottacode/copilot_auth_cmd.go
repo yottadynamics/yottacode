@@ -297,7 +297,6 @@ func fetchCopilotModelsRaw(ctx context.Context, ct copilotauth.CopilotToken, w i
 	return err
 }
 
-
 func resolveCopilotStorePath(override string) (string, error) {
 	if override != "" {
 		return override, nil

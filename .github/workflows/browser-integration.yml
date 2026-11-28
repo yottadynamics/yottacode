@@ -98,7 +98,7 @@ jobs:
 
       - name: Browser integration tests (Linux, under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a go test -tags integration ./internal/browser/... -v -timeout 300s
+        run: xvfb-run -a go test -tags integration ./internal/browser/... -v -timeout 900s -shuffle=on -count=1
 
       # Prompt-injection corpus: a hostile page through the real tools.
       - name: Browser tool security tests (Linux, under Xvfb)
@@ -108,5 +108,5 @@ jobs:
       - name: Browser integration tests (macOS)
         if: runner.os == 'macOS'
         run: |
-          go test -tags integration ./internal/browser/... -v -timeout 300s
+          go test -tags integration ./internal/browser/... -v -timeout 900s -shuffle=on -count=1
           go test -tags integration ./internal/agent/ -run TestIntegration_HostilePage -v -timeout 120s

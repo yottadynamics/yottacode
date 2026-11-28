@@ -2,6 +2,9 @@ package browser
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +15,8 @@ import (
 	"github.com/chromedp/cdproto/accessibility"
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
@@ -66,7 +71,17 @@ type pageSession interface {
 	navigate(context.Context, string, string) (NavigateResult, error)
 	screenshot(context.Context, string, bool) ([]byte, error)
 	inspect(context.Context, string) (string, error)
+	inspectMode(ctx context.Context, selector, mode string) (string, error)
 	click(context.Context, string) error
+	clickOpts(ctx context.Context, selector string, o ClickOptions) error
+	armDialog(accept bool, text string, clear bool) error
+	scrollUntilEnd(ctx context.Context, selector string, maxSteps int) (ScrollResult, error)
+	hover(context.Context, string) error
+	drag(ctx context.Context, from, to string) error
+	find(ctx context.Context, text, role string, limit int) (string, error)
+	extract(ctx context.Context, selector string, maxChars int) (string, error)
+	screenshotAnnotated(context.Context) ([]byte, error)
+	digest(ctx context.Context, settle bool) (PageDigest, error)
 	typeText(context.Context, string, string, bool) error
 	hotkey(context.Context, string) error
 	scroll(context.Context, string, float64, float64) error
@@ -99,6 +114,15 @@ type trackedPage struct {
 	// lastBlock is the most recent policy refusal, so a navigation that fails
 	// with ERR_BLOCKED_BY_CLIENT can say why.
 	lastBlock error
+	// dialogArm is the armed one-shot answer for the next confirm/prompt.
+	dialogArm *dialogAnswer
+	// dragData is what Chrome handed over when a native HTML5 drag started
+	// while drag interception was on (see drag).
+	dragData *input.DragData
+	// settleKey/settleMisses tune how long settle waits on a page that never
+	// goes quiet (see settleBudget).
+	settleKey    string
+	settleMisses int
 }
 
 func (p *trackedPage) recordConsole(e ConsoleEntry) {
@@ -204,6 +228,9 @@ type session struct {
 	pendingBlocks map[target.ID][]blockNote
 	// refs maps browser_inspect element refs to DOM nodes (see selector.go).
 	refs *refTable
+	// dialogArm is the armed one-shot confirm/prompt answer (see dialogs.go),
+	// kept here so a tab opened after arming shares it.
+	dialogArm *dialogAnswer
 }
 
 // maxPendingBlockTargets bounds refusals held for pages not yet tracked.
@@ -454,7 +481,7 @@ func (s *session) track(id target.ID, ctx context.Context, cancel context.Cancel
 			return p
 		}
 	}
-	p := &trackedPage{id: id, ctx: ctx, cancel: cancel, openedAt: time.Now()}
+	p := &trackedPage{id: id, ctx: ctx, cancel: cancel, openedAt: time.Now(), dialogArm: s.dialogArm}
 	s.pages = append(s.pages, p)
 	return p
 }
@@ -470,7 +497,7 @@ func (s *session) trackPage(id target.ID, ctx context.Context) (*trackedPage, bo
 		ctx = context.Background()
 	}
 	pageCtx, cancel := context.WithCancel(ctx)
-	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now()}
+	p := &trackedPage{id: id, ctx: pageCtx, cancel: cancel, openedAt: time.Now(), dialogArm: s.dialogArm}
 	s.pages = append(s.pages, p)
 	for _, n := range s.pendingBlocks[id] {
 		p.recordBlocked(n.url, n.err)
@@ -557,13 +584,19 @@ func attachPageCaptureListeners(ctx context.Context, p *trackedPage) {
 			// confirm and prompt are cancelled, because accepting would
 			// answer a question on the user's behalf. Every dialog is
 			// recorded in the console buffer so the agent can see it.
-			accept := e.Type == page.DialogTypeAlert || e.Type == page.DialogTypeBeforeunload
+			accept, promptText, by := p.answerFor(string(e.Type), time.Now())
 			verb := "cancelled"
 			if accept {
 				verb = "accepted"
 			}
-			p.recordConsole(ConsoleEntry{Level: "dialog", Text: fmt.Sprintf("%s %s automatically: %s", e.Type, verb, e.Message), At: time.Now()})
-			go func() { _ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept)) }()
+			p.recordConsole(ConsoleEntry{Level: "dialog", Text: fmt.Sprintf("%s %s %s: %s", e.Type, verb, by, e.Message), At: time.Now()})
+			go func() {
+				_ = chromedp.Run(ctx, page.HandleJavaScriptDialog(accept).WithPromptText(promptText))
+			}()
+		case *input.EventDragIntercepted:
+			p.mu.Lock()
+			p.dragData = e.Data
+			p.mu.Unlock()
 		case *runtime.EventConsoleAPICalled:
 			var b strings.Builder
 			for _, a := range e.Args {
@@ -616,15 +649,30 @@ func actionContext(targetCtx, callCtx context.Context) (context.Context, context
 	if callCtx == nil {
 		return context.WithCancel(targetCtx)
 	}
-	ctx, cancel := context.WithCancel(targetCtx)
+	// Propagate the caller's cause (deadline vs. explicit cancel) so a
+	// timeout is not misreported as the user canceling.
+	ctx, cancel := context.WithCancelCause(targetCtx)
 	go func() {
 		select {
 		case <-callCtx.Done():
-			cancel()
+			cancel(context.Cause(callCtx))
 		case <-ctx.Done():
 		}
 	}()
-	return ctx, cancel
+	return ctx, func() { cancel(context.Canceled) }
+}
+
+// ctxFailure explains why an action context ended, folding in the last real
+// error seen while retrying so the model learns what actually went wrong.
+func ctxFailure(c context.Context, what string, last error) error {
+	cause := context.Cause(c)
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %s did not succeed before the action deadline (last error: %v)", ErrActionTimeout, what, last)
+	}
+	if errors.Is(cause, context.Canceled) {
+		return fmt.Errorf("%w: %s was interrupted (caller canceled or the tab/browser closed; last error: %v)", ErrCanceled, what, last)
+	}
+	return classifySelectorErr(last)
 }
 func (s *session) consoleLogs(n int) []ConsoleEntry     { return s.activePage().consoleSnapshot(n) }
 func (s *session) networkRequests(n int) []NetworkEntry { return s.activePage().networkSnapshot(n) }
@@ -900,26 +948,34 @@ func (s *session) screenshot(ctx context.Context, sel string, full bool) ([]byte
 	return b, nil
 }
 func (s *session) inspect(ctx context.Context, sel string) (string, error) {
+	return s.inspectMode(ctx, sel, "")
+}
+
+// inspectMode is inspect with an output mode: "" for the compact tree,
+// "interactive" for a flat list of actionable elements and headings.
+func (s *session) inspectMode(ctx context.Context, sel, mode string) (string, error) {
 	p := s.activePage()
+	s.settle(ctx, p)
 	c, cancel := actionContext(p.ctx, ctx)
 	defer cancel()
 	var nodes []*accessibility.Node
 	var axErr error
-	// Every inspect creates a new ref namespace. A scoped inspect must invalidate
-	// refs too; otherwise a ref from an older snapshot could act on a changed page.
-	refs := s.resetRefs()
+	var refs *refTable
 	if sel == "" {
-		// A full-page snapshot starts a fresh ref numbering: every earlier ref
-		// is dropped so none can ever address a different node than it showed.
-		refs = s.resetRefs()
+		// A full-page snapshot keeps only the refs it shows again, and a node
+		// keeps its ref across inspects, so none can address a different node.
+		refs = s.nextRefs(false)
 		// CDP commands need chromedp's executor installed by Run.
 		axErr = chromedp.Run(c, chromedp.ActionFunc(func(execCtx context.Context) error {
-			var err error
-			nodes, err = fullAXTree(execCtx)
-			return err
+			forest, err := s.collectForest(execCtx)
+			if err != nil {
+				return err
+			}
+			nodes, refs.chains = forest.nodes, forest.chains
+			return nil
 		}))
 	} else {
-		refs = s.refs
+		refs = s.nextRefs(true)
 		inner, opts, qerr := s.query(c, sel)
 		if qerr != nil {
 			return "", qerr
@@ -956,9 +1012,68 @@ func (s *session) inspect(ctx context.Context, sel string) (string, error) {
 		}
 		return "", fmt.Errorf("browser inspect: %w", axErr)
 	}
-	return renderAXTreeRefs(nodes, refs), nil
+	out := renderAXTreeOpts(nodes, refs, axRenderOpts{interactiveOnly: mode == "interactive"})
+	if sel == "" && sparseTree(out) {
+		out += s.emptyTreeNote(c, out)
+	}
+	return out, nil
 }
+
+// clickRetryBudget bounds how long click retries before surfacing the real
+// failure instead of burning the full action deadline.
+const clickRetryBudget = 15 * time.Second
+
+// clickVisibleWait bounds each visibility wait; chromedp.WaitVisible has no
+// timeout of its own and would otherwise block for the whole action deadline.
+const clickVisibleWait = 3 * time.Second
+
+// visibleLabelFor returns a selector for a visible <label> controlling the
+// (hidden) radio/checkbox matched by sel, tagging it with a nonce attribute.
+func (s *session) visibleLabelFor(c context.Context, sel string, opts []chromedp.QueryOption) (string, bool) {
+	var nonce [8]byte
+	_, _ = rand.Read(nonce[:])
+	tag := hex.EncodeToString(nonce[:])
+	arg, _ := json.Marshal(tag)
+	var found bool
+	err := chromedp.Run(c, chromedp.QueryAfter(sel, func(ctx context.Context, _ runtime.ExecutionContextID, nodes ...*cdp.Node) error {
+		if len(nodes) == 0 {
+			return nil
+		}
+		obj, err := dom.ResolveNode().WithNodeID(nodes[0].NodeID).Do(ctx)
+		if err != nil {
+			return err
+		}
+		res, _, err := runtime.CallFunctionOn(`function(t){
+			if (this.tagName !== 'INPUT' || (this.type !== 'radio' && this.type !== 'checkbox')) return false;
+			var ls = Array.from(this.labels || []);
+			var w = this.closest('label'); if (w && ls.indexOf(w) < 0) ls.push(w);
+			for (var l of ls) {
+				var r = l.getBoundingClientRect(), st = getComputedStyle(l);
+				if (r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none') {
+					l.setAttribute('data-yottacode-label', t); return true;
+				}
+			}
+			return false;
+		}`).WithObjectID(obj.ObjectID).
+			WithArguments([]*runtime.CallArgument{{Value: arg}}).
+			WithReturnByValue(true).Do(ctx)
+		if err != nil {
+			return err
+		}
+		found = res != nil && string(res.Value) == "true"
+		return nil
+	}, append(append([]chromedp.QueryOption{}, opts...), chromedp.ByQuery)...))
+	if err != nil || !found {
+		return "", false
+	}
+	return `[data-yottacode-label="` + tag + `"]`, true
+}
+
 func (s *session) click(ctx context.Context, sel string) error {
+	return s.clickOpts(ctx, sel, ClickOptions{})
+}
+
+func (s *session) clickOpts(ctx context.Context, sel string, o ClickOptions) error {
 	p := s.activePage()
 	before := s.pageCount()
 	c, cancel := actionContext(p.ctx, ctx)
@@ -967,16 +1082,33 @@ func (s *session) click(ctx context.Context, sel string) error {
 	// Handoff can race the headed window manager. Re-resolve the selector and
 	// retry the complete layout/click sequence until the caller's deadline.
 	var clickErr error
+	start := time.Now()
 	for {
 		inner, opts, err := s.query(c, sel)
 		if err != nil {
-			if errors.Is(err, ErrSelectorNotFound) {
+			if errors.Is(err, ErrSelectorNotFound) || errors.Is(err, ErrInvalidSelector) {
 				return err
 			}
 		} else {
-			err = chromedp.Run(c, chromedp.WaitVisible(inner, opts...))
+			vc, vcancel := context.WithTimeout(c, clickVisibleWait)
+			err = chromedp.Run(vc, chromedp.WaitVisible(inner, opts...))
+			vcancel()
+			if err != nil && c.Err() == nil {
+				// Custom radios/checkboxes hide the real <input>; click its
+				// visible <label> instead, which toggles it natively.
+				if lsel, ok := s.visibleLabelFor(c, inner, opts); ok && o.plain() {
+					if lerr := chromedp.Run(c, chromedp.Click(lsel, opts...)); lerr == nil {
+						s.followNewPage(before, ctx)
+						return nil
+					}
+				}
+			}
 			if err == nil {
-				err = chromedp.Run(c, chromedp.Click(inner, opts...))
+				if o.plain() {
+					err = chromedp.Run(c, chromedp.Click(inner, opts...))
+				} else {
+					err = s.mouseClick(c, inner, opts, o)
+				}
 				if err == nil {
 					s.followNewPage(before, ctx)
 					return nil
@@ -987,9 +1119,12 @@ func (s *session) click(ctx context.Context, sel string) error {
 		if clickErr == nil {
 			clickErr = fmt.Errorf("click did not complete")
 		}
+		if time.Since(start) > clickRetryBudget {
+			return fmt.Errorf("%w: click on %q kept failing for %s (last error: %v); the element may be hidden, covered, or a custom control — browser_inspect again and click its visible label/wrapper", ErrSelectorNotFound, sel, clickRetryBudget, clickErr)
+		}
 		select {
 		case <-c.Done():
-			return classifySelectorErr(clickErr)
+			return ctxFailure(c, fmt.Sprintf("click on %q", sel), clickErr)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
